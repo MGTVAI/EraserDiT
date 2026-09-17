@@ -35,6 +35,17 @@
 ```
 pip install -r requirements.txt
 ```
+
+The CUDA attention backends are optional. The default PyTorch SDPA backend
+works without them. To install the optional backends, use an environment with
+`nvcc` and a C++ toolchain:
+
+```
+pip install --no-build-isolation -r requirements-optional.txt
+```
+
+`flash-attn` and `sageattention` are source builds; `--no-build-isolation` is
+required because their build scripts import the installed PyTorch package.
 ---
 ## 🧸 Inference
 EraserDiT requires >60GB GPU memory for a 2K‑resolution video. 

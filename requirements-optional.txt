@@ -1,0 +1,10 @@
+# Optional CUDA attention and operator-optimization backends.
+#
+# flash-attn and sageattention are source distributions on Python 3.14 and
+# must be built in the target environment so their setup scripts can import
+# the already-installed torch package.  Building them also requires a CUDA
+# toolkit (nvcc) and a C++ toolchain.
+flash-attn==2.8.1
+sageattention==1.0.6
+# Torch 2.14 requires Triton 3.8; keep this aligned with the Torch wheel.
+triton==3.8.0
