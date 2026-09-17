@@ -1,0 +1,157 @@
+# Shared with .dockerignore
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyre/
+.hypothesis/
+.ipynb_checkpoints/
+.dmypy.json
+dmypy.json
+.cache/
+
+# Virtual environments / local Python config
+.env
+.codex/
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+
+# Build / packaging
+.Python
+build/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Coverage / test artifacts
+.coverage
+.coverage.*
+htmlcov/
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+cover/
+
+# Notebook / docs build
+docs/_build/
+/site
+
+# IDE / OS / editor
+.idea/
+.vscode/
+.spyderproject
+.spyproject
+.ropeproject
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Project outputs / generated artifacts
+outputs/
+inputs/
+work_dirs/
+checkpoints/
+weights/
+artifacts/
+runs/
+tl_out/
+.longbench_cache/
+benchmark/mmlu/data
+benchmark/mmlu/data.tar
+benchmark/llava_bench/images
+benchmark/llava_bench/mme_pack
+lmms-eval/
+
+# Temporary files
+.worktrees/
+*.log
+*.jsonl
+*.json
+!python/validation/fixtures/ltx095_t5_quant_prompt_suite.json
+*.csv
+*.png
+*.pdf
+*.jpg
+*.jpeg
+*.webp
+*.gif
+!assets/*.gif
+*.bmp
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+*.tar
+*.zip
+*.7z
+tmp*.txt
+*.tmp
+*.bak
+*.orig
+*.rej
+
+# Local acceptance outputs and runner state
+/Acceptance/
+
+# Model / weight files
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+*.onnx
+*.engine
+
+# Native / compiled artifacts
+*.so
+*.dylib
+*.dll
+*.o
+*.obj
+*.a
+*.lib
+*.lo
+*.la
+*.slo
+*.app
+*.exe
+*.out
+
+# Tooling / kernel / profiling
+.clangd
+*.nsys-rep
+*.ncu-rep
+*.nvcudmp
+
+# Repo-specific exceptions
+!logo.png
+
+results/
+
+

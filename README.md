@@ -40,7 +40,9 @@ pip install -r requirements.txt
 EraserDiT requires >60GB GPU memory for a 2K‑resolution video. 
 Multi‑GPU support is in progress and will be open‑sourced later.
 ```
-python inference.py --vid_path data/10268234.mp4 --mask_path data/10268234_mask.mp4 --prompt "There is a bridge over the lake." 
+conda activate eraze_dit
+export HF_ENDPOINT=https://hf-mirror.com
+CUDA_VISIBLE_DEVICES=3 python3 inference.py --vid_path data/10268234.mp4 --mask_path data/10268234_mask.mp4 --prompt "There is a bridge over the lake." 
 ```
 ---
 ## 📜 Citation

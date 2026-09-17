@@ -26,7 +26,6 @@ from diffusers.quantizers import DiffusersAutoQuantizer, DiffusersQuantizer
 from diffusers.quantizers.quantization_config import QuantizationMethod
 from diffusers.utils import (
     CONFIG_NAME,
-    FLAX_WEIGHTS_NAME,
     SAFE_WEIGHTS_INDEX_NAME,
     SAFETENSORS_WEIGHTS_NAME,
     WEIGHTS_INDEX_NAME,
@@ -42,6 +41,15 @@ from diffusers.utils import (
     is_torch_version,
     logging,
 )
+
+# ``FLAX_WEIGHTS_NAME`` was removed from diffusers 0.40 after Flax model
+# support was dropped. Keep the legacy filename for the optional
+# ``from_flax=True`` code path while remaining importable on newer releases.
+try:
+    from diffusers.utils import FLAX_WEIGHTS_NAME
+except ImportError:
+    FLAX_WEIGHTS_NAME = "diffusion_flax_model.msgpack"
+
 from diffusers.utils.hub_utils import (
     PushToHubMixin,
     load_or_create_model_card,
@@ -1748,4 +1756,3 @@ class ModelMixin(torch.nn.Module, PushToHubMixin):
             if f"{path}.proj_attn.bias" in state_dict:
                 state_dict[f"{path}.to_out.0.bias"] = state_dict.pop(f"{path}.proj_attn.bias")
         return state_dict
-
