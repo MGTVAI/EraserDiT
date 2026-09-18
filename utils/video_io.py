@@ -299,6 +299,41 @@ def binarize_mask_array(
     return np.where(mask <= threshold, 0, 255).astype(mask.dtype, copy=False)
 
 
+def read_mask_rgb_array(
+    video_path: str,
+    threshold_ratio: float = 0.3,
+) -> tuple[np.ndarray, dict[str, object]]:
+    """Mask reader that keeps the source's RGB decode instead of a luma collapse.
+
+    The EraserDiT baseline thresholds each RGB channel of the mask stream
+    independently; decoding through ``-pix_fmt gray`` shifts a small fraction of
+    pixels by one code value and flips their binarisation decision.  Returns
+    ``[F, H, W]`` built from the first channel (the mask stream's channels are
+    equal by construction).
+    """
+    metadata = read_video_metadata(video_path)
+    width = int(metadata["width"])
+    height = int(metadata["height"])
+    output, _ = (
+        ffmpeg.input(video_path)
+        .output("pipe:", format="rawvideo", pix_fmt="rgb24")
+        .run(capture_stdout=True, capture_stderr=True)
+    )
+    frame_size = width * height * 3
+    if len(output) % frame_size != 0:
+        raise ValueError(
+            f"Raw mask payload size {len(output)} is not divisible by RGB frame size"
+        )
+    num_frames = len(output) // frame_size
+    array = (
+        np.frombuffer(output, np.uint8)
+        .reshape(num_frames, height, width, 3)[..., 0]
+        .copy()
+    )
+    metadata["num_frames"] = num_frames
+    return binarize_mask_array(array, threshold_ratio=threshold_ratio), metadata
+
+
 def read_mask_tensor(video_path: str) -> tuple[torch.Tensor, dict[str, object]]:
     tensor, metadata = read_video_tensor(video_path)
     return binarize_mask_tensor(tensor), metadata

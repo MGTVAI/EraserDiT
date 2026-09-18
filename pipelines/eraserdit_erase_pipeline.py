@@ -38,7 +38,7 @@ from utils.inference_timing import record_diagnostic_stage
 from utils.logging_utils import init_logger
 from utils.video_io import (
     WindowedVideoStore,
-    read_mask_array as _read_mask_array,
+    read_mask_rgb_array as _read_mask_rgb_array,
     read_video_array,
     read_video_metadata,
 )
@@ -174,11 +174,12 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
             build_runtime_mask=_build_runtime_mask,
             read_video_metadata=read_video_metadata,
             read_video_array=read_video_array,
-            # The baseline thresholds the raw mask stream at
-            # ``255/2 * mask_threshold`` (utils/pre.py:257); the shared reader
-            # defaults to 0.3*max, which drops the 5..76 mid-tones.
+            # The baseline thresholds each RGB channel of the raw mask stream at
+            # ``255/2 * mask_threshold`` (utils/pre.py:257).  The shared readers
+            # default to 0.3*max and to a luma decode, either of which flips a
+            # small number of pixels.
             read_mask_array=partial(
-                _read_mask_array,
+                _read_mask_rgb_array,
                 threshold_ratio=float(params.mask_threshold) / 2.0,
             ),
             window_store_builder=WindowedVideoStore,

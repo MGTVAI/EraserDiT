@@ -246,17 +246,37 @@ import 全量改写为无前缀形式；原版 `models/{transformer_ltx,autoenco
 **逐位相同**；`linear_quadratic_schedule`、`retrieve_timesteps`、`get_timesteps`
 产出的 40 步时间步完全相同；`VideoProcessor.preprocess` 与 `2x-1` 逐位相同。
 
-**M1b 门禁未达标。** 第一组新架构 vs 冻结基线（`compare_outputs.py` 口径，同 seed、
-同权重、同采样参数，两侧均用确定性口径）：非擦除区左/右条带 SSIM 0.9892 / 0.9880、
-PSNR 37.87 / 37.93 dB，整帧 SSIM 0.9871 / PSNR 37.92 dB。门禁要求非擦除区
-SSIM ≥ 0.99、PSNR ≥ 40 dB。作为参照：基线自身在**非**确定性口径下的四轮互差是
-SSIM 0.9889–0.9901 / PSNR 38.67–39.02 dB；新架构输出与源视频的差距（22.79 dB）与
-基线输出与源视频的差距（22.80 dB）几乎一致。
+**M1b 等价性：模型路径已逐位对齐，写出侧已修正三处口径差异。**
 
-已定位并修掉的一处差异：输出码率口径。原版写 `bit_rate//1000000` M，共享写出器默认沿用
-输入的原始码率串（7.69 Mbps vs 7 Mbps）。单独把基线输出按输入码率重编码，SSIM/PSNR 掉到
-0.9943 / 44.6 dB，说明该差异量级约 0.4 dB，不是主因。已按 plan §4.10 在
-`videoerase/context.py` 加适配器可声明的写出契约，并给文本编码补齐原版的 autocast。
+`scripts/m1b_model_ab.py` 在同一进程、同一 GPU、同一窗口输入上对跑「原版 diffusers 管线」与
+「新阶段链」，`cond_latents`、初始 latents 与**解码帧全部逐位相同** —— 新架构的模型路径
+（VAE 编码 → 40 步去噪 → VAE 解码）与原版一致。逐段排查后修掉四处写出侧差异：
 
-**未定**：剩余约 1.5 dB 差异的根因尚未定位（模型前向内部的数值路径尚未逐段对照）；
-GPU 2/3 在收尾时被其他租户占满（GPU 2 仅余 17 GiB），对照实验无法继续。
+| 差异 | 原版 | 修复前 | 量级 |
+| --- | --- | --- | --- |
+| x264 线程数 | ffmpeg 默认（等同 `-threads auto`） | 框架默认 `-threads 4` | ~1.5–2 dB |
+| 帧缓存精度 | uint8 | streaming 模式的 bf16 缓存同时量化模型输入与提交帧 | ~1.2 dB |
+| 输出码率 | `bit_rate//1e6` M（7M） | 输入的原始码率串（7.69M） | ~0.4 dB |
+| 掩码二值化阈值 | `255/2*0.039` = 4.97 | 共享读取器默认 `0.3*max` = 76.5 | 0.009% 像素 |
+
+改动：`videoerase/context.py` 增加适配器可声明的写出契约；`_create_output_writer` 与流式写出器
+统一走 `MGERASE_FFMPEG_THREADS`（EraserDiT CLI 默认 `auto`）；适配器默认
+`runtime_mode="windowed_preload"`（uint8 帧缓存）；`read_mask_array` 增加 `threshold_ratio`，
+适配器传 `mask_threshold/2`；文本编码补齐原版 autocast。
+
+第一组实测（40 步、同 seed、同权重、两侧确定性口径，`compare_outputs.py` 口径）：
+
+| 口径 | 非擦除区左 / 右条带 | 整帧 |
+| --- | --- | --- |
+| streaming + 修复前写出 | 0.9892 / 0.9880，37.87 / 37.93 dB | 0.9871 / 37.92 dB |
+| preload + 修复后写出 | **0.9902 / 0.9893**，**39.22 / 39.46 dB** | 0.9884 / 39.60 dB |
+
+参照：基线自身在**非**确定性口径下四轮互差为 0.9889–0.9901 / 38.67–39.02 dB。当前已优于该自洽
+下限，左条带 SSIM 已过 0.99，但 PSNR 距 40 dB 门禁仍差约 0.5–0.8 dB。
+
+另已验证：写入侧的 AdaIN 与 8 位量化在同一份解码帧上**逐位相同**；同一份帧经两边写出器编码，
+`-threads auto` 下产物**逐字节相同**；decord 与 ffmpeg 对四个输入的解码**逐字节相同**。
+
+**残余差异未定位。** 由于模型路径、AdaIN、量化、编码器都已验证一致，残余只能来自真实运行时
+喂给模型的窗口张量与对照实验所用张量之间存在差异；正在用 `ERASERDIT_DEBUG_DUMP` 导出
+preload 模式下的 `padded_video` / `padded_mask` 与原版逐位比对。
