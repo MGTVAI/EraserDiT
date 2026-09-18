@@ -1,30 +1,31 @@
-"""Launch the resident HTTP service for the local LTX095 erase pipeline."""
+"""Model-agnostic HTTP service entrypoint.
+
+The pipeline is selected by ``--pipeline-name``; its service contract supplies
+the request schema, sampling-parameter builder and capability id, so serving a
+new model needs no change here (``vibe/plan.md`` M2).
+"""
 
 from __future__ import annotations
 
 import argparse
 import os
-import signal
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import uvicorn
 
-from config.ltx095 import LTX095EraseSamplingParams
+from config.server_args import ServerArgs
 from config.service_args import ServiceArgs
-from entrypoints.cli.erase_ltx095 import (
-    _build_server_args,
-    _resolve_ltx095_sequence_parallel_contract,
-)
 from entrypoints.http_server import create_http_server_app
 from entrypoints.server.storage import create_result_storage
-from parallel.stage_policy import synchronize_stage_error
+from pipelines.registry import DEFAULT_PIPELINE, PipelineRegistry
 from service.artifacts import TaskArtifactManager
+from service.contract import resolve_service_contract
 from service.scheduler import ServiceScheduler
 from service.task_store import TaskStore
 from service.worker import ResidentWorkerGroup
-from service.contracts.ltx095 import LTX095_SERVICE_CONTRACT
 from utils.distributed_runtime import (
-    barrier_if_distributed,
     destroy_runtime_distributed,
     initialize_runtime_distributed,
 )
@@ -34,9 +35,8 @@ logger = init_logger(__name__)
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Serve the local MGErase LTX095 runtime."
-    )
+    parser = argparse.ArgumentParser(description="Serve a local erase pipeline.")
+    parser.add_argument("--pipeline-name", default=DEFAULT_PIPELINE)
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=30000)
@@ -48,9 +48,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-terminal-tasks", type=int, default=128)
     parser.add_argument("--health-timeout-seconds", type=float, default=120.0)
     parser.add_argument("--cancel-timeout-seconds", type=float, default=120.0)
-    parser.add_argument(
-        "--result-storage-mode", choices=["local", "s3"], default="local"
-    )
+    parser.add_argument("--result-storage-mode", choices=["local", "s3"], default="local")
     parser.add_argument("--result-storage-bucket")
     parser.add_argument("--result-storage-endpoint-url")
     parser.add_argument("--result-storage-region")
@@ -59,41 +57,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dtype", default="bf16", choices=["bf16", "fp16", "fp32"])
     parser.add_argument("--device", default="cuda")
     parser.add_argument(
-        "--distributed-backend", default="auto", choices=["auto", "nccl", "gloo"]
-    )
-    parser.add_argument("--distributed-init-timeout-seconds", type=int, default=1800)
-    parser.add_argument("--writer-rank", type=int, default=0)
-    parser.add_argument("--progress-rank", type=int, default=0)
-    parser.add_argument(
-        "--parallel-mode", choices=["disabled", "auto", "manual"], default="auto"
-    )
-    parser.add_argument("--sp-degree", type=int, default=0)
-    parser.add_argument("--cfg-parallel-degree", type=int, default=0)
-    parser.add_argument("--vae-parallel-degree", type=int, default=0)
-    parser.add_argument(
-        "--distributed-compute-mode",
-        default="entry_only",
-        choices=["auto", "entry_only", "official_vae_parallel"],
-    )
-    parser.add_argument("--vae-max-parallelism", type=int, default=0)
-    parser.add_argument("--vae-max-inflight-tiles", type=int, choices=[1, 2], default=1)
-    parser.add_argument(
         "--resource-policy",
-        default="dynamic_offload",
+        default="fullgpu",
         choices=["fullgpu", "fullgpu_pin_memory", "dynamic_offload"],
     )
-    parser.add_argument(
-        "--pin_memory", action=argparse.BooleanOptionalAction, default=True
-    )
-    parser.add_argument(
-        "--dynamic_offload", action=argparse.BooleanOptionalAction, default=True
-    )
-    parser.add_argument("--max_weight_usage", type=int, default=5 * 1024**3)
-    parser.add_argument(
-        "--runtime-mode",
-        default="windowed_streaming",
-        choices=["auto", "full", "windowed", "windowed_preload", "windowed_streaming"],
-    )
+    parser.add_argument("--runtime-mode", default=None)
     parser.add_argument(
         "--attention-backend",
         default="sdpa",
@@ -103,42 +71,57 @@ def _build_parser() -> argparse.ArgumentParser:
         "--enable-torch-compile", action=argparse.BooleanOptionalAction, default=False
     )
     parser.add_argument(
-        "--transformer-quantization",
-        choices=["none", "fp8_w8a8", "fp8_w8a8_triton_selective", "int8_w8a8_viditq"],
-        default="none",
-    )
-    parser.add_argument(
-        "--text-encoder-quantization",
-        choices=["none", "int8_w8a8_viditq"],
-        default="none",
-        help="Quantize only the signed 48-Linear LTX095 T5 production policy.",
-    )
-    parser.add_argument(
-        "--fp8-linear-backend",
-        choices=["auto", "native_scaled_mm"],
-        default="auto",
-    )
-    parser.add_argument(
-        "--fp8-linear-granularity",
-        choices=["per_row"],
-        default="per_row",
-    )
-    parser.add_argument(
-        "--fp8-fast-accum",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-    )
-    parser.add_argument(
         "--operator-fusion-backend",
         default="disabled",
         choices=["disabled", "auto", "triton"],
     )
     parser.add_argument("--operator-fusion-ops", default=None)
-    parser.add_argument(
-        "--warmup", action=argparse.BooleanOptionalAction, default=False
-    )
+    parser.add_argument("--warmup", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--warmup-steps", type=int, default=1)
     return parser
+
+
+def _resolve_pipeline_config(
+    pipeline_cls: type, dtype: str
+) -> tuple[Any, dict[str, str]]:
+    config_cls = getattr(pipeline_cls, "pipeline_config_cls", None)
+    if config_cls is None:
+        return SimpleNamespace(), {}
+    try:
+        config = config_cls(
+            dit_precision=dtype, vae_precision=dtype, text_encoder_precision=dtype
+        )
+    except TypeError:
+        config = config_cls()
+    architectures = dict(getattr(config, "component_architectures", {}) or {})
+    return config, architectures
+
+
+def _default_runtime_mode(pipeline_cls: type) -> str:
+    params_cls = getattr(pipeline_cls, "sampling_params_cls", None)
+    if params_cls is not None:
+        try:
+            return str(params_cls().runtime_mode)
+        except Exception:  # pragma: no cover - defensive
+            pass
+    return "windowed_streaming"
+
+
+def _build_server_args(args: argparse.Namespace, pipeline_cls: type) -> ServerArgs:
+    config, architectures = _resolve_pipeline_config(pipeline_cls, args.dtype)
+    return ServerArgs(
+        model_path=str(Path(args.model_path).expanduser().resolve()),
+        pipeline_class_name=args.pipeline_name,
+        device=args.device,
+        weight_dtype=args.dtype,
+        resource_policy=args.resource_policy,
+        pipeline_config=config,
+        component_architectures=architectures,
+        attention_backend=args.attention_backend,
+        enable_torch_compile=bool(args.enable_torch_compile),
+        operator_fusion_backend=args.operator_fusion_backend,
+        operator_fusion_ops=args.operator_fusion_ops,
+    )
 
 
 def _build_service_args(args: argparse.Namespace) -> ServiceArgs:
@@ -164,34 +147,54 @@ def _build_service_args(args: argparse.Namespace) -> ServiceArgs:
     )
 
 
+def _effective_acceleration(
+    server_args: ServerArgs, worker_group: ResidentWorkerGroup
+) -> dict[str, object]:
+    """Report the settings that actually took effect, including auto fallbacks.
+
+    ``vibe/plan.md`` M2: the startup config only shows what was requested; the
+    attention preflight and the fusion decision resolve later, so the service
+    reports both.
+    """
+    pipeline = getattr(worker_group.session, "pipeline", None)
+    attention = dict(getattr(pipeline, "attention_backend_report", {}) or {})
+    decision = getattr(server_args, "operator_fusion_decision", None)
+    fusion = decision.as_dict() if hasattr(decision, "as_dict") else {}
+    return {
+        "attention_backend": {
+            "requested": server_args.attention_backend,
+            "report": attention,
+            "resolved": bool(attention),
+        },
+        "operator_fusion": fusion,
+        "torch_compile": {
+            "requested": bool(server_args.enable_torch_compile),
+            "active": bool(getattr(server_args, "enable_torch_compile", False)),
+        },
+        "notes": (
+            "values are captured after the resident session is built; entries are "
+            "empty until the corresponding preflight has run"
+        ),
+    }
+
+
 def main() -> None:
     args = _build_parser().parse_args()
-    if args.writer_rank != 0:
-        raise ValueError("the service HTTP owner and writer_rank must both be rank 0")
-    server_args = _build_server_args(args)
+    pipeline_cls, pipeline_name = PipelineRegistry.resolve(args.pipeline_name)
+    contract = resolve_service_contract(pipeline_name)
+    runtime_mode = args.runtime_mode or _default_runtime_mode(pipeline_cls)
+    server_args = _build_server_args(args, pipeline_cls)
     service_args = _build_service_args(args)
+
     worker_group = None
     scheduler = None
-    result_storage = None
     try:
         distributed_context = initialize_runtime_distributed(server_args)
-        capability_error = None
-        try:
-            _resolve_ltx095_sequence_parallel_contract(
-                server_args,
-                LTX095EraseSamplingParams(),
-                distributed_context,
-            )
-        except Exception as error:
-            capability_error = error
-        synchronize_stage_error(capability_error, server_args.parallel_context)
-        storage_error = None
-        if distributed_context.is_main_process:
-            try:
-                result_storage = create_result_storage(service_args)
-            except Exception as error:
-                storage_error = error
-        synchronize_stage_error(storage_error, server_args.parallel_context)
+        result_storage = (
+            create_result_storage(service_args)
+            if distributed_context.is_main_process
+            else None
+        )
         task_store = (
             TaskStore(
                 service_args.task_root,
@@ -213,19 +216,14 @@ def main() -> None:
             artifacts.cleanup_orphan_staging()
         worker_group = ResidentWorkerGroup(
             server_args,
-            runtime_mode=args.runtime_mode,
+            runtime_mode=runtime_mode,
             task_store=task_store,
+            service_contract=contract,
         )
-        barrier_if_distributed()
         if not distributed_context.is_main_process:
-            # Under torchrun, Ctrl-C is forwarded to every local rank.  Peers must
-            # remain in the command broadcast so rank 0 can issue SHUTDOWN and
-            # tear down the process group in protocol order.
-            signal.signal(signal.SIGINT, signal.SIG_IGN)
             worker_group.peer_loop()
             return
-        assert task_store is not None and artifacts is not None
-        assert result_storage is not None
+        assert task_store is not None and artifacts is not None and result_storage
         scheduler = ServiceScheduler(
             task_store,
             worker_group,
@@ -234,43 +232,42 @@ def main() -> None:
             warmup_steps=(args.warmup_steps if args.warmup else None),
             cancel_timeout_seconds=service_args.cancel_timeout_seconds,
         )
-        plan = server_args.parallel_context.plan
         app = create_http_server_app(
             service_args=service_args,
             scheduler=scheduler,
             task_store=task_store,
             artifact_manager=artifacts,
             server_summary={
-                "runtime_mode": args.runtime_mode,
+                "pipeline": pipeline_name,
+                "runtime_mode": runtime_mode,
                 "dtype": args.dtype,
                 "device": args.device,
+                "resource_policy": args.resource_policy,
                 "attention_backend": args.attention_backend,
-                "transformer_quantization": args.transformer_quantization,
-                "text_encoder_quantization": args.text_encoder_quantization,
-                "fp8_linear_backend": args.fp8_linear_backend,
                 "torch_compile": bool(args.enable_torch_compile),
                 "operator_fusion_backend": args.operator_fusion_backend,
                 "operator_fusion_ops": args.operator_fusion_ops,
-                "resource_policy": args.resource_policy,
-                "sp_degree": plan.sp_degree,
-                "cfg_parallel_degree": plan.cfg_degree,
-                "vae_parallel_degree": plan.vae_degree,
-                "world_size": plan.world_size,
                 "result_storage": result_storage.summary(),
             },
-            service_contract=LTX095_SERVICE_CONTRACT,
             model_summary={
                 "id": Path(server_args.model_path).name,
-                "capability": "ltx095_video_erase",
-                "request_modes": ["multipart_upload", "controlled_local_paths"],
+                "capability": contract.capability,
+                "pipeline": pipeline_name,
+                "request_modes": list(contract.request_modes),
             },
+            service_contract=contract,
+            effective_acceleration=lambda: _effective_acceleration(
+                server_args, worker_group
+            ),
         )
         logger.info(
-            "MGErase service ready on %s:%d", service_args.host, service_args.port
+            "service ready pipeline=%s capability=%s on %s:%d",
+            pipeline_name,
+            contract.capability,
+            service_args.host,
+            service_args.port,
         )
-        uvicorn.run(
-            app, host=service_args.host, port=service_args.port, log_level="info"
-        )
+        uvicorn.run(app, host=service_args.host, port=service_args.port, log_level="info")
     finally:
         if scheduler is not None:
             scheduler.shutdown(timeout=service_args.cancel_timeout_seconds)

@@ -31,8 +31,11 @@ def create_http_server_app(
     artifact_manager: TaskArtifactManager,
     server_summary: dict[str, object],
     model_summary: dict[str, object],
+    service_contract: Any = None,
+    effective_acceleration: Any = None,
 ) -> FastAPI:
-    app = FastAPI(title="MGErase LTX095 Service", version="1")
+    capability = str(model_summary.get("capability", "video_erase"))
+    app = FastAPI(title=f"MGErase {capability} Service", version="1")
     app.state.ready = True
     app.state.started_at = time.time()
 
@@ -76,6 +79,9 @@ def create_http_server_app(
                 "max_upload_bytes": service_args.max_upload_bytes,
             },
             "startup_config": server_summary,
+            "effective_acceleration": (
+                effective_acceleration() if callable(effective_acceleration) else {}
+            ),
         }
 
     @app.get("/model_info")
@@ -92,6 +98,9 @@ def create_http_server_app(
             scheduler=scheduler,
             task_store=task_store,
             artifact_manager=artifact_manager,
+            request_schema_cls=service_contract.request_schema_cls,
+            multipart_schema_cls=service_contract.multipart_schema_cls,
+            path_fields=service_contract.path_fields,
         )
     )
     app.include_router(create_common_router(model_summary))

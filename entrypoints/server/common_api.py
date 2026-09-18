@@ -14,7 +14,11 @@ from service.task import ServiceError
 def create_common_router(model_summary: Mapping[str, object]) -> APIRouter:
     model_id = str(model_summary["id"])
     created = int(time.time())
-    card = ModelCard(id=model_id, created=created)
+    card = ModelCard(
+        id=model_id,
+        created=created,
+        capability=str(model_summary["capability"]),
+    )
     router = APIRouter(prefix="/v1")
 
     @router.get("/models", response_model=ModelListResponse)

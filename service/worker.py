@@ -10,10 +10,9 @@ from typing import Any, Callable
 import torch
 import torch.distributed as dist
 
-from config.ltx095 import LTX095EraseSamplingParams
 from config.server_args import ServerArgs
-from config.transformer_cache import validate_transformer_cache_request
 from service.commands import CommandKind, WorkerCommand
+from service.contract import PipelineServiceContract, resolve_service_contract
 from service.control import CancellationToken, ServiceProgressState
 from videoerase.session import LTX095EraseSession
 
@@ -39,28 +38,6 @@ def _is_fatal_worker_error(error: BaseException) -> bool:
     return any(marker in message for marker in _FATAL_ERROR_MARKERS)
 
 
-def build_service_sampling_params(
-    payload: dict[str, Any],
-    *,
-    runtime_mode: str,
-) -> LTX095EraseSamplingParams:
-    values = dict(payload["sampling"])
-    kernel = int(values.pop("mask_dilate_kernel"))
-    dynamic_cfg_space = bool(values.pop("dynamic_cfg_space"))
-    return LTX095EraseSamplingParams(
-        **values,
-        video_input_path=str(payload["video_input_path"]),
-        mask_input_path=str(payload["mask_input_path"]),
-        bbox_path=payload.get("bbox_input_path"),
-        output_path=str(payload["output_dir"]),
-        output_file_name=str(payload["output_file_name"]),
-        save_output=True,
-        suppress_logs=True,
-        runtime_mode=runtime_mode,
-        runtime_workdir=str(payload["runtime_workdir"]),
-        mask_dilate_kernel=(kernel, kernel),
-        enable_dynamic_cfg_space=dynamic_cfg_space,
-    )
 
 
 class ResidentWorkerGroup:
@@ -72,9 +49,13 @@ class ResidentWorkerGroup:
         *,
         runtime_mode: str,
         task_store: Any | None = None,
+        service_contract: PipelineServiceContract | None = None,
     ) -> None:
         self.server_args = server_args
         self.runtime_mode = runtime_mode
+        self.service_contract = service_contract or resolve_service_contract(
+            getattr(server_args, "pipeline_class_name", None)
+        )
         self.task_store = task_store
         self.session = LTX095EraseSession(server_args)
         self.context = self.session.distributed_context
@@ -138,16 +119,13 @@ class ResidentWorkerGroup:
         try:
             if torch.cuda.is_available():
                 torch.cuda.reset_peak_memory_stats()
-            params = build_service_sampling_params(
+            params = self.service_contract.build_sampling_params(
                 command.payload,
                 runtime_mode=self.runtime_mode,
             )
-            validate_transformer_cache_request(
-                mode=params.transformer_cache_mode,
-                enable_torch_compile=bool(
-                    getattr(self.server_args, "enable_torch_compile", False)
-                ),
-            )
+            validate_request = self.service_contract.validate_request
+            if validate_request is not None:
+                validate_request(command.payload, self.server_args)
             request_extra: dict[str, object] = {
                 "service_cancellation_token": token,
                 "service_server_args": self.server_args,
@@ -262,4 +240,4 @@ class ResidentWorkerGroup:
         self._closed = True
 
 
-__all__ = ("ResidentWorkerGroup", "build_service_sampling_params")
+__all__ = ("ResidentWorkerGroup",)

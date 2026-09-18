@@ -153,6 +153,9 @@ def _as_ltx095_params(batch: Req) -> LTX095EraseSamplingParams:
 
 class LTX095ErasePipeline(ComposedPipelineBase):
     pipeline_name = "LTX095ErasePipeline"
+
+    # Adapter-provided service contract (schema, sampling builder, capability).
+    from service.contracts.ltx095 import LTX095_SERVICE_CONTRACT as service_contract
     pipeline_config_cls = LTX095PipelineConfig
     sampling_params_cls = LTX095EraseSamplingParams
 

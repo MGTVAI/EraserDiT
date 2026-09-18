@@ -94,6 +94,9 @@ def _as_eraserdit_params(batch: Req) -> EraserDiTEraseSamplingParams:
 
 class EraserDiTErasePipeline(ComposedPipelineBase):
     pipeline_name = "EraserDiTErasePipeline"
+
+    # Adapter-provided service contract (schema, sampling builder, capability).
+    from service.contracts.eraserdit import ERASERDIT_SERVICE_CONTRACT as service_contract
     pipeline_config_cls = EraserDiTPipelineConfig
     sampling_params_cls = EraserDiTEraseSamplingParams
 

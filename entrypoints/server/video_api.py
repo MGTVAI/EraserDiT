@@ -13,8 +13,6 @@ from pydantic import ValidationError
 from config.service_args import ServiceArgs
 from entrypoints.server.protocol import (
     DeletedTaskResponse,
-    LocalVideoCreateRequest,
-    MultipartVideoParameters,
     VideoListResponse,
     VideoResponse,
 )
@@ -31,6 +29,9 @@ def create_video_router(
     scheduler: Any,
     task_store: Any,
     artifact_manager: TaskArtifactManager,
+    request_schema_cls: Any,
+    multipart_schema_cls: Any,
+    path_fields: tuple[str, ...] = ("video_path", "mask_path", "bbox_path"),
 ) -> APIRouter:
     router = APIRouter(prefix="/v1/videos")
 
@@ -47,7 +48,7 @@ def create_video_router(
         try:
             if content_type.startswith("application/json"):
                 try:
-                    parsed = LocalVideoCreateRequest.model_validate_json(
+                    parsed = request_schema_cls.model_validate_json(
                         await request.body()
                     )
                 except ValidationError as error:
@@ -67,9 +68,7 @@ def create_video_router(
                     if parsed.bbox_path
                     else None
                 )
-                sampling = parsed.model_dump(
-                    exclude={"video_path", "mask_path", "bbox_path"}
-                )
+                sampling = parsed.model_dump(exclude=set(path_fields))
             elif content_type.startswith("multipart/form-data"):
                 form = await request.form()
                 unknown = set(form.keys()) - {
@@ -105,7 +104,7 @@ def create_video_router(
                         status_code=422,
                     )
                 try:
-                    parsed_params = MultipartVideoParameters.model_validate_json(
+                    parsed_params = multipart_schema_cls.model_validate_json(
                         raw_parameters
                     )
                 except ValidationError as error:
