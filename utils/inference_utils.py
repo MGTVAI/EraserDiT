@@ -4,10 +4,10 @@ import torch
 from typing import Tuple
 
 from transformers import T5EncoderModel, T5Tokenizer
-from pipelines.pipeline_ltx_video2video import LTXVideoToVideoPipeline
+from pipelines.eraserdit_video2video import LTXVideoToVideoPipeline
 from diffusers import FlowMatchEulerDiscreteScheduler
-from models import AutoencoderKLLTXVideo
-from models import LTXVideoTransformer3DModel
+from models.dits.eraserdit_transformer import EraserDiTLTXVideoTransformer3DModel
+from models.vaes.eraserdit_vae import EraserDiTAutoencoderKLLTXVideo
 
 
 @test_time(enable=GlobalValues.ENABLE_PER)
@@ -15,14 +15,14 @@ def init(device, weight_dtype, pre_dir="jieeliu/EraserDiT"):
     base_model_path = f"{pre_dir}"
     noise_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
             base_model_path, subfolder="scheduler")
-    vae = AutoencoderKLLTXVideo.from_pretrained(
+    vae = EraserDiTAutoencoderKLLTXVideo.from_pretrained(
         base_model_path, subfolder="vae", use_safetensor=True, low_cpu_mem_usage=False
     )
 
     text_encoder = T5EncoderModel.from_pretrained(base_model_path, subfolder="text_encoder", revision="main", variant=None,
                                                     torch_dtype=torch.bfloat16)
     tokenizer = T5Tokenizer.from_pretrained(base_model_path, subfolder="tokenizer")
-    ltx_model = LTXVideoTransformer3DModel.from_pretrained(
+    ltx_model = EraserDiTLTXVideoTransformer3DModel.from_pretrained(
         base_model_path, subfolder="transformer", use_safetensor=True, low_cpu_mem_usage=False
     )
     

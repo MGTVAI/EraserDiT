@@ -1,0 +1,145 @@
+"""EraserDiT erase – preprocess stage.
+
+Splits the runtime window into its two halves the baseline keeps separate:
+
+* the ``overlap_left`` prefix frames, which the baseline supplies as the previous
+  window's **raw** pipeline tail (``pre_video_shift``), and
+* the newly loaded frames, which get aligned, mirror-padded, mask-dilated and
+  temporally compressed exactly as ``VideoInpaintPre.__call__`` does.
+
+``batch.padded_video`` holds the model's video input (prefix + masked new frames)
+and ``batch.padded_mask`` the single ``mask_values`` channel (two zero latent
+frames in front of the compressed new-frame mask for non-first windows).
+"""
+
+from __future__ import annotations
+
+import torch
+
+from config.server_args import ServerArgs
+from nodes.schedule_batch import Req
+from nodes.stages.base import PipelineStage
+from nodes.stages.model_specific_stages.eraserdit_erase._common import (
+    NEW_FRAMES_KEY,
+    ORIG_SIZE_KEY,
+    PREFIX_LEN_KEY,
+    STYLE_MASK_KEY,
+    STYLE_VIDEO_KEY,
+    field_summary,
+    get_task_state,
+)
+from utils.eraserdit_preprocess import preprocess_eraserdit_window
+from utils.windowing import infer_latent_frames
+
+
+class EraserDiTErasePreprocessStage(PipelineStage):
+    def forward(self, batch: Req, server_args: ServerArgs) -> Req:
+        del server_args
+        spec = batch.extra.get("window_spec") or {}
+        window_index = int(batch.extra.get("window_index", 0))
+        overlap_left = int(spec.get("overlap_left", 0))
+        head_batch = window_index == 0
+
+        # The runtime stores frames as [B, C, F, H, W]; the baseline works in
+        # [F, C, H, W].
+        video = batch.video[0].permute(1, 0, 2, 3).to(torch.float32)
+        mask = batch.mask[0].permute(1, 0, 2, 3).to(torch.float32)
+        prefix_len = min(overlap_left, video.shape[0])
+        new_frames = video.shape[0] - prefix_len
+
+        source_video = video[prefix_len:]
+        source_mask = mask[prefix_len:]
+        orig_h, orig_w = int(source_video.shape[-2]), int(source_video.shape[-1])
+
+        result = preprocess_eraserdit_window(
+            source_video,
+            source_mask,
+            head_batch=head_batch,
+            infer_len=int(batch.infer_len),
+            shift_alpha=int(batch.overlap),
+            align_h=int(batch.align_h),
+            align_w=int(batch.align_w),
+            ksize=tuple(batch.mask_ksize),
+            dilate_iter=int(batch.mask_dilate_iter),
+            threshold=float(batch.mask_threshold),
+            enable_approximate=bool(batch.mask_enable_approximate),
+        )
+
+        # Video prefix: the baseline uses the previous window's *raw* pipeline
+        # tail.  The runtime hands us the previous window's colour-aligned frames
+        # (that is what its overlap cache stores, so the committed pixels are
+        # right); replace them with the raw tail the model must actually see.
+        state = get_task_state(batch)
+        model_video = result.masked_video
+        if prefix_len > 0 and state.prev_raw_tail is not None:
+            tail = state.prev_raw_tail
+            if tail.shape[0] != prefix_len:
+                raise ValueError(
+                    f"raw tail length {tail.shape[0]} does not match window prefix "
+                    f"{prefix_len}"
+                )
+            model_video = torch.cat(
+                [tail.to(model_video.dtype), model_video], dim=0
+            )
+        elif prefix_len > 0:
+            model_video = torch.cat(
+                [video[:prefix_len].to(model_video.dtype), model_video], dim=0
+            )
+
+        mask_latents = result.mask_latents
+        if not head_batch:
+            # ceil(shift_alpha / 8) zero latent frames in front of the compressed
+            # window mask (``inference.py:93``).
+            zero_latents = torch.zeros(
+                (
+                    int(-(-int(batch.overlap) // 8)),
+                    1,
+                    int(mask_latents.shape[-2]),
+                    int(mask_latents.shape[-1]),
+                ),
+                dtype=mask_latents.dtype,
+                device=mask_latents.device,
+            )
+            mask_latents = torch.cat([zero_latents, mask_latents], dim=0)
+
+        expected_latents = infer_latent_frames(model_video.shape[0], 8)
+        if mask_latents.shape[0] != expected_latents:
+            raise ValueError(
+                f"mask latent count {mask_latents.shape[0]} does not cover "
+                f"{model_video.shape[0]} video frames ({expected_latents} expected)"
+            )
+
+        # Framework layout is [B, C, F, H, W] for both.
+        batch.padded_video = model_video.permute(1, 0, 2, 3).unsqueeze(0)
+        batch.padded_mask = mask_latents.permute(1, 0, 2, 3).unsqueeze(0)
+        # Whole-frame erase (plan §4.7): the crop bbox is the full frame, so the
+        # runtime's crop/paste degenerates to identity and its overlap cache holds
+        # this window's own generated frames.
+        prealigned = batch.extra.get("prealigned_crop_bbox")
+        batch.crop_bbox = (
+            tuple(int(v) for v in prealigned)
+            if prealigned is not None
+            else (0, 0, orig_w, orig_h)
+        )
+        batch.crop_video = batch.video
+        batch.crop_mask = batch.mask
+        batch.masked_video = batch.padded_video
+        batch.extra[STYLE_VIDEO_KEY] = source_video[..., :orig_h, :orig_w]
+        # The baseline mask stream is RGB, and the colour-fix helper asserts that
+        # the reference mask matches the frame channel count.
+        batch.extra[STYLE_MASK_KEY] = (
+            source_mask[..., :orig_h, :orig_w].repeat(1, 3, 1, 1) * 255.0
+        )
+        batch.extra[NEW_FRAMES_KEY] = int(new_frames)
+        batch.extra[PREFIX_LEN_KEY] = int(prefix_len)
+        batch.extra[ORIG_SIZE_KEY] = (orig_h, orig_w)
+
+        self.log_info(
+            "%s | %s | frames=%d+%d->%d",
+            field_summary("padded_video", batch.padded_video),
+            field_summary("padded_mask", batch.padded_mask),
+            prefix_len,
+            source_video.shape[0],
+            model_video.shape[0],
+        )
+        return batch

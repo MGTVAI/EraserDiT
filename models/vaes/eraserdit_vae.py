@@ -1034,7 +1034,7 @@ class LTXVideoDecoder3d(nn.Module):
         return hidden_states
 
 
-class AutoencoderKLLTXVideo(ModelMixin, ConfigMixin, FromOriginalModelMixin):
+class EraserDiTAutoencoderKLLTXVideo(ModelMixin, ConfigMixin, FromOriginalModelMixin):
     r"""
     A VAE model with KL loss for encoding images into latents and decoding latent representations into images. Used in
     [LTX](https://huggingface.co/Lightricks/LTX-Video).
@@ -1556,3 +1556,5 @@ class AutoencoderKLLTXVideo(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             return (dec.sample,)
         return dec
     
+
+EntryClass = EraserDiTAutoencoderKLLTXVideo

@@ -19,7 +19,7 @@
 
 ## 目录与入口
 
-- 目录以 `MGErase/python/` 为主，内容迁入当前仓库根目录，不保留 `python/` 容器。
+- 目录以 `MGErase/python/` 为主，内容迁入当前仓库根目录，不保留 `python/` 容器。映射后同步更新静态 import、动态注册路径、脚本与文档，并保留来源及许可证说明。
 - 不保留 `runtime/` 容器，其直接子目录提升到根目录；其中 `runtime/resource/` 与 `layers/memory/` 合并为根目录 `memory/`。
 - `memory/` 下按 `adapters/`、`backends/`、`policies/` 分别组织模型适配、搬运卸载实现和驻留及阶段协调策略，不再保留 `resource/` 或 `layers/memory/`。第一阶段只要求三者的职责边界与策略接口就位，具体驻留策略在环境核查时按实测可用显存确定并记录。
 - 原版 `models/`、`pipelines/`、`utils/` 下的内容按职责迁入新目录，作为 EraserDiT 首个接入模型；旧入口 `inference.py` 及其参数面随迁移删除，迁移验证通过后删除其余被替代的实现。
@@ -30,9 +30,9 @@
 
 ## 基线冻结
 
-- 当前工作区修改提交后打基线 tag，并另存一份独立副本供验收反复运行；主仓库完成重构后即可删除被替代的原版实现，基线仅以该副本存在。
+- 基线固定在提交 `9944867`。参考副本为 worktree `EraserDiT-ref`（detached、只读）；运行副本为 worktree `EraserDiT-baseline`（分支 `baseline-run`），验收与计时在后者进行。主仓库完成重构后即可删除被替代的原版实现。
 - 冻结内容包含提交标识、工作区差异、权重快照标识、全部采样参数与提示词、环境版本，以及两组素材的基准视频。
-- 冻结副本允许两类最小外挂改动，均不触碰算法参数：注入并记录全部随机源以固定 seed；增加常驻 wrapper，在同进程内重复调用原版推理入口。
+- 冻结副本允许两类最小外挂改动，均不触碰算法参数：注入并记录全部随机源以固定 seed；增加常驻 wrapper，在同进程内重复调用原版推理入口。M0 阶段追加第三类——注入确定性开关（同样只影响数值路径、不改算法与采样参数），用于把基线自身重复性压到可忽略；三类差异在验收时一并说明。
 - 冻结副本相对原版的全部差异单独记录，验收时说明这些改动不影响生成结果。
 
 ## 服务端
@@ -40,13 +40,13 @@
 以 MGErase `entrypoints/` 与 `runtime/service/` 的实现为参考，保留其协议骨架、任务生命周期和服务组件划分：
 
 - 端点：`POST /v1/videos`、`GET /v1/videos`、`GET /v1/videos/{id}`、`DELETE /v1/videos/{id}`、`GET /v1/videos/{id}/content`、`GET /v1/models`、`GET /v1/models/{id}`、`GET /health`、`GET /server_info`、`GET /model_info`、`GET /stats`。
-- 任务状态为 `queued`、`running`、`completed`、`failed`、`cancelled`；阶段为 `queued`、`preparing`、`processing`、`finalizing`、`terminal`；响应携带进度、队列位置、分段进度及指标。
+- 任务状态为 `queued`、`running`、`completed`、`failed`、`cancelled`；阶段为 `queued`、`preparing`、`processing`、`finalizing`、`terminal`；响应携带进度（0–100）、队列位置、分段计数（`object_index/object_count`、`window_index/window_count`，MGErase 没有分段百分比字段）及指标（活跃任务为空，终态才填充）。
 - 服务组件按任务存储、任务产物管理、调度器和常驻工作组划分；常驻工作组持有模型实例并对外提供健康心跳。
-- 请求契约拒绝未声明字段，统一错误体为 `{"error": {"code", "message"}}`。
+- 请求契约拒绝未声明字段，统一错误体为 `{"error": {"code", "message"}}`，失败任务额外带 `phase`；路由级 404/405 仍是框架默认的 `{"detail": ...}`，不纳入契约。
 - 模型相关部分由模型适配器提供参数 schema、采样参数 builder 和 capability 标识；服务骨架不写死模型实现，接入第二个模型时不改写服务代码。
 - 第一阶段只支持本地路径提交（受输入白名单约束）和本地结果存储；文件上传、对象存储、多卡及量化参数不进入参数面。
 - 参数默认值与字段集按 EraserDiT 原版算法定义，不沿用 MGErase 的模型专属字段。
-- `server_info` 的启动配置必须包含实际生效的加速后端、融合与编译开关，以及 `auto` 回退后的实际选择及原因。
+- `server_info` 的启动配置必须包含实际生效的加速后端、融合与编译开关，以及 `auto` 回退后的实际选择及原因。MGErase 当前只回显启动时的原始 CLI 参数，实际生效值要到请求 preflight 才算出来，属需要改造的增量。
 
 ## CLI
 
