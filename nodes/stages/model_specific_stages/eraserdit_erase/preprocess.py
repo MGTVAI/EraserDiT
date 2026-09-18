@@ -81,11 +81,18 @@ class EraserDiTErasePreprocessStage(PipelineStage):
                     f"{prefix_len}"
                 )
             model_video = torch.cat(
-                [tail.to(model_video.dtype), model_video], dim=0
+                [tail.to(device=model_video.device, dtype=model_video.dtype), model_video],
+                dim=0,
             )
         elif prefix_len > 0:
             model_video = torch.cat(
-                [video[:prefix_len].to(model_video.dtype), model_video], dim=0
+                [
+                    video[:prefix_len].to(
+                        device=model_video.device, dtype=model_video.dtype
+                    ),
+                    model_video,
+                ],
+                dim=0,
             )
 
         mask_latents = result.mask_latents

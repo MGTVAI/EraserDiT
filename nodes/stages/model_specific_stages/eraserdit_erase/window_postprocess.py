@@ -56,8 +56,11 @@ class EraserDiTEraseWindowPostprocessStage(PipelineStage):
         # still at the aligned spatial size (baseline keeps the whole padded frame).
         overlap_right = int(spec.get("overlap_right", 0))
         if overlap_right > 0:
-            # Frames are dim 0: this is the baseline's ``output_frames[-shift_alpha:]``.
-            state.prev_raw_tail = decoded_frames[-overlap_right:].detach().clone()
+            # Frames are dim 0: this is the baseline's ``output_frames[-shift_alpha:]``,
+            # which the baseline also keeps on CPU between windows.
+            state.prev_raw_tail = (
+                decoded_frames[-overlap_right:].detach().cpu().clone()
+            )
 
         # Baseline writes ``output_frames[shift_alpha:][:ori_frames]``: the model
         # renders the whole prefix + padded-new window, but only the newly loaded
