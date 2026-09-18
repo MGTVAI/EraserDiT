@@ -304,7 +304,10 @@ def read_mask_tensor(video_path: str) -> tuple[torch.Tensor, dict[str, object]]:
     return binarize_mask_tensor(tensor), metadata
 
 
-def read_mask_array(video_path: str) -> tuple[np.ndarray, dict[str, object]]:
+def read_mask_array(
+    video_path: str,
+    threshold_ratio: float = 0.3,
+) -> tuple[np.ndarray, dict[str, object]]:
     metadata = read_video_metadata(video_path)
     width = int(metadata["width"])
     height = int(metadata["height"])
@@ -321,7 +324,7 @@ def read_mask_array(video_path: str) -> tuple[np.ndarray, dict[str, object]]:
     num_frames = len(output) // frame_size
     array = np.frombuffer(output, np.uint8).reshape(num_frames, height, width).copy()
     metadata["num_frames"] = num_frames
-    return binarize_mask_array(array), metadata
+    return binarize_mask_array(array, threshold_ratio=threshold_ratio), metadata
 
 
 def frames_uint8_to_tensor(frames: np.ndarray) -> torch.Tensor:
@@ -359,9 +362,15 @@ def frames_tensor_to_uint8(frames: torch.Tensor) -> np.ndarray:
     )
 
 
-def _validate_video_io_thread_count(thread_count: int) -> int:
+def _validate_video_io_thread_count(thread_count: int | str) -> int | str:
+    if isinstance(thread_count, str):
+        # ffmpeg's own default; used when a caller must match an encoder
+        # invocation that passes no ``-threads`` at all.
+        if thread_count == "auto":
+            return thread_count
+        raise ValueError("thread_count must be a positive integer or 'auto'")
     if isinstance(thread_count, bool) or not isinstance(thread_count, int):
-        raise TypeError("thread_count must be a positive integer")
+        raise TypeError("thread_count must be a positive integer or 'auto'")
     if thread_count < 1:
         raise ValueError("thread_count must be a positive integer")
     return thread_count

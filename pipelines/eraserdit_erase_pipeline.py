@@ -8,6 +8,7 @@ EraserDiT algorithm, the windowing / commit / IO layer is the shared
 from __future__ import annotations
 
 import time
+from functools import partial
 from typing import Any
 
 import torch
@@ -37,7 +38,7 @@ from utils.inference_timing import record_diagnostic_stage
 from utils.logging_utils import init_logger
 from utils.video_io import (
     WindowedVideoStore,
-    read_mask_array,
+    read_mask_array as _read_mask_array,
     read_video_array,
     read_video_metadata,
 )
@@ -173,7 +174,13 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
             build_runtime_mask=_build_runtime_mask,
             read_video_metadata=read_video_metadata,
             read_video_array=read_video_array,
-            read_mask_array=read_mask_array,
+            # The baseline thresholds the raw mask stream at
+            # ``255/2 * mask_threshold`` (utils/pre.py:257); the shared reader
+            # defaults to 0.3*max, which drops the 5..76 mid-tones.
+            read_mask_array=partial(
+                _read_mask_array,
+                threshold_ratio=float(params.mask_threshold) / 2.0,
+            ),
             window_store_builder=WindowedVideoStore,
             memory_adapter=self._memory_adapter,
         )

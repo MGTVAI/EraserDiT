@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -75,7 +76,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-sequence-length", type=int, default=128)
     parser.add_argument("--dtype", type=str, default="bf16")
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--runtime-mode", type=str, default="windowed_streaming")
+    parser.add_argument(
+        "--runtime-mode",
+        type=str,
+        default="windowed_preload",
+        choices=["windowed_preload", "windowed_streaming"],
+        help="windowed_preload keeps uint8 frame caches (baseline-exact); "
+        "windowed_streaming uses bf16 caches and is only for very long inputs",
+    )
     parser.add_argument("--runtime-workdir", type=str, default=None)
     parser.add_argument("--resource-policy", type=str, default="fullgpu")
     return parser
@@ -168,6 +176,11 @@ def _load_tasks(args: argparse.Namespace) -> list[dict[str, Any]]:
 
 
 def main() -> None:
+    # The frozen baseline pipes frames through ffmpeg-python without
+    # ``-threads``, so ffmpeg picks its own default.  x264's thread count
+    # changes rate control and therefore the decoded pixels (measured ~2 dB
+    # at 1080x1920), so pin the same default here.
+    os.environ.setdefault("MGERASE_FFMPEG_THREADS", "auto")
     determinism = enable_deterministic_mode()
     parser = _build_parser()
     args = parser.parse_args()

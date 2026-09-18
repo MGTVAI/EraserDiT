@@ -134,6 +134,24 @@ class EraserDiTErasePreprocessStage(PipelineStage):
         batch.extra[PREFIX_LEN_KEY] = int(prefix_len)
         batch.extra[ORIG_SIZE_KEY] = (orig_h, orig_w)
 
+        import os as _os
+
+        _dump = _os.environ.get("ERASERDIT_DEBUG_DUMP")
+        if _dump:
+            torch.save(
+                {
+                    "padded_video": batch.padded_video.detach().to(torch.float16).cpu(),
+                    "padded_mask": batch.padded_mask.detach().to(torch.float16).cpu(),
+                    "mask_latents": mask_latents.detach().to(torch.float16).cpu(),
+                    "source_video": source_video.detach().to(torch.float16).cpu(),
+                    "source_mask": source_mask.detach().to(torch.float16).cpu(),
+                    "window_video": batch.video.detach().to(torch.float16).cpu(),
+                    "window_mask": batch.mask.detach().to(torch.float16).cpu(),
+                },
+                _dump,
+            )
+            self.log_info("debug dump written to %s", _dump)
+
         self.log_info(
             "%s | %s | frames=%d+%d->%d",
             field_summary("padded_video", batch.padded_video),

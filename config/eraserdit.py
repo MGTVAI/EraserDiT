@@ -83,7 +83,12 @@ class EraserDiTEraseSamplingParams(SamplingParams):
     negative_prompt: str | None = ERASERDIT_NEGATIVE_PROMPT
     # Whole-frame erase: no bbox cropping (plan §4.7).
     crop_flag: bool = False
-    runtime_mode: str = "windowed_streaming"
+    # The streaming runtime keeps its frame caches in bf16, which quantises both
+    # the model input and the committed frames; measured against the frozen
+    # baseline that costs ~1.2 dB on the non-erase region.  The preload runtime
+    # uses uint8 caches and matches the baseline exactly.  Streaming stays
+    # available (``--runtime-mode windowed_streaming``) for very long inputs.
+    runtime_mode: str = "windowed_preload"
     runtime_workdir: str | None = None
     # Output write contract (plan §4.10): libx264 / yuv420p / bit rate
     # ``bit_rate // 1e6`` M, overriding the shared profile builder.

@@ -24,10 +24,21 @@ def _create_output_writer(
     context: LTX095EraseRuntimeContext,
     params: LTX095EraseSamplingParams,
 ) -> SequentialVideoWriter:
+    # Resolve through the same knob the streaming writer uses so both runtime
+    # modes emit with identical encoder settings.
+    from videoerase.context import _resolve_ffmpeg_thread_count
+
+    request_batch = getattr(context, "request_batch", None)
+    thread_count = (
+        _resolve_ffmpeg_thread_count(request_batch)
+        if request_batch is not None
+        else 4
+    )
     if context.encoding_profile is not None:
         return SequentialVideoWriter(
             output_file_path,
             encoding_profile=context.encoding_profile,
+            thread_count=thread_count,
         )
     return SequentialVideoWriter(
         output_file_path,
@@ -35,6 +46,7 @@ def _create_output_writer(
         height=int(params.height),
         fps=context.fps,
         codec_name=context.codec_name,
+        thread_count=thread_count,
     )
 
 
