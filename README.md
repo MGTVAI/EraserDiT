@@ -36,23 +36,25 @@
 pip install -r requirements.txt
 ```
 
-The CUDA attention backends are optional. The default PyTorch SDPA backend
-works without them. To install the optional backends, use an environment with
-`nvcc` and a C++ toolchain:
+The pinned environment uses Python 3.10, Torch 2.6.0/cu126, and
+FlashAttention 2.8.3. Create a fresh environment and install Torch first so
+FlashAttention can build against the already-installed Torch:
 
 ```
-pip install --no-build-isolation -r requirements-optional.txt
+conda create -n EraserDiT python=3.10 -y
+conda activate EraserDiT
+pip install torch==2.6.0+cu126 torchvision==0.21.0+cu126 triton==3.2.0 \
+  --extra-index-url https://download.pytorch.org/whl/cu126
+CUDA_HOME=/usr/local/cuda-12.6 PATH=/usr/local/cuda-12.6/bin:$PATH \
+  MAX_JOBS=8 pip install --no-build-isolation -r requirements.txt
 ```
-
-`flash-attn` and `sageattention` are source builds; `--no-build-isolation` is
-required because their build scripts import the installed PyTorch package.
 ---
 ## 🧸 Inference
 EraserDiT requires >60GB GPU memory for a 2K‑resolution video. 
 Multi‑GPU support is in progress and will be open‑sourced later.
 ```
-conda activate eraze_dit
 export HF_ENDPOINT=https://hf-mirror.com
+conda activate EraserDiT
 CUDA_VISIBLE_DEVICES=3 python3 inference.py --vid_path data/10268234.mp4 --mask_path data/10268234_mask.mp4 --prompt "There is a bridge over the lake." 
 ```
 ---

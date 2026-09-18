@@ -1051,11 +1051,24 @@ class ModelMixin(torch.nn.Module, PushToHubMixin):
             "commit_hash": commit_hash,
             "dduf_entries": dduf_entries,
         }
-        index_file = _fetch_index_file(**index_file_kwargs)
+        # This project carries a newer copy of ModelMixin than the pinned
+        # diffusers release. Older diffusers do not yet accept dduf_entries.
+        # Pass only arguments supported by the installed helper.
+        supported_index_file_kwargs = {
+            key: value
+            for key, value in index_file_kwargs.items()
+            if key in inspect.signature(_fetch_index_file).parameters
+        }
+        index_file = _fetch_index_file(**supported_index_file_kwargs)
         # In case the index file was not found we still have to consider the legacy format.
         # this becomes applicable when the variant is not None.
         if variant is not None and (index_file is None or not os.path.exists(index_file)):
-            index_file = _fetch_index_file_legacy(**index_file_kwargs)
+            supported_legacy_kwargs = {
+                key: value
+                for key, value in index_file_kwargs.items()
+                if key in inspect.signature(_fetch_index_file_legacy).parameters
+            }
+            index_file = _fetch_index_file_legacy(**supported_legacy_kwargs)
         if index_file is not None and (dduf_entries or index_file.is_file()):
             is_sharded = True
 
@@ -1096,7 +1109,6 @@ class ModelMixin(torch.nn.Module, PushToHubMixin):
                     user_agent=user_agent,
                     revision=revision,
                     subfolder=subfolder or "",
-                    dduf_entries=dduf_entries,
                 )
             elif use_safetensors:
                 try:
@@ -1112,7 +1124,6 @@ class ModelMixin(torch.nn.Module, PushToHubMixin):
                         subfolder=subfolder,
                         user_agent=user_agent,
                         commit_hash=commit_hash,
-                        dduf_entries=dduf_entries,
                     )
 
                 except IOError as e:
@@ -1136,7 +1147,6 @@ class ModelMixin(torch.nn.Module, PushToHubMixin):
                     subfolder=subfolder,
                     user_agent=user_agent,
                     commit_hash=commit_hash,
-                    dduf_entries=dduf_entries,
                 )
 
         if not isinstance(resolved_model_file, list):
@@ -1167,7 +1177,7 @@ class ModelMixin(torch.nn.Module, PushToHubMixin):
         state_dict = None
         if not is_sharded:
             # Time to load the checkpoint
-            state_dict = load_state_dict(resolved_model_file[0], disable_mmap=disable_mmap, dduf_entries=dduf_entries)
+            state_dict = load_state_dict(resolved_model_file[0])
             # We only fix it for non sharded checkpoints as we don't need it yet for sharded one.
             model._fix_state_dict_keys_on_load(state_dict)
 
@@ -1420,7 +1430,7 @@ class ModelMixin(torch.nn.Module, PushToHubMixin):
             resolved_model_file = logging.tqdm(resolved_model_file, desc="Loading checkpoint shards")
 
         for shard_file in resolved_model_file:
-            state_dict = load_state_dict(shard_file, dduf_entries=dduf_entries)
+            state_dict = load_state_dict(shard_file)
 
             def _find_mismatched_keys(
                 state_dict,

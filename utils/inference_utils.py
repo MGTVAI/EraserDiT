@@ -15,12 +15,16 @@ def init(device, weight_dtype, pre_dir="jieeliu/EraserDiT"):
     base_model_path = f"{pre_dir}"
     noise_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
             base_model_path, subfolder="scheduler")
-    vae = AutoencoderKLLTXVideo.from_pretrained(base_model_path, subfolder="vae", use_safetensor=True)
+    vae = AutoencoderKLLTXVideo.from_pretrained(
+        base_model_path, subfolder="vae", use_safetensor=True, low_cpu_mem_usage=False
+    )
 
     text_encoder = T5EncoderModel.from_pretrained(base_model_path, subfolder="text_encoder", revision="main", variant=None,
                                                     torch_dtype=torch.bfloat16)
     tokenizer = T5Tokenizer.from_pretrained(base_model_path, subfolder="tokenizer")
-    ltx_model = LTXVideoTransformer3DModel.from_pretrained(base_model_path, subfolder="transformer", use_safetensor=True)
+    ltx_model = LTXVideoTransformer3DModel.from_pretrained(
+        base_model_path, subfolder="transformer", use_safetensor=True, low_cpu_mem_usage=False
+    )
     
     vae.eval()
     text_encoder.eval()
