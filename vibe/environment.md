@@ -313,3 +313,19 @@ python EraserDiT-baseline/compare_outputs.py \
   EraserDiT-baseline/results/2026-09-18T11-59-22-10268234/10268234_results_final_crop_False.mp4 \
   --mask data/10268234_mask.mp4
 ```
+
+## M2 服务端（2026-09-18/19）
+
+服务骨架改为模型适配器提供契约后，用 `scripts/service_smoke.py` 对 EraserDiT 做端到端验收，
+**全部通过**：11 个端点、严格请求契约（未声明字段 422）、任务生命周期到终态
+（`completed`，window/object 计数与指标齐备）、结果下载与删除。
+
+```
+./inference_server.sh --pipeline-name EraserDiTErasePipeline --model-path <snapshot> \
+  --task-root /tmp/mgerase_svc_tasks --input-allowed-root "$PWD/data"
+python scripts/service_smoke.py --base-url http://127.0.0.1:30000 \
+  --video data/10268234.mp4 --mask data/10268234_mask.mp4 --prompt "There is a bridge over the lake."
+```
+
+模型卡返回 `capability=eraserdit_video_erase`；`/server_info` 同时给出启动配置与
+`effective_acceleration`（注意力预检报告、算子融合决策含回退原因、编译开关）。

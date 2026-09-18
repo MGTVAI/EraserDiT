@@ -43,19 +43,19 @@ def request(
         method=method,
         headers={"content-type": "application/json"} if data else {},
     )
+    def _decode(raw: bytes):
+        # Binary payloads (the mp4 from /content) are returned as-is; anything
+        # else is expected to be JSON.
+        try:
+            return json.loads(raw)
+        except Exception:
+            return raw
+
     try:
         with urllib.request.urlopen(req, timeout=60) as response:
-            payload = response.read()
-            try:
-                return response.status, json.loads(payload)
-            except json.JSONDecodeError:
-                return response.status, payload
+            return response.status, _decode(response.read())
     except urllib.error.HTTPError as error:
-        raw = error.read()
-        try:
-            return error.code, json.loads(raw)
-        except json.JSONDecodeError:
-            return error.code, raw
+        return error.code, _decode(error.read())
 
 
 def main() -> int:
