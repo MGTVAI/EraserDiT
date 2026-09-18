@@ -137,6 +137,7 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
                 EraserDiTEraseDenoisingStage(
                     transformer=self.get_module("transformer"),
                     scheduler=self.get_module("scheduler"),
+                    server_args=server_args,
                 ),
                 EraserDiTEraseDecodingStage(),
                 EraserDiTEraseWindowPostprocessStage(),

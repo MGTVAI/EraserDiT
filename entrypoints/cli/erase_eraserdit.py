@@ -22,6 +22,7 @@ from config.eraserdit import (
 from config.server_args import ServerArgs
 from entrypoints.erase_runner import resolve_output_file_name
 from utils.distributed_runtime import destroy_runtime_distributed
+from utils.inference_timing import build_ltx095_pure_timing_payload
 from utils.determinism import enable_deterministic_mode
 from utils.logging_utils import init_logger
 from videoerase.session import EraseSession
@@ -243,6 +244,19 @@ def main() -> None:
                     "output_file_path": output_file_path,
                     "elapsed_seconds": elapsed,
                     "runtime_video_metadata": video_meta,
+                    "timing": build_ltx095_pure_timing_payload(
+                        result.metrics,
+                        extra={
+                            "torch_compile": result.extra.get("torch_compile"),
+                            "attention_backend": result.extra.get(
+                                "attention_backend"
+                            ),
+                            "operator_fusion": result.extra.get("operator_fusion"),
+                            "runtime_timing_seconds": result.extra.get(
+                                "runtime_timing_seconds"
+                            ),
+                        },
+                    ),
                 }
             )
         print(json.dumps({"tasks": results}, ensure_ascii=False, indent=2))

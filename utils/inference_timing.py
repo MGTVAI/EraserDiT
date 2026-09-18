@@ -12,12 +12,20 @@ from utils.perf_logger import RequestMetrics
 PURE_TIMING_ENV_VAR = "MGERASE_PURE_TIMING_JSON"
 DIAGNOSTIC_TIMING_ENV_VAR = "MGERASE_DIAGNOSTIC_TIMING"
 
+# Stage names whose metrics sum to "pure inference" (model work, excluding IO and
+# the window/commit machinery).  One entry per supported model family.
 PURE_INFERENCE_STAGE_NAMES = (
     "LTX095EraseConditionEncodingStage",
     "LTX095EraseLatentPreparationStage",
     "LTX095EraseTimestepPreparationStage",
     "LTX095EraseDenoisingStage",
     "LTX095EraseDecodingStage",
+    "EraserDiTEraseTextEncodingStage",
+    "EraserDiTEraseConditionEncodingStage",
+    "EraserDiTEraseLatentPreparationStage",
+    "EraserDiTEraseTimestepPreparationStage",
+    "EraserDiTEraseDenoisingStage",
+    "EraserDiTEraseDecodingStage",
 )
 
 

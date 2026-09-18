@@ -12,17 +12,27 @@ import torch
 
 from config.server_args import ServerArgs
 from nodes.schedule_batch import Req
-from nodes.stages.base import PipelineStage
+from nodes.stages.denoising import DenoisingStage
 from nodes.stages.model_specific_stages.eraserdit_erase._common import (
     field_summary,
     latent_frame_count,
 )
 
 
-class EraserDiTEraseDenoisingStage(PipelineStage):
-    def __init__(self, transformer, scheduler):
-        super().__init__()
-        self._transformer = transformer
+class EraserDiTEraseDenoisingStage(DenoisingStage):
+    """Denoising loop with optional torch.compile of the transformer.
+
+    Extends the shared ``DenoisingStage`` so the compile wrapper, its warmup
+    bookkeeping and the eager fallback all follow the framework's contract
+    (plan §M3).
+    """
+
+    def __init__(self, transformer, scheduler, server_args=None):
+        if server_args is None:
+            from config.server_args import get_global_server_args
+
+            server_args = get_global_server_args()
+        super().__init__(transformer, server_args)
         self._scheduler = scheduler
 
     def forward(self, batch: Req, server_args: ServerArgs) -> Req:
@@ -53,6 +63,15 @@ class EraserDiTEraseDenoisingStage(PipelineStage):
         model_dtype = prompt_embeds.dtype
         device = latents.device
 
+        # One static shape per window for this model family, so a single compiled
+        # graph covers every step; the signature is still recorded for reporting.
+        transformer_for_forward = self.select_transformer_for_forward(
+            transformer,
+            batch=batch,
+            local_shape=tuple(latents.shape),
+            dynamic_cfg=False,
+        )
+
         with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
             for step_index, timestep in enumerate(timesteps):
                 latent_model_input = latents.to(model_dtype)
@@ -60,7 +79,7 @@ class EraserDiTEraseDenoisingStage(PipelineStage):
                 mask_input = mask_values.to(device=device)
                 expanded_timestep = timestep.expand(1)
 
-                noise_pred_uncond = transformer(
+                noise_pred_uncond = transformer_for_forward(
                     hidden_states=latent_model_input,
                     encoder_hidden_states=negative_prompt_embeds,
                     timestep=expanded_timestep,
@@ -75,7 +94,7 @@ class EraserDiTEraseDenoisingStage(PipelineStage):
                     mask_values=mask_input,
                 )[0].float()
 
-                noise_pred_text = transformer(
+                noise_pred_text = transformer_for_forward(
                     hidden_states=latent_model_input,
                     encoder_hidden_states=prompt_embeds,
                     timestep=expanded_timestep,

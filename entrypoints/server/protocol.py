@@ -17,6 +17,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 
+class ErrorDetail(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    code: str
+    message: str
+    phase: str | None = None
+
+
 class ErrorResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     error: ErrorDetail

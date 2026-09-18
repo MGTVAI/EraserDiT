@@ -103,12 +103,6 @@ class MultipartVideoParameters(VideoSamplingRequest):
     """JSON carried by the optional multipart ``parameters`` field."""
 
 
-class ErrorDetail(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    code: str
-    message: str
-    phase: str | None = None
-
 
 
 
