@@ -33,6 +33,11 @@ from diffusers.models.embeddings import PixArtAlphaTextProjection
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
 # from diffusers.models.modeling_utils import ModelMixin
 from models.modeling_utils import ModelMixin
+from models.dits.eraserdit_block import forward_eraserdit_block
+from models.dits.eraserdit_attention import (
+    EraserDiTAttentionProcessor,
+    apply_rotary_emb,
+)
 from diffusers.models.normalization import AdaLayerNormSingle, RMSNorm
 
 
@@ -48,7 +53,7 @@ def normalize_latents(
     return latents
 
 
-class LTXVideoAttentionProcessor2_0:
+class LTXVideoAttentionProcessor2_0:  # noqa: N801 - reference implementation
     r"""
     Processor for implementing scaled dot-product attention (enabled by default if you're using PyTorch 2.0). This is
     used in the LTX model. It applies a normalization layer and rotary embedding on the query and key vector.
@@ -252,7 +257,7 @@ class LTXVideoTransformerBlock(nn.Module):
             cross_attention_dim=None,
             out_bias=attention_out_bias,
             qk_norm=qk_norm,
-            processor=LTXVideoAttentionProcessor2_0(),
+            processor=EraserDiTAttentionProcessor(),
         )
 
         self.norm2 = RMSNorm(dim, eps=eps, elementwise_affine=elementwise_affine)
@@ -265,7 +270,7 @@ class LTXVideoTransformerBlock(nn.Module):
             bias=attention_bias,
             out_bias=attention_out_bias,
             qk_norm=qk_norm,
-            processor=LTXVideoAttentionProcessor2_0(),
+            processor=EraserDiTAttentionProcessor(),
         )
 
         self.ff = FeedForward(dim, activation_fn=activation_fn)
@@ -404,6 +409,14 @@ class EraserDiTLTXVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalM
         self.proj_out = nn.Linear(inner_dim, out_channels)
 
         self.gradient_checkpointing = False
+        # Resolved once at construction: the fusion decision is fixed for the
+        # lifetime of the resident process (plan §M3).
+        from layers.operator_fusion.registry import get_operator_fusion_decision
+        from config.server_args import get_global_server_args
+
+        self.operator_fusion_decision = get_operator_fusion_decision(
+            get_global_server_args()
+        )
 
     def forward(
         self,
@@ -478,12 +491,14 @@ class EraserDiTLTXVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalM
                     encoder_attention_mask,
                 )
             else:
-                hidden_states = block(
-                    hidden_states=hidden_states,
-                    encoder_hidden_states=encoder_hidden_states,
-                    temb=temb,
-                    image_rotary_emb=image_rotary_emb,
-                    encoder_attention_mask=encoder_attention_mask,
+                hidden_states = forward_eraserdit_block(
+                    block,
+                    hidden_states,
+                    encoder_hidden_states,
+                    temb,
+                    image_rotary_emb,
+                    encoder_attention_mask,
+                    decision=self.operator_fusion_decision,
                 )
 
         scale_shift_values = self.scale_shift_table[None, None] + embedded_timestep[:, :, None]
@@ -579,12 +594,6 @@ class EraserDiTLTXVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalM
         return model
 
 
-def apply_rotary_emb(x, freqs):
-    cos, sin = freqs
-    x_real, x_imag = x.unflatten(2, (-1, 2)).unbind(-1)  # [B, S, H, D // 2]
-    x_rotated = torch.stack([-x_imag, x_real], dim=-1).flatten(2)
-    out = (x.float() * cos + x_rotated.float() * sin).to(x.dtype)
-    return out
 
 def pack_latents(latents: torch.Tensor, patch_size: int = 1, patch_size_t: int = 1) -> torch.Tensor:
     # Unpacked latents of shape are [B, C, F, H, W] are patched into tokens of shape [B, C, F // p_t, p_t, H // p, p, W // p, p].

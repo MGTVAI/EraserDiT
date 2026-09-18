@@ -86,6 +86,22 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--runtime-workdir", type=str, default=None)
     parser.add_argument("--resource-policy", type=str, default="fullgpu")
+    parser.add_argument(
+        "--attention-backend",
+        type=str,
+        default="sdpa",
+        choices=["auto", "sdpa", "flash_attn", "sage_attn", "sage_fp8"],
+    )
+    parser.add_argument(
+        "--enable-torch-compile", action=argparse.BooleanOptionalAction, default=False
+    )
+    parser.add_argument(
+        "--operator-fusion-backend",
+        type=str,
+        default="disabled",
+        choices=["disabled", "auto", "triton"],
+    )
+    parser.add_argument("--operator-fusion-ops", type=str, default=None)
     return parser
 
 
@@ -103,6 +119,10 @@ def _build_server_args(args: argparse.Namespace) -> ServerArgs:
         resource_policy=args.resource_policy,
         pipeline_config=pipeline_config,
         component_architectures=dict(pipeline_config.component_architectures),
+        attention_backend=args.attention_backend,
+        enable_torch_compile=bool(args.enable_torch_compile),
+        operator_fusion_backend=args.operator_fusion_backend,
+        operator_fusion_ops=args.operator_fusion_ops,
     )
 
 

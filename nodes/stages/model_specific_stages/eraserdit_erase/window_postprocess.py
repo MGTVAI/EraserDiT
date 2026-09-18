@@ -76,8 +76,8 @@ class EraserDiTEraseWindowPostprocessStage(PipelineStage):
 
         aligned = eraser_dit_window_output(
             generated,
-            style_video.to(generated.device, torch.float32),
-            style_mask.to(generated.device, torch.float32),
+            style_video.to(device=generated.device, dtype=torch.float32) / 255.0,
+            style_mask.to(device=generated.device, dtype=torch.float32),
             colorfix_type=str(batch.colorfix_type),
             per_channel=bool(batch.colorfix_per_channel),
         )

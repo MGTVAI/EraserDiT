@@ -145,10 +145,43 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
         )
 
     def initialize_pipeline(self, server_args: ServerArgs) -> None:
-        del server_args
         self._closed = False
         self._memory_adapter = self._build_memory_adapter()
         self.memory_registration_summary = self._memory_adapter.snapshot()
+        self._report_attention_backend(server_args)
+
+    def _report_attention_backend(self, server_args: ServerArgs) -> None:
+        """Resolve the self-attention backend once, at startup.
+
+        ``auto`` may fall back (Sage -> Flash -> SDPA); the resolved value and
+        the reasons are what ``/server_info`` must report (plan §M2/§M3).
+        """
+        transformer = self.get_module("transformer")
+        block = getattr(transformer, "transformer_blocks", None)
+        processor = None
+        if block:
+            processor = getattr(getattr(block[0], "attn1", None), "processor", None)
+        if processor is None or not hasattr(
+            processor, "preflight_self_attention_backend"
+        ):
+            self.attention_backend_report = {
+                "requested": str(getattr(server_args, "attention_backend", "sdpa")),
+                "effective": None,
+                "fallback_reasons": ["transformer has no backend-aware processor"],
+                "fallback_count": 1,
+            }
+        else:
+            self.attention_backend_report = dict(
+                processor.preflight_self_attention_backend(
+                    device=torch.device(server_args.device),
+                    dtype=server_args.resolve_component_dtype("transformer")
+                    or torch.bfloat16,
+                    head_size=64,
+                    num_heads=32,
+                )
+            )
+        server_args.attention_backend_report = dict(self.attention_backend_report)
+        logger.info("Attention backend preflight: %s", self.attention_backend_report)
 
     def _build_memory_adapter(self) -> ModelMemoryAdapter:
         return ModelMemoryAdapter()
