@@ -266,17 +266,35 @@ import 全量改写为无前缀形式；原版 `models/{transformer_ltx,autoenco
 
 第一组实测（40 步、同 seed、同权重、两侧确定性口径，`compare_outputs.py` 口径）：
 
-| 口径 | 非擦除区左 / 右条带 | 整帧 |
+| 阶段 | 非擦除区左 / 右条带 | 整帧 |
 | --- | --- | --- |
 | streaming + 修复前写出 | 0.9892 / 0.9880，37.87 / 37.93 dB | 0.9871 / 37.92 dB |
-| preload + 修复后写出 | **0.9902 / 0.9893**，**39.22 / 39.46 dB** | 0.9884 / 39.60 dB |
+| 修复写出侧三处后 | 0.9902 / 0.9893，39.22 / 39.46 dB | 0.9884 / 39.60 dB |
+| 掩码改 RGB 解码后（终值） | **0.9911 / 0.9906，40.54 / 40.69 dB** | 0.9897 / 40.89 dB |
 
-参照：基线自身在**非**确定性口径下四轮互差为 0.9889–0.9901 / 38.67–39.02 dB。当前已优于该自洽
-下限，左条带 SSIM 已过 0.99，但 PSNR 距 40 dB 门禁仍差约 0.5–0.8 dB。
+**M1b 门禁通过**（非擦除区 SSIM ≥ 0.99、PSNR ≥ 40 dB）：左/右条带 0.9911 / 0.9906、
+40.54 / 40.69 dB。逐像素非擦除口径同量级（0.9895 / 40.55 dB）。整帧 PSNR 40.89 dB 亦达标；
+整帧 SSIM 0.9897 高于基线自洽上限 0.9881（即具备区分度），但低于辅助项字面阈值 0.995，
+按辅助项如实记录。mask 内与边缘逐帧目视：人物干净移除，栈桥纹理重建正常，无残留、无损坏、
+无新增时序退化。
 
-另已验证：写入侧的 AdaIN 与 8 位量化在同一份解码帧上**逐位相同**；同一份帧经两边写出器编码，
-`-threads auto` 下产物**逐字节相同**；decord 与 ffmpeg 对四个输入的解码**逐字节相同**。
+端到端 313.2 s（确定性口径），对基线 337.0 s 为 0.93×，远低于稳定性门禁 1.15×。
 
-**残余差异未定位。** 由于模型路径、AdaIN、量化、编码器都已验证一致，残余只能来自真实运行时
-喂给模型的窗口张量与对照实验所用张量之间存在差异；正在用 `ERASERDIT_DEBUG_DUMP` 导出
-preload 模式下的 `padded_video` / `padded_mask` 与原版逐位比对。
+复现命令：
+
+```bash
+HF_HUB_OFFLINE=1 ./inference_cli.sh \
+  --model-path /root/.cache/huggingface/hub/models--jieeliu--EraserDiT/snapshots/904fb412da76235085dbbccaefdbde4979fa3d29 \
+  --video-input data/10268234.mp4 --mask-input data/10268234_mask.mp4 \
+  --output-path results/m1b/final2_10268234.mp4 \
+  --prompt "There is a bridge over the lake."
+```
+
+对照命令：
+
+```bash
+python EraserDiT-baseline/compare_outputs.py \
+  results/m1b/final2_10268234.mp4 \
+  EraserDiT-baseline/results/2026-09-18T11-59-22-10268234/10268234_results_final_crop_False.mp4 \
+  --mask data/10268234_mask.mp4
+```
