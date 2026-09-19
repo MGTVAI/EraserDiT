@@ -105,6 +105,22 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["disabled", "auto", "triton"],
     )
     parser.add_argument("--operator-fusion-ops", type=str, default=None)
+    parser.add_argument(
+        "--warmup",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Run an optional request-level warmup before the formal request.  "
+            "This is where torch.compile pays its Inductor autotune, so it is "
+            "what keeps that one-off cost out of the task's own timing."
+        ),
+    )
+    parser.add_argument(
+        "--warmup-steps",
+        type=int,
+        default=1,
+        help="Denoising steps used by the optional request-level warmup.",
+    )
     return parser
 
 
@@ -126,6 +142,8 @@ def _build_server_args(args: argparse.Namespace) -> ServerArgs:
         enable_torch_compile=bool(args.enable_torch_compile),
         operator_fusion_backend=args.operator_fusion_backend,
         operator_fusion_ops=args.operator_fusion_ops,
+        warmup=bool(args.warmup),
+        warmup_steps=args.warmup_steps,
     )
 
 
@@ -235,8 +253,22 @@ def main() -> None:
                 Path(params.output_path, params.output_file_name),
             )
             started = time.perf_counter()
-            result = session.run(params, request_extra={"task_id": task_id})
+            # The pipeline is resident for the whole task list, so the warmup
+            # is worth paying exactly once.
+            result = session.run(
+                params,
+                warmup_steps=(
+                    int(server_args.warmup_steps) if args.warmup and index == 0 else None
+                ),
+                request_extra={"task_id": task_id},
+            )
             elapsed = time.perf_counter() - started
+            # `elapsed` is the raw wall clock of the whole call, warmup
+            # included; the warmup is listed separately and netted out of the
+            # reported end-to-end so a first-run cost never masquerades as
+            # steady-state throughput.
+            warmup = result.extra.get("warmup") or {}
+            warmup_seconds = float(warmup.get("duration_seconds") or 0.0)
             output_file_path = result.extra.get("output_file_path")
             video_meta = result.extra.get("runtime_video_metadata", {})
             logger.info(
@@ -252,6 +284,8 @@ def main() -> None:
                     "id": task_id,
                     "output_file_path": output_file_path,
                     "elapsed_seconds": elapsed,
+                    "e2e_seconds_excluding_warmup": elapsed - warmup_seconds,
+                    "warmup": warmup,
                     "runtime_video_metadata": video_meta,
                     "timing": build_ltx095_pure_timing_payload(
                         result.metrics,

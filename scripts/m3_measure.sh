@@ -77,7 +77,10 @@ record = {
     "run": int(run),
     "failed": False,
     "wall_seconds": wall,
-    "e2e_seconds": task.get("elapsed_seconds"),
+    # Older records predate the warmup split and only carry elapsed_seconds.
+    "e2e_seconds": task.get("e2e_seconds_excluding_warmup", task.get("elapsed_seconds")),
+    "e2e_seconds_including_warmup": task.get("elapsed_seconds"),
+    "warmup_seconds": (task.get("warmup") or {}).get("duration_seconds"),
     "pure_inference_seconds": timing.get("pure_inference_seconds"),
     "stages_ms": timing.get("pure_inference_stage_breakdown_ms"),
     "step_median_ms": timing.get("step_median_ms"),

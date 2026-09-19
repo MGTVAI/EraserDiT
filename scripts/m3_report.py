@@ -120,6 +120,9 @@ def main() -> int:
             "reserved": median(
                 [r["peak_reserved_gib"] for r in ok if r.get("peak_reserved_gib")]
             ),
+            "warmup": median(
+                [r["warmup_seconds"] for r in ok if r.get("warmup_seconds")]
+            ),
             "backend": effective_backend(results_dirs, config),
         }
 
@@ -131,7 +134,7 @@ def main() -> int:
     )
     header = (
         f"{'config':16s} {'backend':12s} {'t_e2e':>8s} {'Δe2e':>7s} "
-        f"{'t_den':>8s} {'Δden':>7s} {'step':>7s} {'resvGiB':>8s} "
+        f"{'t_den':>8s} {'Δden':>7s} {'step':>7s} {'warm':>6s} {'resvGiB':>8s} "
         f"{'SSIM':>6s} {'PSNR':>7s} {'gate':>6s}"
     )
     print(header)
@@ -170,7 +173,8 @@ def main() -> int:
             f"{config:16s} {str(row['backend']):12s} "
             f"{row['e2e'] or 0:8.1f} {e2e_gain * 100 if e2e_gain else 0:+6.1f}% "
             f"{row['denoise'] or 0:8.1f} {den_gain * 100 if den_gain else 0:+6.1f}% "
-            f"{row['step_med'] or 0:7.0f} {row['reserved'] or 0:8.2f} "
+            f"{row['step_med'] or 0:7.0f} {row['warmup'] or 0:6.1f} "
+            f"{row['reserved'] or 0:8.2f} "
             f"{ssim or 0:6.4f} {psnr or 0:7.2f} {'PASS' if passes else 'fail':>6s}"
         )
     print("\n".join(rows))
