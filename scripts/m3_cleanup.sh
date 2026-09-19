@@ -34,6 +34,14 @@ echo "### fusion_all_sage ($REPEATS repeats)"
 "$HERE/m3_measure.sh" fusion_all_sage "$REPEATS" \
   --attention-backend sage_attn --operator-fusion-backend triton
 
+# `fusion_qk` as a whole beat `fusion_all` under sdpa in the main sweep while
+# the probe saw the opposite under sage, both on two repeats.  Five each, on
+# one card, settles which of the two fused ops actually pays.
+echo "### fusion_qk_sage ($REPEATS repeats)"
+"$HERE/m3_measure.sh" fusion_qk_sage "$REPEATS" \
+  --attention-backend sage_attn --operator-fusion-backend triton \
+  --operator-fusion-ops qk_rmsnorm_rope
+
 echo "### sage_compile_default ($REPEATS repeats, screening)"
 MGERASE_TORCH_COMPILE_MODE=default \
   "$HERE/m3_measure.sh" sage_compile_default "$REPEATS" \
