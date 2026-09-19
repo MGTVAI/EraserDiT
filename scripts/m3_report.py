@@ -94,7 +94,17 @@ def main() -> int:
     )
     args = parser.parse_args()
     results_dirs = [Path(value) for value in args.results_dir]
-    video_dir = Path(args.video_dir) if args.video_dir else results_dirs[0]
+    video_dirs = (
+        [Path(args.video_dir)] if args.video_dir else list(reversed(results_dirs))
+    )
+
+    def find_video(config: str) -> Path | None:
+        """First `<config>_run1.mp4` in any result directory, newest dir first."""
+        for directory in video_dirs:
+            candidate = directory / f"{config}_run1.mp4"
+            if candidate.exists():
+                return candidate
+        return None
 
     sweep = read_sweep(results_dirs)
     if args.reference not in sweep:
@@ -127,7 +137,7 @@ def main() -> int:
         }
 
     base = stats(args.reference)
-    reference_video = video_dir / f"{args.reference}_run1.mp4"
+    reference_video = find_video(args.reference)
     print(
         f"N = {args.reference}  (effective backend {base['backend']}, "
         f"runs {base['runs']}, failed {base['failed']})\n"
@@ -153,9 +163,10 @@ def main() -> int:
             if base["denoise"] and row["denoise"]
             else None
         )
-        video = video_dir / f"{config}_run1.mp4"
-        ssim = ffmpeg_metric(reference_video, video, "ssim") if video.exists() else None
-        psnr = ffmpeg_metric(reference_video, video, "psnr") if video.exists() else None
+        video = find_video(config)
+        comparable = video is not None and reference_video is not None
+        ssim = ffmpeg_metric(reference_video, video, "ssim") if comparable else None
+        psnr = ffmpeg_metric(reference_video, video, "psnr") if comparable else None
         reserved_ok = (
             row["reserved"] <= base["reserved"] * MAX_RESERVED_RATIO
             if row["reserved"] and base["reserved"]
