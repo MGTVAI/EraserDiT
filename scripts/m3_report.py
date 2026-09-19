@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Aggregate the M3 sweep into the plan's report matrix.
 
-    python scripts/m3_report.py [--results-dir results/m3] [--reference sdpa]
+    python scripts/m3_report.py --results-dir results/m3 results/m3-clean
 
 Timings come from the per-repeat JSONL, quality from comparing each config's
 first repeat against the reference (`sdpa` is the unaccelerated architecture
 N).  SSIM/PSNR are computed with ffmpeg's own filters on the whole frame, the
 same yardstick the M1b gates use.
+
+Multiple result directories merge left to right, so a re-measured config
+overrides its earlier row; videos come from `--video-dir` (default: the first
+directory) since the merged JSONL does not say where a run was written.
 """
 
 from __future__ import annotations
@@ -32,27 +36,33 @@ def median(values: list[float]) -> float | None:
     return statistics.median(values) if values else None
 
 
-def read_sweep(results_dir: Path) -> dict[str, list[dict]]:
+def read_sweep(results_dirs: list[Path]) -> dict[str, list[dict]]:
+    """Merge the result directories; a later directory overrides an earlier one.
+
+    That is what lets `results/m3-clean` replace the configs the main sweep
+    measured while a second stream was competing for the host.
+    """
     sweep: dict[str, list[dict]] = {}
-    for path in sorted(results_dir.glob("*.jsonl")):
-        records = [
-            json.loads(line)
-            for line in path.read_text().splitlines()
-            if line.strip()
-        ]
-        sweep[path.stem] = records
+    for results_dir in results_dirs:
+        for path in sorted(results_dir.glob("*.jsonl")):
+            sweep[path.stem] = [
+                json.loads(line)
+                for line in path.read_text().splitlines()
+                if line.strip()
+            ]
     return sweep
 
 
-def effective_backend(results_dir: Path, config: str) -> str | None:
+def effective_backend(results_dirs: list[Path], config: str) -> str | None:
     """The backend `auto` actually resolved to, read off the run log."""
-    for log in sorted(results_dir.glob(f"{config}_run*.log")):
-        match = PREFLIGHT_RE.search(log.read_text(errors="replace"))
-        if match:
-            try:
-                return json.loads(match.group(1).replace("'", '"')).get("effective")
-            except json.JSONDecodeError:
-                return None
+    for results_dir in reversed(results_dirs):
+        for log in sorted(results_dir.glob(f"{config}_run*.log")):
+            match = PREFLIGHT_RE.search(log.read_text(errors="replace"))
+            if match:
+                try:
+                    return json.loads(match.group(1).replace("'", '"')).get("effective")
+                except json.JSONDecodeError:
+                    return None
     return None
 
 
@@ -75,12 +85,18 @@ def ffmpeg_metric(a: Path, b: Path, filt: str) -> float | None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--results-dir", default="results/m3")
+    parser.add_argument("--results-dir", nargs="+", default=["results/m3"])
     parser.add_argument("--reference", default="sdpa")
+    parser.add_argument(
+        "--video-dir",
+        default=None,
+        help="directory holding <config>_run1.mp4 (defaults to the first --results-dir)",
+    )
     args = parser.parse_args()
-    results_dir = Path(args.results_dir)
+    results_dirs = [Path(value) for value in args.results_dir]
+    video_dir = Path(args.video_dir) if args.video_dir else results_dirs[0]
 
-    sweep = read_sweep(results_dir)
+    sweep = read_sweep(results_dirs)
     if args.reference not in sweep:
         raise SystemExit(f"reference config {args.reference!r} has no results")
 
@@ -104,11 +120,11 @@ def main() -> int:
             "reserved": median(
                 [r["peak_reserved_gib"] for r in ok if r.get("peak_reserved_gib")]
             ),
-            "backend": effective_backend(results_dir, config),
+            "backend": effective_backend(results_dirs, config),
         }
 
     base = stats(args.reference)
-    reference_video = results_dir / f"{args.reference}_run1.mp4"
+    reference_video = video_dir / f"{args.reference}_run1.mp4"
     print(
         f"N = {args.reference}  (effective backend {base['backend']}, "
         f"runs {base['runs']}, failed {base['failed']})\n"
@@ -134,7 +150,7 @@ def main() -> int:
             if base["denoise"] and row["denoise"]
             else None
         )
-        video = results_dir / f"{config}_run1.mp4"
+        video = video_dir / f"{config}_run1.mp4"
         ssim = ffmpeg_metric(reference_video, video, "ssim") if video.exists() else None
         psnr = ffmpeg_metric(reference_video, video, "psnr") if video.exists() else None
         reserved_ok = (
