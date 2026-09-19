@@ -295,7 +295,11 @@ class EraserDiTAttentionProcessor:
         query = attn.to_q(hidden_states)
         key = attn.to_k(encoder_hidden_states)
         value = attn.to_v(encoder_hidden_states)
-        # EraserDiT's cross-attention carries no Q/K norm and no RoPE.
+        # The reference processor applies ``norm_q``/``norm_k`` unconditionally,
+        # so cross-attention is normalised too.  Only RoPE is self-attention
+        # specific (``attn2`` is always called with ``image_rotary_emb=None``).
+        query = attn.norm_q(query)
+        key = attn.norm_k(key)
         query = query.unflatten(2, (attn.heads, -1)).transpose(1, 2)
         key = key.unflatten(2, (attn.heads, -1)).transpose(1, 2)
         value = value.unflatten(2, (attn.heads, -1)).transpose(1, 2)
