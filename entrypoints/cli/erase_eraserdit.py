@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import torch
+
 from config.eraserdit import (
     ERASERDIT_NEGATIVE_PROMPT,
     EraserDiTEraseSamplingParams,
@@ -213,7 +215,14 @@ def main() -> None:
 
     session = None
     try:
+        load_start = time.perf_counter()
         session = EraseSession(server_args)
+        # t_load is reported on its own and excluded from the end-to-end and
+        # memory numbers, so both counters start after the weights are resident.
+        load_seconds = time.perf_counter() - load_start
+        cuda_device = str(server_args.device).startswith("cuda")
+        if cuda_device:
+            torch.cuda.reset_peak_memory_stats()
         results: list[dict[str, Any]] = []
         for index, task in enumerate(tasks):
             task_id = str(task.get("id") or f"task{index:03d}")
@@ -254,6 +263,17 @@ def main() -> None:
                             "operator_fusion": result.extra.get("operator_fusion"),
                             "runtime_timing_seconds": result.extra.get(
                                 "runtime_timing_seconds"
+                            ),
+                            "load_seconds": load_seconds,
+                            "peak_allocated_gib": (
+                                torch.cuda.max_memory_allocated() / (1024**3)
+                                if cuda_device
+                                else None
+                            ),
+                            "peak_reserved_gib": (
+                                torch.cuda.max_memory_reserved() / (1024**3)
+                                if cuda_device
+                                else None
                             ),
                         },
                     ),

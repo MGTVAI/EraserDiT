@@ -66,6 +66,7 @@ except Exception:
                              "error": "no json payload"}) + "\n")
     sys.exit(0)
 timing = task.get("timing", {})
+extra = timing.get("extra") or {}
 record = {
     "config": config,
     "run": int(run),
@@ -74,10 +75,15 @@ record = {
     "e2e_seconds": task.get("elapsed_seconds"),
     "pure_inference_seconds": timing.get("pure_inference_seconds"),
     "stages_ms": timing.get("pure_inference_stage_breakdown_ms"),
-    "torch_compile": (timing.get("extra") or {}).get("torch_compile"),
-    "attention_backend": (timing.get("extra") or {}).get("attention_backend"),
-    "operator_fusion": (timing.get("extra") or {}).get("operator_fusion"),
-    "runtime_timing_seconds": (timing.get("extra") or {}).get("runtime_timing_seconds"),
+    "step_median_ms": timing.get("step_median_ms"),
+    "step_times_ms": timing.get("step_times_ms"),
+    "load_seconds": extra.get("load_seconds"),
+    "peak_allocated_gib": extra.get("peak_allocated_gib"),
+    "peak_reserved_gib": extra.get("peak_reserved_gib"),
+    "torch_compile": extra.get("torch_compile"),
+    "attention_backend": extra.get("attention_backend"),
+    "operator_fusion": extra.get("operator_fusion"),
+    "runtime_timing_seconds": extra.get("runtime_timing_seconds"),
 }
 with open(out, "a") as fh:
     fh.write(json.dumps(record) + "\n")

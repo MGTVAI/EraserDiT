@@ -42,6 +42,30 @@ def record_diagnostic_stage(
         metrics.record_stage(stage_name, duration_s)
 
 
+def _step_stats(metrics: RequestMetrics | None) -> dict[str, Any]:
+    """Per-step durations, in order, plus the median.
+
+    The order matters for the report matrix's first-run row: Inductor's
+    autotune lands in the leading steps, so the warmup cost is the gap between
+    the first entries and the median rather than a separately measurable span.
+    """
+    steps = list(metrics.steps) if metrics is not None else []
+    if not steps:
+        return {"step_times_ms": [], "step_median_ms": None, "step_count": 0}
+    ordered = sorted(steps)
+    middle = len(ordered) // 2
+    median = (
+        ordered[middle]
+        if len(ordered) % 2
+        else (ordered[middle - 1] + ordered[middle]) / 2.0
+    )
+    return {
+        "step_times_ms": [round(value, 3) for value in steps],
+        "step_median_ms": round(median, 3),
+        "step_count": len(steps),
+    }
+
+
 def build_ltx095_pure_timing_payload(
     metrics: RequestMetrics | None,
     *,
@@ -57,6 +81,7 @@ def build_ltx095_pure_timing_payload(
             "pure_inference_stage_counts": {},
             "pure_inference_operation_counts": {},
             "pipeline_total_seconds": None,
+            **_step_stats(None),
             "extra": extra_payload,
         }
 
@@ -83,6 +108,7 @@ def build_ltx095_pure_timing_payload(
             if metrics.total_duration_ms > 0.0
             else None
         ),
+        **_step_stats(metrics),
         "extra": extra_payload,
     }
     if diagnostic_timing_enabled():

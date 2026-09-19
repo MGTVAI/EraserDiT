@@ -8,6 +8,8 @@ this stage issues directly.
 
 from __future__ import annotations
 
+import time
+
 import torch
 
 from config.server_args import ServerArgs
@@ -17,6 +19,16 @@ from nodes.stages.model_specific_stages.eraserdit_erase._common import (
     field_summary,
     latent_frame_count,
 )
+
+
+def self_attention_backend_report(transformer) -> dict | None:
+    """Effective self-attention backend, read off a live block processor."""
+    blocks = getattr(transformer, "transformer_blocks", None)
+    if not blocks:
+        return None
+    processor = getattr(blocks[0].attn1, "processor", None)
+    report = getattr(processor, "attention_backend_report", None)
+    return dict(report()) if callable(report) else None
 
 
 class EraserDiTEraseDenoisingStage(DenoisingStage):
@@ -74,6 +86,7 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
 
         with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
             for step_index, timestep in enumerate(timesteps):
+                step_start = time.perf_counter()
                 latent_model_input = latents.to(model_dtype)
                 cond_input = cond_latents.to(device=device)
                 mask_input = mask_values.to(device=device)
@@ -114,9 +127,16 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
                 )
                 latents = scheduler.step(noise_pred, timestep, latents, return_dict=False)[0]
                 batch.step_index = step_index
+                if batch.metrics is not None:
+                    batch.metrics.record_step(time.perf_counter() - step_start)
 
         if batch.metrics is not None:
             batch.metrics.record_operation("denoise")
+        # Report the backend the forwards actually resolved to, not the request:
+        # `auto` picks one at runtime and the matrix must record which.
+        backend_report = self_attention_backend_report(self._transformer)
+        if backend_report is not None:
+            batch.extra["attention_backend"] = backend_report
         batch.noise_pred = noise_pred
         batch.latents = latents
         self.log_info(

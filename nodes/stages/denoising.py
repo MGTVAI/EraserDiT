@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -38,6 +39,10 @@ class CompileStatus:
     applied: bool = False
     mode: str | None = None
     fallback_reason: str | None = None
+    # Wall time of the ``torch.compile`` call itself.  The Inductor autotune
+    # lands in the first compiled forward instead, so that shows up as the
+    # leading entries of the step histogram rather than here.
+    compile_seconds: float | None = None
     signature_hits: int = 0
     signature_misses: int = 0
     signatures: list[CompileSignature] = field(default_factory=list)
@@ -104,6 +109,7 @@ class DenoisingStage(PipelineStage):
         mode = resolve_torch_compile_mode()
         self._compile_status.mode = mode
         self._configure_inductor_for_cuda()
+        compile_start = time.perf_counter()
         try:
             self._compiled_transformer = torch.compile(
                 self._transformer,
@@ -117,6 +123,7 @@ class DenoisingStage(PipelineStage):
             )
             self._compiled_transformer = None
             return
+        self._compile_status.compile_seconds = time.perf_counter() - compile_start
         self._compile_status.applied = True
 
     def _configure_inductor_for_cuda(self) -> None:
