@@ -17,17 +17,22 @@ MODEL="${ERASERDIT_MODEL:-/root/.cache/huggingface/hub/models--jieeliu--EraserDi
 VIDEO="${M3_VIDEO:-data/10268234.mp4}"
 MASK="${M3_MASK:-data/10268234_mask.mp4}"
 PROMPT="${M3_PROMPT:-There is a bridge over the lake.}"
-OUT_DIR="results/m3"
+OUT_DIR="${M3_OUT_DIR:-results/m3}"
+# A second stream on another card must skip the guard and pin its GPU; the
+# guard stays on by default because two processes on one card OOM.
+NO_GUARD="${M3_NO_GUARD:-0}"
 mkdir -p "$OUT_DIR"
 
-# Never stack two inference processes: they each need ~45 GiB and would OOM.
-while pgrep -f "^/mnt/shanhai-ai/envs/conda/envs/EraserDiT/bin/python -m entrypoints" >/dev/null; do
-  echo "waiting for the running inference process to finish..."
-  sleep 30
-done
+if [ "$NO_GUARD" != "1" ]; then
+  # Never stack two inference processes: they each need ~45 GiB and would OOM.
+  while pgrep -f "^/mnt/shanhai-ai/envs/conda/envs/EraserDiT/bin/python -m entrypoints" >/dev/null; do
+    echo "waiting for the running inference process to finish..."
+    sleep 30
+  done
+fi
 
-GPU=$(nvidia-smi --query-gpu=index,memory.total,memory.used --format=csv,noheader,nounits |
-      awk -F, '{g=$2-$3; if (g+0>m+0){m=g; idx=$1}} END {print idx}')
+GPU="${M3_GPU:-$(nvidia-smi --query-gpu=index,memory.total,memory.used --format=csv,noheader,nounits |
+      awk -F, '{g=$2-$3; if (g+0>m+0){m=g; idx=$1}} END {print idx}')}"
 FREE=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits -i "$GPU")
 echo "config=$CONFIG repeats=$REPEATS gpu=$GPU free=${FREE}MiB args: $*"
 
