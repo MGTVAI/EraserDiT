@@ -151,6 +151,8 @@ tmp*.txt
 
 # Repo-specific exceptions
 !logo.png
+# Sample task files are delivery artefacts, not generated output.
+!tasks/*.json
 
 results/
 

@@ -1,49 +1,73 @@
 # syntax=docker/dockerfile:1
-# Build context: repository root
-# docker build -f docker/base.dockerfile -t erasedit:ltx095-cu126 .
-
+# EraserDiT runtime image.  Build context: repository root.
+#
+#   docker build -f docker/base.dockerfile -t erasedit:cu126 .
+#
+# The model snapshot is not baked in; mount it and pass --model-path.  The
+# launchers already default HF_HUB_OFFLINE=1, so a missing path fails loudly
+# instead of stalling on huggingface.co.
+#
+#   docker run --gpus all --rm -it \
+#       -v /path/to/snapshot:/models/eraserdit:ro \
+#       -v "$PWD/data:/workspace/EraserDiT/data:ro" \
+#       -v "$PWD/results:/workspace/EraserDiT/results" \
+#       erasedit:cu126 ./inference_cli.sh \
+#           --model-path /models/eraserdit \
+#           --video-input data/10268234.mp4 --mask-input data/10268234_mask.mp4 \
+#           --output-path results/out.mp4 \
+#           --prompt "There is a bridge over the lake." \
+#           --attention-backend sage_attn --enable-torch-compile --warmup
+#
+#   docker run --gpus all --rm -p 30000:30000 \
+#       -v /path/to/snapshot:/models/eraserdit:ro \
+#       -v "$PWD/data:/workspace/EraserDiT/data:ro" \
+#       -v /tmp/mgerase_tasks:/tmp/mgerase_tasks \
+#       erasedit:cu126 ./inference_server.sh \
+#           --pipeline-name EraserDiTErasePipeline --model-path /models/eraserdit \
+#           --task-root /tmp/mgerase_tasks --input-allowed-root /workspace/EraserDiT/data
 ARG PYTORCH_IMAGE=pytorch/pytorch:2.6.0-cuda12.6-cudnn9-devel
 FROM ${PYTORCH_IMAGE}
 
 ARG DEBIAN_FRONTEND=noninteractive
+# ffmpeg carries the x264 encoder the output contract and the acceptance
+# metrics depend on; libgl1/libglib2.0-0 satisfy opencv-python.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
         cmake \
         ffmpeg \
         git \
+        libgl1 \
+        libglib2.0-0 \
         ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace/EraserDiT
 
-# Keep the project scripts unchanged: they invoke .venv/bin/torchrun.  The
-# virtual environment shares the PyTorch supplied by the validated base image.
-RUN python -m venv --system-site-packages /opt/erasedit-venv \
-    && printf '%s\n' '#!/usr/bin/env bash' 'exec python -m torch.distributed.run "$@"' \
-        > /opt/erasedit-venv/bin/torchrun \
-    && chmod +x /opt/erasedit-venv/bin/torchrun
-ENV VIRTUAL_ENV=/opt/erasedit-venv
-ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
-ENV PIP_NO_CACHE_DIR=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+# Both launchers fall back to a site-specific conda interpreter when
+# ERASERDIT_PYTHON is unset, which does not exist here.
+ENV ERASERDIT_PYTHON=/usr/local/bin/python
 
 COPY requirements.txt ./
+# flash-attn and sageattention compile CUDA kernels against the installed
+# Torch, so the build must see it: --no-build-isolation plus the toolchain from
+# the devel base image.  requirements.txt pins torch==2.6.0+cu126, which the
+# base image already provides.
 RUN python -m pip install --upgrade pip \
-    && python -m pip install \
-        torch==2.6.0+cu126 \
-        torchvision==0.21.0+cu126 \
-        triton==3.2.0 \
-        --extra-index-url https://download.pytorch.org/whl/cu126 \
     && CUDA_HOME=/usr/local/cuda \
         PATH=/usr/local/cuda/bin:$PATH \
-        MAX_JOBS=8 \
+        MAX_JOBS="${MAX_JOBS:-8}" \
+        PIP_NO_CACHE_DIR=1 \
         python -m pip install --no-build-isolation -r requirements.txt
 
 COPY . .
-RUN ln -s /opt/erasedit-venv .venv \
-    && mkdir -p Acceptance/result_videos Acceptance/4k_result_videos
+ENV PYTHONPATH=/workspace/EraserDiT \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
-ENV PYTHONPATH=/workspace/EraserDiT
-ENTRYPOINT ["/bin/bash"]
+# Fail the build early if the entry points cannot even be resolved.
+RUN ./inference_cli.sh --help > /dev/null \
+    && ./inference_server.sh --help > /dev/null \
+    && python -c "import torch, diffusers, flash_attn, sageattention, triton"
+
+CMD ["/bin/bash"]

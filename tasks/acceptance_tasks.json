@@ -1,0 +1,34 @@
+[
+  {
+    "id": "clip1_portrait",
+    "video": "data/10268234.mp4",
+    "mask": "data/10268234_mask.mp4",
+    "prompt": "There is a bridge over the lake.",
+    "output": "results/acceptance/clip1_portrait.mp4",
+    "seed": 42
+  },
+  {
+    "id": "clip2_landscape",
+    "video": "data/113000356.mp4",
+    "mask": "data/113000356_mask.mp4",
+    "prompt": "There is a rooftop terrace overlooking the city at sunset.",
+    "output": "results/acceptance/clip2_landscape.mp4",
+    "seed": 42
+  },
+  {
+    "id": "clip2_landscape_other_seed",
+    "video": "data/113000356.mp4",
+    "mask": "data/113000356_mask.mp4",
+    "prompt": "There is a rooftop terrace overlooking the city at sunset.",
+    "output": "results/acceptance/clip2_landscape_other_seed.mp4",
+    "seed": 7
+  },
+  {
+    "id": "clip1_portrait_other_seed",
+    "video": "data/10268234.mp4",
+    "mask": "data/10268234_mask.mp4",
+    "prompt": "There is a bridge over the lake.",
+    "output": "results/acceptance/clip1_portrait_other_seed.mp4",
+    "seed": 7
+  }
+]
