@@ -50,13 +50,108 @@ CUDA_HOME=/usr/local/cuda-12.6 PATH=/usr/local/cuda-12.6/bin:$PATH \
 ```
 ---
 ## 🧸 Inference
-EraserDiT requires >60GB GPU memory for a 2K‑resolution video. 
+
+EraserDiT requires >60GB GPU memory for a 2K‑resolution video.
 Multi‑GPU support is in progress and will be open‑sourced later.
+
+本仓库已迁移到 MGErase 组合式架构（stages + 常驻 pipeline + 服务端骨架），运行入口是
+`inference_cli.sh` 与 `inference_server.sh`。原版单体入口 `inference.py` 属历史遗留，
+不再是受支持的路径。
+
 ```
-export HF_ENDPOINT=https://hf-mirror.com
-conda activate EraserDiT
-CUDA_VISIBLE_DEVICES=3 python3 inference.py --vid_path data/10268234.mp4 --mask_path data/10268234_mask.mp4 --prompt "There is a bridge over the lake." 
+SNAP=/root/.cache/huggingface/hub/models--jieeliu--EraserDiT/snapshots/904fb412da76235085dbbccaefdbde4979fa3d29
 ```
+
+两个启动脚本内部已默认 `HF_HUB_OFFLINE=1`（加载本地快照时直连 huggingface.co 会静默卡住）。
+
+### CLI
+
+单条素材（推荐加速配置，去噪 1.22×、端到端 1.17–1.44×，两组素材均过门禁）：
+
+```
+CUDA_VISIBLE_DEVICES=2 ./inference_cli.sh \
+  --model-path "$SNAP" \
+  --video-input data/10268234.mp4 \
+  --mask-input  data/10268234_mask.mp4 \
+  --output-path results/out_10268234.mp4 \
+  --prompt "There is a bridge over the lake." \
+  --attention-backend sage_attn --enable-torch-compile --warmup
+```
+
+第二组素材（横屏、2 窗口，提示词不同）：
+
+```
+CUDA_VISIBLE_DEVICES=2 ./inference_cli.sh \
+  --model-path "$SNAP" \
+  --video-input data/113000356.mp4 \
+  --mask-input  data/113000356_mask.mp4 \
+  --output-path results/out_113000356.mp4 \
+  --prompt "There is a rooftop terrace overlooking the city at sunset." \
+  --attention-backend sage_attn --enable-torch-compile --warmup
+```
+
+多任务共用常驻 pipeline（预热只付一次，两种画幅可混用）：
+
+```
+CUDA_VISIBLE_DEVICES=2 ./inference_cli.sh --model-path "$SNAP" \
+  --task-file tasks/acceptance_tasks.json \
+  --attention-backend sage_attn --enable-torch-compile --warmup
+```
+
+不加速的对照（矩阵里的 N）：
+
+```
+CUDA_VISIBLE_DEVICES=2 ./inference_cli.sh --model-path "$SNAP" \
+  --video-input data/10268234.mp4 --mask-input data/10268234_mask.mp4 \
+  --output-path results/out_N.mp4 --prompt "There is a bridge over the lake." \
+  --attention-backend sdpa
+```
+
+### 服务端
+
+```
+CUDA_VISIBLE_DEVICES=2 ./inference_server.sh \
+  --pipeline-name EraserDiTErasePipeline \
+  --model-path "$SNAP" \
+  --task-root /tmp/mgerase_tasks \
+  --input-allowed-root "$PWD/data" \
+  --port 30000 \
+  --attention-backend sage_attn --enable-torch-compile --warmup
+```
+
+另开终端验收（全部端点 + 严格契约 + 任务生命周期 + 结果下载与删除）：
+
+```
+python3 scripts/service_smoke.py --base-url http://127.0.0.1:30000 \
+  --video data/10268234.mp4 --mask data/10268234_mask.mp4 \
+  --prompt "There is a bridge over the lake."
+```
+
+或一键起服务 + 验收（自动等一张空闲卡，无论成败都拆干净）：
+
+```
+scripts/service_verify.sh 2
+```
+
+### 注意
+
+- **`--warmup` 是加速达标的必要条件**，不是可选优化：不预热则 Inductor 自动调优落进正式
+  任务的首次前向，去噪收益从 17% 掉到 10%，过不了 15% 门槛。代价是每进程一次性付出，
+  单任务冷启动不保证净收益（取决于素材形状数）
+- `--pipeline-name` 不能省，服务端靠它选管线；`--input-allowed-root` 是输入白名单，
+  必须是绝对路径
+- 该卡有常驻租户，跑前确认空闲显存 ≥60 GiB
+- 换解释器用 `ERASERDIT_PYTHON=<path>`，脚本默认写死 conda 环境路径
+
+### 文档
+
+| 文件 | 内容 |
+| --- | --- |
+| `docs/m3_report.md` | 单卡加速测量矩阵、推荐配置、组合限制 |
+| `docs/m4_report.md` | 验收矩阵、质量指标、连续任务验收、条件与未验证项 |
+| `docs/service_api.md` | 服务端接口契约与验收方式 |
+| `docker/base.dockerfile` | 运行镜像（本机无 docker，构建与启动未验证） |
+
 ---
 ## 📜 Citation
 
