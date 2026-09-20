@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -88,6 +89,21 @@ def nonmasked_metrics(output: Path, source: Path, mask: Path) -> dict:
         return {}
 
 
+def free_mib(gpu: int) -> int:
+    result = subprocess.run(
+        [
+            "nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits",
+            "-i", str(gpu),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        return -1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--task-file", default="tasks/acceptance_tasks.json")
@@ -118,8 +134,24 @@ def main() -> int:
             command.append("--enable-torch-compile")
         if args.warmup:
             command.append("--warmup")
-        print(f"running: {' '.join(command)}\n", flush=True)
-        result = subprocess.run(command, cwd=REPO, capture_output=True, text=True)
+        # A busy neighbour card turned this into a 7.5 GiB OOM mid-run; the
+        # accelerated configuration needs ~50 GiB reserved, so refuse to start
+        # rather than fail three tasks in.
+        visible = os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(",")[0]
+        available = free_mib(int(visible)) if visible.isdigit() else -1
+        if 0 <= available < 60000:
+            print(
+                f"GPU {visible} has only {available} MiB free, need ~60000; "
+                "wait for a quieter window"
+            )
+            return 1
+        print(f"running: {' '.join(command)}  (gpu {visible}, {available} MiB free)\n",
+              flush=True)
+        env = dict(os.environ)
+        env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+        result = subprocess.run(
+            command, cwd=REPO, capture_output=True, text=True, env=env
+        )
         Path("results/acceptance_payload.json").write_text(result.stdout, encoding="utf-8")
         Path("results/acceptance_run.log").write_text(result.stderr, encoding="utf-8")
         if result.returncode != 0:

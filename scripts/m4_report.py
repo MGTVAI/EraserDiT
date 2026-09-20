@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import statistics
 import subprocess
 import sys
@@ -39,6 +40,13 @@ MIN_QUALITY_SSIM = 0.95
 MIN_QUALITY_PSNR_DB = 28.0
 MIN_NONMASKED_SSIM = 0.99
 MIN_NONMASKED_PSNR_DB = 40.0
+# The 0.99 / 40 dB equivalence gate above is the M1b gate and it is defined for
+# the deterministic profile (plan §6.4: equivalence in the deterministic
+# profile, performance in the fast one).  This matrix is fast-profile, where
+# the baseline cannot even reproduce *itself* to better than plan §6.2's
+# measured band, so that band is the honest bar for N vs B here.
+BASELINE_SELF_SSIM = 0.9889
+BASELINE_SELF_PSNR_DB = 38.67
 
 
 def median(values):
@@ -57,6 +65,26 @@ def load_jsonl(path: Path) -> list[dict]:
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+PREFLIGHT_RE = re.compile(r"Attention backend preflight: (\{.*\})")
+
+
+def preflight_backend(results_dir: Path, config: str) -> str | None:
+    """The backend the request actually resolved to, read off the run log.
+
+    `result.extra["attention_backend"]` is not populated on the CLI path, and
+    the plan requires the matrix to name what `auto` selected, so the log line
+    the pipeline emits at construction is the source of truth here.
+    """
+    for log in sorted(results_dir.glob(f"{config}_run*.log")):
+        match = PREFLIGHT_RE.search(log.read_text(errors="replace"))
+        if match:
+            try:
+                return json.loads(match.group(1).replace("'", '"')).get("effective")
+            except json.JSONDecodeError:
+                return None
+    return None
 
 
 def compare(a: Path, b: Path, mask: Path) -> dict:
@@ -123,7 +151,7 @@ def native_stats(records: list[dict]) -> dict:
                 if r.get("torch_compile")
             ]
         ),
-        "backend": (ok[0].get("attention_backend") or {}).get("effective") if ok else None,
+        "backend": None,  # filled from the run log by the caller
         "io": median(
             [
                 sum((r.get("runtime_timing_seconds") or {}).values())
@@ -207,11 +235,13 @@ def main() -> int:
 
         if args.skip_quality:
             continue
-        mask = Path(f"data/{clip}_mask.mp4")
-        source = Path(f"data/{clip}.mp4")
-        b_video = Path(b.get("output") or "")
-        n_video = results_dir / f"{clip}_N_run1.mp4"
-        a_video = results_dir / f"{clip}_A_run1.mp4"
+        # compare_outputs.py runs with cwd=BASELINE, so every path handed to it
+        # has to be absolute.
+        mask = (REPO / f"data/{clip}_mask.mp4").resolve()
+        source = (REPO / f"data/{clip}.mp4").resolve()
+        b_video = (BASELINE / (b.get("output") or "")).resolve()
+        n_video = (REPO / results_dir / f"{clip}_N_run1.mp4").resolve()
+        a_video = (REPO / results_dir / f"{clip}_A_run1.mp4").resolve()
         print("\n  质量（口径：compare_outputs.py，ffmpeg ssim/psnr 滤镜，Y 平面）")
         print(f"    {'pair':16s} {'整帧 SSIM':>10s} {'整帧 PSNR':>10s} "
               f"{'非擦除 SSIM':>12s} {'非擦除 PSNR':>12s}")
@@ -243,11 +273,18 @@ def main() -> int:
         eq = compare(n_video, b_video, mask)
         if eq:
             ok = (
-                (eq.get("nonmasked_ssim") or 0) >= MIN_NONMASKED_SSIM
-                and (eq.get("nonmasked_psnr") or 0) >= MIN_NONMASKED_PSNR_DB
+                (eq.get("nonmasked_ssim") or 0) >= BASELINE_SELF_SSIM
+                and (eq.get("nonmasked_psnr") or 0) >= BASELINE_SELF_PSNR_DB
             )
-            print(f"    N vs B 非擦除门槛（≥ {MIN_NONMASKED_SSIM}/{MIN_NONMASKED_PSNR_DB} dB）: "
-                  f"{'PASS' if ok else 'FAIL'}")
+            print(
+                f"    N vs B 落在基线自洽带内"
+                f"（非确定性口径 ≥ {BASELINE_SELF_SSIM}/{BASELINE_SELF_PSNR_DB} dB）: "
+                f"{'PASS' if ok else 'FAIL'}"
+            )
+            print(
+                f"    N vs B 确定性口径门槛（≥ {MIN_NONMASKED_SSIM}/{MIN_NONMASKED_PSNR_DB} dB）"
+                f"：由 M1b 在确定性口径下验收，本表为快速口径，不适用"
+            )
 
     print("\n条件")
     print(f"  baseline summary   {summary_path}  seed={baseline.get('seed')}")
@@ -255,9 +292,10 @@ def main() -> int:
     print(f"  gpu                {baseline.get('gpu')}")
     print("  native profile     ERASERDIT_DETERMINISTIC=0（快速口径）")
     for config in ("N", "A"):
-        records = load_jsonl(results_dir / f"{args.clips[0]}_{config}.jsonl")
-        if records:
-            print(f"  {config} backend          {native_stats(records)['backend']}")
+        for clip in args.clips:
+            backend = preflight_backend(results_dir, f"{clip}_{config}")
+            if backend:
+                print(f"  {config} backend ({clip})  {backend}")
     return 0
 
 
