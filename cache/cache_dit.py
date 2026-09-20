@@ -98,6 +98,7 @@ class CacheDitController:
         coordinator: GroupCoordinator | None,
         sp_group_identity: str,
         cfg_group_identity: str,
+        model_identity: str = LTX095_CACHE_DIT_MODEL_IDENTITY,
     ) -> None:
         if not params.enabled:
             raise ValueError("disabled Cache-DiT must not construct a controller")
@@ -105,6 +106,7 @@ class CacheDitController:
             raise ValueError("Cache-DiT total_steps must be a positive non-bool int")
         params.validate_block_count(num_transformer_blocks)
         self.params = params
+        self.model_identity = model_identity
         self.request_id = request_id
         self.object_index = object_index
         self.window_index = window_index
@@ -361,7 +363,7 @@ class CacheDitController:
         return {
             "mode": "cache_dit",
             "enabled": True,
-            "model_policy": LTX095_CACHE_DIT_MODEL_IDENTITY,
+            "model_policy": self.model_identity,
             "closed": self._closed,
             "aborted": self._abort_reason is not None,
             "abort_reason": self._abort_reason,
@@ -468,7 +470,7 @@ class CacheDitController:
             sp_rank=self.sp_rank,
             cfg_degree=self.cfg_degree,
             cfg_rank=self.cfg_rank,
-            model_identity=LTX095_CACHE_DIT_MODEL_IDENTITY,
+            model_identity=self.model_identity,
             layout_signature=layout_signature,
             sp_group_identity=self.sp_group_identity,
             cfg_group_identity=self.cfg_group_identity,

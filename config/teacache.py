@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import ClassVar
 
 from config.transformer_cache import TransformerCacheMode
 
@@ -62,6 +63,7 @@ _LTX095_COEFFICIENT_RECORDS = (
 
 @dataclass(frozen=True)
 class TeaCacheParams:
+    supported_coefficient_policies: ClassVar[tuple[str, ...]] = (LTX095_TEACACHE_COEFFICIENT_POLICY,)
     enabled: bool
     threshold: float = LTX095_TEACACHE_DEFAULT_THRESHOLD
     max_consecutive_skip: int = 1
@@ -91,9 +93,9 @@ class TeaCacheParams:
             raise ValueError("TeaCache min_skip_step must be >= 0")
         if self.end_guard_steps < 0:
             raise ValueError("TeaCache end_guard_steps must be >= 0")
-        if self.coefficient_policy != LTX095_TEACACHE_COEFFICIENT_POLICY:
+        if self.coefficient_policy not in self.supported_coefficient_policies:
             raise ValueError(
-                "unsupported LTX095 TeaCache coefficient_policy="
+                "unsupported TeaCache coefficient_policy="
                 f"{self.coefficient_policy!r}"
             )
         if not isinstance(self.calibrate, bool):

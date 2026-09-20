@@ -177,6 +177,14 @@ def _effective_acceleration(
             "report": attention,
             "resolved": bool(attention),
         },
+        "transformer_cache": {
+            "scope": "request",
+            "default": "off",
+            "supported_modes": ["off", "teacache", "cache_dit"],
+            "experimental": True,
+            "compatible_with_torch_compile": False,
+            "effective_report": "task.metrics.transformer_cache_history",
+        },
         "operator_fusion": fusion,
         "torch_compile": {
             "requested": bool(server_args.enable_torch_compile),

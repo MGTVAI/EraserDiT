@@ -19,6 +19,7 @@ from entrypoints.cli.erase_eraserdit import (
     _build_parser, _build_server_args, _task_to_sampling_params,
 )
 from pipelines.session import EraseSession
+from cache.eraserdit import EraserDiTCacheWindow
 from utils.determinism import enable_deterministic_mode
 from utils.distributed_runtime import destroy_runtime_distributed
 
@@ -60,6 +61,8 @@ def main():
         parser.error('verification requires an offload policy')
     if args.repeat < 2:
         parser.error('--repeat must be at least 2')
+    if args.inject_failure and int(args.num_inference_steps * args.strength) < 2:
+        parser.error('--inject-failure requires at least two effective denoising steps')
     if args.inject_failure and args.resource_policy != 'dynamic_offload':
         parser.error('--inject-failure requires dynamic_offload')
     os.environ.setdefault('MGERASE_FFMPEG_THREADS', 'auto')
@@ -79,11 +82,27 @@ def main():
             if index == 1 and args.inject_failure:
                 extent = session.pipeline.get_module('transformer').transformer_blocks[0].flexible_extent
                 original = extent._original_forward
+                calls = 0
                 def fail(*values, **kwargs):
-                    original(*values, **kwargs)
-                    raise InjectedFailure('after first transformer block')
+                    nonlocal calls
+                    output = original(*values, **kwargs)
+                    calls += 1
+                    if calls == 3:
+                        raise InjectedFailure('after first full CFG step')
+                    return output
+                close_window = EraserDiTCacheWindow.__exit__
+                def checked_close(window, *exc):
+                    result = close_window(window, *exc)
+                    if window.controller is not None:
+                        for state in window.controller._states.values():
+                            if any(isinstance(v, torch.Tensor) for v in vars(state).values()):
+                                raise AssertionError('cache tensors leaked after window')
+                    report['failure_cache_report'] = window.batch.extra['transformer_cache']
+                    return result
                 params = _task_to_sampling_params({'output': str(report_path.with_suffix('.failed.mp4'))}, args)
-                with patch.object(extent, '_original_forward', side_effect=fail):
+                with patch.object(extent, '_original_forward', side_effect=fail), patch.object(
+                    EraserDiTCacheWindow, '__exit__', checked_close,
+                ):
                     try:
                         session.run(params)
                     except InjectedFailure:
@@ -107,6 +126,7 @@ def main():
                 'peak_reserved_gib': torch.cuda.max_memory_reserved() / 1024**3,
                 'memory_runtime': snapshot,
                 'phase_events': result.extra.get('runtime_phase_events'),
+                'transformer_cache_history': result.extra.get('transformer_cache_history', []),
             })
         if len({run['sha256'] for run in report['runs']}) != 1:
             raise AssertionError('repeated requests produced different output bytes')

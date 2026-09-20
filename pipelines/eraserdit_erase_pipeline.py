@@ -433,6 +433,11 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
             raise RuntimeError("EraserDiTErasePipeline is closed")
         params = _as_eraserdit_params(batch)
         batch.modules = self.modules if not batch.modules else batch.modules
+        from config.eraserdit_cache import resolve_eraserdit_cache_params
+        resolve_eraserdit_cache_params(
+            params, enable_torch_compile=server_args.enable_torch_compile,
+            num_blocks=len(batch.modules["transformer"].transformer_blocks),
+        )
         batch.extra["memory_registration_summary"] = dict(
             getattr(self, "memory_registration_summary", {})
         )

@@ -12,6 +12,8 @@ import time
 
 import torch
 
+from cache.eraserdit import EraserDiTCacheWindow
+
 from config.server_args import ServerArgs
 from memory.policies.component_offload import offload_component
 from nodes.schedule_batch import Req
@@ -50,7 +52,6 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
 
     @offload_component("transformer")
     def forward(self, batch: Req, server_args: ServerArgs) -> Req:
-        del server_args
         transformer = batch.modules.get("transformer") or self._transformer
         scheduler = batch.modules.get("scheduler") or self._scheduler
 
@@ -86,7 +87,11 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
             dynamic_cfg=False,
         )
 
-        with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+        with EraserDiTCacheWindow(
+            batch, total_steps=len(timesteps),
+            num_blocks=len(transformer.transformer_blocks),
+            enable_torch_compile=server_args.enable_torch_compile,
+        ) as cache_window, torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
             for step_index, timestep in enumerate(timesteps):
                 step_start = time.perf_counter()
                 latent_model_input = latents.to(model_dtype)
@@ -107,6 +112,7 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
                     return_dict=False,
                     cond_latents=cond_input,
                     mask_values=mask_input,
+                    **cache_window.kwargs("negative", step_index),
                 )[0].float()
 
                 noise_pred_text = transformer_for_forward(
@@ -122,6 +128,7 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
                     return_dict=False,
                     cond_latents=cond_input,
                     mask_values=mask_input,
+                    **cache_window.kwargs("positive", step_index),
                 )[0].float()
 
                 noise_pred = noise_pred_uncond + guidance_scale * (

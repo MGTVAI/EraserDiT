@@ -440,6 +440,7 @@ class EraserDiTLTXVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalM
         return_dict: bool = True,
         cond_latents=None,
         mask_values=None,
+        cache_adapter=None,
     ) -> torch.Tensor:
         if attention_kwargs is not None:
             attention_kwargs = attention_kwargs.copy()
@@ -487,35 +488,66 @@ class EraserDiTLTXVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalM
         encoder_hidden_states = self.caption_projection(encoder_hidden_states)
         encoder_hidden_states = encoder_hidden_states.view(batch_size, -1, hidden_states.size(-1))
 
-        for block in self.transformer_blocks:
-            if torch.is_grad_enabled() and self.gradient_checkpointing:
-                hidden_states = self._gradient_checkpointing_func(
-                    block,
-                    hidden_states,
-                    encoder_hidden_states,
-                    temb,
-                    image_rotary_emb,
-                    encoder_attention_mask,
-                )
-            elif hasattr(block, "flexible_extent"):
-                # The fusion helper normally bypasses block.forward. Registered
-                # extents must go through their wrapper so weights are resident
-                # before the helper reads scale_shift_table and child layers.
-                hidden_states = block(
-                    hidden_states, encoder_hidden_states, temb,
-                    image_rotary_emb, encoder_attention_mask,
-                    decision=self.operator_fusion_decision,
-                )
-            else:
-                hidden_states = forward_eraserdit_block(
-                    block,
-                    hidden_states,
-                    encoder_hidden_states,
-                    temb,
-                    image_rotary_emb,
-                    encoder_attention_mask,
-                    decision=self.operator_fusion_decision,
-                )
+        if cache_adapter is not None:
+            if torch.is_grad_enabled():
+                raise RuntimeError("EraserDiT caching is inference-only")
+            def run_blocks(hidden_states, start, end):
+                for block in self.transformer_blocks[start:end]:
+                    if hasattr(block, "flexible_extent"):
+                        # The fusion helper normally bypasses block.forward. Registered
+                        # extents must go through their wrapper so weights are resident
+                        # before the helper reads scale_shift_table and child layers.
+                        hidden_states = block(
+                            hidden_states, encoder_hidden_states, temb,
+                            image_rotary_emb, encoder_attention_mask,
+                            decision=self.operator_fusion_decision,
+                        )
+                    else:
+                        hidden_states = forward_eraserdit_block(
+                            block,
+                            hidden_states,
+                            encoder_hidden_states,
+                            temb,
+                            image_rotary_emb,
+                            encoder_attention_mask,
+                            decision=self.operator_fusion_decision,
+                        )
+                return hidden_states
+            hidden_states = cache_adapter.run(
+                hidden_states, temb, run_blocks,
+                num_blocks=len(self.transformer_blocks),
+                layout=(num_frames, height, width, repr(rope_interpolation_scale)),
+            )
+        else:
+            for block in self.transformer_blocks:
+                if torch.is_grad_enabled() and self.gradient_checkpointing:
+                    hidden_states = self._gradient_checkpointing_func(
+                        block,
+                        hidden_states,
+                        encoder_hidden_states,
+                        temb,
+                        image_rotary_emb,
+                        encoder_attention_mask,
+                    )
+                elif hasattr(block, "flexible_extent"):
+                    # The fusion helper normally bypasses block.forward. Registered
+                    # extents must go through their wrapper so weights are resident
+                    # before the helper reads scale_shift_table and child layers.
+                    hidden_states = block(
+                        hidden_states, encoder_hidden_states, temb,
+                        image_rotary_emb, encoder_attention_mask,
+                        decision=self.operator_fusion_decision,
+                    )
+                else:
+                    hidden_states = forward_eraserdit_block(
+                        block,
+                        hidden_states,
+                        encoder_hidden_states,
+                        temb,
+                        image_rotary_emb,
+                        encoder_attention_mask,
+                        decision=self.operator_fusion_decision,
+                    )
 
         scale_shift_values = self.scale_shift_table[None, None] + embedded_timestep[:, :, None]
         shift, scale = scale_shift_values[:, :, 0], scale_shift_values[:, :, 1]

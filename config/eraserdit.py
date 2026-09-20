@@ -102,8 +102,22 @@ class EraserDiTEraseSamplingParams(SamplingParams):
     overlap_fuse_mode: str = "before"
     runtime_state: dict[str, object] = field(default_factory=dict)
 
+    transformer_cache_mode: str = "off"
+    transformer_cache_force_compute: bool = False
+    teacache_threshold: float = 0.005
+    max_teacache_consecutive_skip: int = 1
+    teacache_warmup_steps: int = 4
+    cache_dit_front_blocks: int = 1
+    cache_dit_back_blocks: int = 0
+    cache_dit_warmup_steps: int = 4
+    cache_dit_residual_diff_threshold: float = 0.03
+    cache_dit_max_consecutive_cached_steps: int = 1
+    cache_end_guard_steps: int = 1
+
     def __post_init__(self) -> None:
         super().__post_init__()
+        from config.eraserdit_cache import resolve_eraserdit_cache_params
+        resolve_eraserdit_cache_params(self)
         if self.mask_dilate_iter < 0:
             raise ValueError("mask_dilate_iter must be non-negative")
         if self.overlap >= self.infer_len:

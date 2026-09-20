@@ -6,7 +6,7 @@ import math
 import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
-from typing import Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, Callable
 
 import torch
 
@@ -51,12 +51,14 @@ class _TeaCacheBranchState:
     pending: TeaCacheDecision | None = None
     previous_layout_signature: str | None = None
     pending_layout_signature: str | None = None
+    pending_step: int | None = None
 
     def clear_tensors(self) -> None:
         self.previous_modulated_input = None
         self.previous_residual = None
         self.pending = None
         self.pending_layout_signature = None
+        self.pending_step = None
 
 
 _DECISION_CODES = {
@@ -92,12 +94,16 @@ class TeaCacheController:
         coordinator: GroupCoordinator | None,
         sp_group_identity: str,
         cfg_group_identity: str,
+        model_identity: str = LTX095_TEACACHE_MODEL_IDENTITY,
+        coefficient_selector: Callable[[int], TeaCacheCoefficientSelection] | None = None,
     ) -> None:
         if not params.enabled:
             raise ValueError("disabled TeaCache must not construct a controller")
         if type(total_steps) is not int or total_steps <= 0:
             raise ValueError("TeaCache total_steps must be a positive non-bool int")
         self.params = params
+        self.model_identity = model_identity
+        self._coefficient_selector = coefficient_selector
         self.request_id = request_id
         self.object_index = object_index
         self.window_index = window_index
@@ -173,6 +179,8 @@ class TeaCacheController:
         selection = None
         reason = None
         try:
+            if state.pending is not None:
+                raise RuntimeError("TeaCache previous step was not completed")
             selection = self._selection_for(global_sequence_length)
             reason = self._forced_compute_reason(state, step, layout_signature)
         except BaseException as error:
@@ -217,6 +225,7 @@ class TeaCacheController:
                 state.forced_compute_reasons.get(decision.reason, 0) + 1
             )
         state.pending = decision
+        state.pending_step = step
         state.pending_layout_signature = layout_signature
         self._consensus_stats.decision_count += 1
         self._consensus_stats.decision_seconds += (
@@ -234,7 +243,7 @@ class TeaCacheController:
     ) -> torch.Tensor:
         self._require_open()
         state = self._states[branch]
-        if state.pending is None or not state.pending.should_skip:
+        if state.pending is None or not state.pending.should_skip or state.pending_step != step:
             raise RuntimeError("TeaCache reuse requires a pending cache-hit decision")
         if state.previous_residual is None:
             raise RuntimeError("TeaCache cached residual is missing")
@@ -246,6 +255,7 @@ class TeaCacheController:
         state.consecutive_skips += 1
         state.skip_steps += 1
         state.pending = None
+        state.pending_step = None
         return output
 
     def record_compute(
@@ -259,7 +269,7 @@ class TeaCacheController:
     ) -> None:
         self._require_open()
         state = self._states[branch]
-        if state.pending is None or state.pending.should_skip:
+        if state.pending is None or state.pending.should_skip or state.pending_step != step:
             raise RuntimeError("TeaCache compute result has no pending compute decision")
         state.previous_step = step
         state.previous_modulated_input = modulated_input.detach().clone()
@@ -271,6 +281,7 @@ class TeaCacheController:
         state.consecutive_skips = 0
         state.calc_steps += 1
         state.pending = None
+        state.pending_step = None
 
     def finish_window(self) -> dict[str, Any]:
         return self._close(abort_reason=None)
@@ -312,7 +323,7 @@ class TeaCacheController:
         return {
             "mode": "teacache",
             "enabled": True,
-            "model_policy": LTX095_TEACACHE_MODEL_IDENTITY,
+            "model_policy": self.model_identity,
             "closed": self._closed,
             "aborted": self._abort_reason is not None,
             "abort_reason": self._abort_reason,
@@ -388,9 +399,12 @@ class TeaCacheController:
 
     def _selection_for(self, global_sequence_length: int):
         if self._selection is None:
-            self._selection = select_ltx095_teacache_coefficients(
-                global_sequence_length,
-                policy=self.params.coefficient_policy,
+            self._selection = (
+                self._coefficient_selector(global_sequence_length)
+                if self._coefficient_selector is not None
+                else select_ltx095_teacache_coefficients(
+                    global_sequence_length, policy=self.params.coefficient_policy,
+                )
             )
         elif (
             self._selection.requested_global_sequence_length
@@ -426,7 +440,7 @@ class TeaCacheController:
             sp_rank=self.sp_rank,
             cfg_degree=self.cfg_degree,
             cfg_rank=self.cfg_rank,
-            model_identity=LTX095_TEACACHE_MODEL_IDENTITY,
+            model_identity=self.model_identity,
             layout_signature=layout_signature,
             sp_group_identity=self.sp_group_identity,
             cfg_group_identity=self.cfg_group_identity,

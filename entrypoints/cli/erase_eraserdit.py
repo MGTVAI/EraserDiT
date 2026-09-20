@@ -34,6 +34,8 @@ logger = init_logger(__name__)
 PIPELINE_NAME = "EraserDiTErasePipeline"
 
 # Task-file keys that map straight onto sampling-parameter fields.
+from config.eraserdit_cache import CACHE_DEFAULTS, resolve_eraserdit_cache_params
+
 _PARAM_FIELDS = {
     "prompt",
     "negative_prompt",
@@ -77,6 +79,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--frame-rate", type=int, default=25)
     parser.add_argument("--fps", type=int, default=25)
     parser.add_argument("--max-sequence-length", type=int, default=128)
+    for name, default in CACHE_DEFAULTS.items():
+        options = {"default": default}
+        if name == "transformer_cache_mode":
+            options["choices"] = ("off", "teacache", "cache_dit")
+        elif isinstance(default, bool):
+            options["action"] = argparse.BooleanOptionalAction
+        else:
+            options["type"] = type(default)
+        parser.add_argument("--" + name.replace("_", "-"), **options)
     parser.add_argument("--dtype", type=str, default="bf16")
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument(
@@ -176,8 +187,10 @@ def _task_to_sampling_params(
 
     output_dir, output_file_name = resolve_output_file_name(output_path)
     overrides = {
-        key: task[key] for key in _PARAM_FIELDS if key in task and task[key] is not None
+        key: task[key] for key in (_PARAM_FIELDS | CACHE_DEFAULTS.keys()) if key in task and task[key] is not None
     }
+    for name, default in CACHE_DEFAULTS.items():
+        overrides.setdefault(name, getattr(defaults, name, default))
     scenes = overrides.pop("scenes", None)
     if scenes is not None:
         overrides["scenes"] = [tuple(scene) for scene in scenes]
@@ -240,6 +253,9 @@ def main() -> None:
     logger.info("Deterministic profile: %s", determinism)
     tasks = _load_tasks(args)
     server_args = _build_server_args(args)
+    task_params = [_task_to_sampling_params(task, args) for task in tasks]
+    for params in task_params:
+        resolve_eraserdit_cache_params(params, enable_torch_compile=server_args.enable_torch_compile)
 
     session = None
     try:
@@ -254,7 +270,10 @@ def main() -> None:
         results: list[dict[str, Any]] = []
         for index, task in enumerate(tasks):
             task_id = str(task.get("id") or f"task{index:03d}")
-            params = _task_to_sampling_params(task, args)
+            params = task_params[index]
+            if cuda_device:
+                torch.cuda.synchronize()
+                torch.cuda.reset_peak_memory_stats()
             logger.info(
                 "Starting EraserDiT erase task id=%s video=%s mask=%s output=%s",
                 task_id,
@@ -299,6 +318,7 @@ def main() -> None:
                     "runtime_video_metadata": video_meta,
                     "resource_policy": server_args.resolve_resource_policy().as_dict(),
                     "memory_runtime": result.extra.get("memory_runtime"),
+                    "transformer_cache_history": result.extra.get("transformer_cache_history", []),
                     "timing": build_ltx095_pure_timing_payload(
                         result.metrics,
                         extra={

@@ -7,7 +7,7 @@ layer never references them directly (``vibe/plan.md`` M2).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -38,12 +38,26 @@ class EraserDiTVideoRequest(BaseModel):
     decode_timestep: float = Field(default=0.0, ge=0.0, le=1.0)
     decode_noise_scale: float = Field(default=0.0, ge=0.0, le=1.0)
 
+    transformer_cache_mode: Literal["off", "teacache", "cache_dit"] = "off"
+    transformer_cache_force_compute: bool = False
+    teacache_threshold: float = Field(default=0.005, gt=0, allow_inf_nan=False)
+    max_teacache_consecutive_skip: int = Field(default=1, ge=1)
+    teacache_warmup_steps: int = Field(default=4, ge=0)
+    cache_dit_front_blocks: int = Field(default=1, ge=1)
+    cache_dit_back_blocks: int = Field(default=0, ge=0)
+    cache_dit_warmup_steps: int = Field(default=4, ge=0)
+    cache_dit_residual_diff_threshold: float = Field(default=0.03, gt=0, lt=1, allow_inf_nan=False)
+    cache_dit_max_consecutive_cached_steps: int = Field(default=1, ge=1)
+    cache_end_guard_steps: int = Field(default=1, ge=1)
+
     @model_validator(mode="after")
     def validate_cross_fields(self) -> "EraserDiTVideoRequest":
         if self.overlap >= self.infer_len:
             raise ValueError("overlap must be smaller than infer_len")
         if self.mask_ksize % 2 == 0:
             raise ValueError("mask_ksize must be odd")
+        from config.eraserdit_cache import resolve_eraserdit_cache_params
+        resolve_eraserdit_cache_params(self)
         return self
 
 
@@ -78,8 +92,10 @@ def build_eraserdit_sampling_params(payload: dict[str, Any], *, runtime_mode: st
 
 
 def _validate_eraserdit_request(payload: dict[str, Any], server_args: Any) -> None:
-    del payload, server_args
-    # No cross-feature conflicts yet: the acceleration switches land in M3.
+    from config.eraserdit_cache import resolve_eraserdit_cache_params
+    resolve_eraserdit_cache_params(
+        payload["sampling"], enable_torch_compile=server_args.enable_torch_compile,
+    )
 
 
 ERASERDIT_SERVICE_CONTRACT = PipelineServiceContract(
