@@ -33,6 +33,7 @@ REPO = Path(__file__).resolve().parent.parent
 COMPARE = Path(
     "/mnt/shanhai-ai/shanhai-workspace/zhouhao6/EraserDiT-baseline/compare_outputs.py"
 )
+COMPARE_PYTHON = "/mnt/shanhai-ai/envs/conda/envs/EraserDiT/bin/python"
 PASS = "\033[32mPASS\033[0m"
 FAIL = "\033[31mFAIL\033[0m"
 
@@ -49,6 +50,20 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     print(f"{PASS if ok else FAIL}  {name}{(' — ' + detail) if detail else ''}", flush=True)
     if not ok:
         _failures.append(name)
+
+
+def extract_payload(text: str) -> dict:
+    """Pull the task JSON out of the CLI's stdout.
+
+    The pipeline's progress bars go to stdout too, so the document does not
+    start at offset 0; the same marker m3_measure.sh keys on.
+    """
+    marker = text.find('{\n  "tasks"')
+    if marker < 0:
+        raise ValueError(
+            f"no task JSON in the captured output (first 200 bytes: {text[:200]!r})"
+        )
+    return json.loads(text[marker:])
 
 
 def md5(path: Path) -> str:
@@ -76,8 +91,11 @@ def frame_count(path: Path) -> int:
 
 
 def nonmasked_metrics(output: Path, source: Path, mask: Path) -> dict:
+    # Not sys.executable: this script is often run by whatever python is on
+    # PATH, and compare_outputs.py needs numpy plus ffmpeg-python, which only
+    # the project environment has.
     result = subprocess.run(
-        [sys.executable, str(COMPARE), str(output), str(source), "--mask", str(mask)],
+        [COMPARE_PYTHON, str(COMPARE), str(output), str(source), "--mask", str(mask)],
         capture_output=True,
         text=True,
     )
@@ -120,7 +138,7 @@ def main() -> int:
 
     tasks = json.loads(Path(args.task_file).read_text(encoding="utf-8"))
     if args.reuse:
-        payload = json.loads(Path(args.reuse).read_text(encoding="utf-8"))
+        payload = extract_payload(Path(args.reuse).read_text(encoding="utf-8"))
         print(f"validating existing payload {args.reuse} ({len(tasks)} tasks)\n")
     else:
         command = [
@@ -158,8 +176,12 @@ def main() -> int:
             print(result.stderr[-4000:])
             check("task file run exits 0", False, f"rc={result.returncode}")
             return 1
-        payload = json.loads(result.stdout)
-        print(f"payload saved to results/acceptance_payload.json\n")
+        try:
+            payload = extract_payload(result.stdout)
+        except ValueError as error:
+            check("task file produced a parsable payload", False, str(error))
+            return 1
+        print("payload saved to results/acceptance_payload.json\n")
 
     results = payload["tasks"]
     check("every task returned a result", len(results) == len(tasks),
