@@ -42,7 +42,7 @@ from parallel.sequence_sharding import (
     shard_sequence_tensor,
 )
 from parallel.stage_policy import synchronize_stage_error
-from service.control import service_checkpoint
+from entrypoints.server.control import service_checkpoint
 from utils.dynamic_cfg import calc_current_cfg
 from utils.distributed_runtime import broadcast_tensor_from_rank
 from cache import (

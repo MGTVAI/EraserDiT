@@ -58,11 +58,17 @@ Multi‑GPU support is in progress and will be open‑sourced later.
 `inference_cli.sh` 与 `inference_server.sh`。原版单体入口 `inference.py` 属历史遗留，
 不再是受支持的路径。
 
+目录职责：`pipelines/runtime/` 管理视频窗口、调度与读写，`pipelines/session.py` 管理常驻会话；
+`entrypoints/server/` 管理 HTTP API、任务队列与 worker；`config/service_contract.py` 和
+`config/service_contracts/` 定义公共及各模型的服务请求契约。
+
 ```
 SNAP=/root/.cache/huggingface/hub/models--jieeliu--EraserDiT/snapshots/904fb412da76235085dbbccaefdbde4979fa3d29
 ```
 
-两个启动脚本内部已默认 `HF_HUB_OFFLINE=1`（加载本地快照时直连 huggingface.co 会静默卡住）。
+两个启动脚本内部已默认 `HF_HUB_OFFLINE=1`（加载本地快照时直连 huggingface.co 会静默卡住）与
+`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`（VAE 编码要一整块 7.5 GiB 连续显存，默认
+分配器会把它卡在自有空闲块后面）。两者都可用同名环境变量覆盖。
 
 ### CLI
 
@@ -140,7 +146,8 @@ scripts/service_verify.sh 2
   单任务冷启动不保证净收益（取决于素材形状数）
 - `--pipeline-name` 不能省，服务端靠它选管线；`--input-allowed-root` 是输入白名单，
   必须是绝对路径
-- 该卡有常驻租户，跑前确认空闲显存 ≥60 GiB
+- 该卡有常驻租户（约 18.5 GiB），跑前确认空闲显存 ≥60 GiB；`inference_cli.sh` 启动时打印
+  空闲显存并在低于 60 GiB 时告警。峰值在 VAE 编码（一整块 7.5 GiB），余量不足先在这里 OOM
 - 换解释器用 `ERASERDIT_PYTHON=<path>`，脚本默认写死 conda 环境路径
 
 ### 文档
@@ -164,4 +171,24 @@ If you find our work helpful, please consider giving a star 🌟 and citation �
   journal={arXiv preprint arXiv:2506.12853},
   year={2025}
 }
+```
+
+### 后续性能优化与整组件卸载
+
+开发顺序与验收标准见 [性能优化计划](vibe/performance_plan.md)：内存卸载 → TeaCache / cache-dit → 量化。
+
+EraserDiT CLI 和通用服务入口可设置 `--resource-policy component_offload`：权重从 CPU 加载，
+仅在文本编码、VAE 编解码、完整去噪阶段使用时搬到 GPU，阶段退出（包括异常）后返回 CPU。
+默认仍为 `fullgpu`。整组件卸载不降低 VAE 激活本身的峰值，且会增加传输耗时。
+当前请关闭 `--enable-torch-compile`。EraserDiT 也已接入 `dynamic_offload`：通过
+`--max-weight-usage` 指定管理权重的预算（字节，默认 5 GiB），预算足够时整组件驻留，
+不足时按块异步搬运。预算不包含激活和少量未包装权重；每个块保留 pinned CPU 镜像。
+`--pin-memory` 可额外固定小层权重。结果 JSON 的 `memory_runtime` 提供实际驻留与搬运统计。
+
+```bash
+CUDA_VISIBLE_DEVICES=2 ./inference_cli.sh \
+  --model-path /path/to/EraserDiT/snapshot \
+  --video-input data/10268234.mp4 --mask-input data/10268234_mask.mp4 \
+  --output-path results/offload.mp4 --prompt "There is a bridge over the lake." \
+  --resource-policy component_offload
 ```

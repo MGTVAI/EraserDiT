@@ -6,7 +6,7 @@ from typing import Annotated, Any, Literal
 
 # Request schemas are model-provided service contracts; re-exported here for
 # callers that still import them from the protocol module.
-from service.contracts.ltx095 import (  # noqa: F401
+from config.service_contracts.ltx095 import (  # noqa: F401
     DEFAULT_NEGATIVE_PROMPT,
     LocalVideoCreateRequest,
     MultipartVideoParameters,

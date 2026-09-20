@@ -104,7 +104,7 @@ class LTX095EraseTextEncodingStage(PipelineStage):
             batch.max_sequence_length = LTX095_MAX_SEQUENCE_LENGTH
             context = batch.extra.get("runtime_context")
             if context is not None:
-                from videoerase.windowing.materializer import (
+                from pipelines.runtime.windowing.materializer import (
                     cache_ltx095_window_text_embeddings,
                 )
                 object_index = int(batch.extra.get("object_index", 0))

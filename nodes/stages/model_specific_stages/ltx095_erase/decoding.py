@@ -32,7 +32,7 @@ from nodes.stages.model_specific_stages.ltx095_erase._common import (
     resolve_ltx095_vae_execution,
 )
 from memory.policies.memory_phase_controller import MemoryPhase
-from videoerase.windowing.commit_sync import (
+from pipelines.runtime.windowing.commit_sync import (
     resolve_active_ltx095_window_commit_context,
 )
 from parallel.stage_policy import StageExecutionPolicy

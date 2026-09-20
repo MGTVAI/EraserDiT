@@ -20,7 +20,7 @@ from distributed.parallel_state import (
     ParallelContext,
     resolve_group_control_device,
 )
-from videoerase.windowing.sp_dispatch import (
+from pipelines.runtime.windowing.sp_dispatch import (
     resolve_active_ltx095_window_commit_context,
 )
 from memory.policies.memory_phase_controller import MemoryPhase

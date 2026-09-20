@@ -284,7 +284,14 @@ class LTXVideoTransformerBlock(nn.Module):
         temb: torch.Tensor,
         image_rotary_emb: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         encoder_attention_mask: Optional[torch.Tensor] = None,
+        *,
+        decision=None,
     ) -> torch.Tensor:
+        if decision is not None:
+            return forward_eraserdit_block(
+                self, hidden_states, encoder_hidden_states, temb,
+                image_rotary_emb, encoder_attention_mask, decision=decision,
+            )
         batch_size = hidden_states.size(0)
         norm_hidden_states = self.norm1(hidden_states)
 
@@ -489,6 +496,15 @@ class EraserDiTLTXVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalM
                     temb,
                     image_rotary_emb,
                     encoder_attention_mask,
+                )
+            elif hasattr(block, "flexible_extent"):
+                # The fusion helper normally bypasses block.forward. Registered
+                # extents must go through their wrapper so weights are resident
+                # before the helper reads scale_shift_table and child layers.
+                hidden_states = block(
+                    hidden_states, encoder_hidden_states, temb,
+                    image_rotary_emb, encoder_attention_mask,
+                    decision=self.operator_fusion_decision,
                 )
             else:
                 hidden_states = forward_eraserdit_block(

@@ -2,7 +2,7 @@
 
 Serial, single-GPU implementation of phase 1: the whole model layer is the ported
 EraserDiT algorithm, the windowing / commit / IO layer is the shared
-``videoerase`` runtime.
+``pipelines.runtime`` runtime.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import torch
 from config.eraserdit import EraserDiTEraseSamplingParams, EraserDiTPipelineConfig
 from config.server_args import ServerArgs
 from memory.adapters.model_memory_adapter import ModelMemoryAdapter
+from memory.adapters.eraserdit_memory_adapter import EraserDiTMemoryAdapter
 from nodes.composed_pipeline_base import ComposedPipelineBase
 from nodes.schedule_batch import Req
 from nodes.stages.model_specific_stages.eraserdit_erase import (
@@ -42,27 +43,27 @@ from utils.video_io import (
     read_video_array,
     read_video_metadata,
 )
-from videoerase.context import prepare_ltx095_runtime_context
-from videoerase.contracts import (
+from pipelines.runtime.context import prepare_ltx095_runtime_context
+from pipelines.runtime.contracts import (
     LTX095EraseRuntimeContext,
     _is_windowed_runtime_mode,
 )
-from videoerase.drivers.windowed import run_ltx095_windowed_runtime
-from videoerase.io.output import (
+from pipelines.runtime.drivers.windowed import run_ltx095_windowed_runtime
+from pipelines.runtime.io.output import (
     close_ltx095_runtime_resources,
     finalize_ltx095_output,
 )
-from videoerase.windowing.cache_ops import (
+from pipelines.runtime.windowing.cache_ops import (
     append_passthrough_gap as runtime_append_passthrough_gap,
     create_empty_cache_like as runtime_create_empty_cache_like,
     register_runtime_task_chain_hooks as runtime_register_task_chain_hooks,
     set_object_overlap_cache as runtime_set_object_overlap_cache,
 )
-from videoerase.windowing.commit_ops import (
+from pipelines.runtime.windowing.commit_ops import (
     commit_ltx095_window_to_object_output,
     record_ltx095_skipped_object_window,
 )
-from videoerase.windowing.handlers import (
+from pipelines.runtime.windowing.handlers import (
     _build_runtime_mask,
     _build_runtime_video,
     _create_runtime_empty_cache_like,
@@ -96,7 +97,7 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
     pipeline_name = "EraserDiTErasePipeline"
 
     # Adapter-provided service contract (schema, sampling builder, capability).
-    from service.contracts.eraserdit import ERASERDIT_SERVICE_CONTRACT as service_contract
+    from config.service_contracts.eraserdit import ERASERDIT_SERVICE_CONTRACT as service_contract
     pipeline_config_cls = EraserDiTPipelineConfig
     sampling_params_cls = EraserDiTEraseSamplingParams
 
@@ -119,6 +120,28 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
         "transformer": ("diffusers", "LTXVideoTransformer3DModel"),
         "scheduler": ("diffusers", "FlowMatchEulerDiscreteScheduler"),
     }
+
+    def load_modules(self, server_args, loaded_modules=None):
+        policy = server_args.resolve_resource_policy()
+        if policy.requested_dynamic_offload and (
+            torch.device(server_args.device).type != "cuda" or not torch.cuda.is_available()
+        ):
+            raise ValueError("EraserDiT dynamic_offload requires an available CUDA device")
+        if policy.dit_cpu_offload and server_args.enable_torch_compile:
+            raise ValueError(
+                "EraserDiT transformer CPU offload with torch.compile is not yet "
+                "validated; disable torch.compile for CPU offload"
+            )
+        modules = super().load_modules(server_args, loaded_modules)
+        # Preloaded components bypass the component loaders' target-device logic.
+        for name, enabled in (
+            ("text_encoder", policy.text_encoder_cpu_offload),
+            ("transformer", policy.dit_cpu_offload),
+            ("vae", policy.vae_cpu_offload),
+        ):
+            if enabled:
+                modules[name].to(device="cpu")
+        return modules
 
     def create_pipeline_stages(self, server_args: ServerArgs) -> None:
         self.add_stages(
@@ -148,7 +171,20 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
     def initialize_pipeline(self, server_args: ServerArgs) -> None:
         self._closed = False
         self._memory_adapter = self._build_memory_adapter()
+        policy = server_args.resolve_resource_policy()
+        if policy.dynamic_offload or policy.pin_memory:
+            self._memory_adapter.register(
+                modules=self.modules,
+                device=torch.device(server_args.device),
+                dynamic_offload=policy.dynamic_offload,
+                pin_memory=policy.pin_memory,
+                max_weight_usage=policy.max_weight_usage,
+                rank=0,
+            )
         self.memory_registration_summary = self._memory_adapter.snapshot()
+        self.memory_registration_summary["resource_policy"] = (
+            server_args.resolve_resource_policy().as_dict()
+        )
         self._report_attention_backend(server_args)
 
     def _report_attention_backend(self, server_args: ServerArgs) -> None:
@@ -185,7 +221,7 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
         logger.info("Attention backend preflight: %s", self.attention_backend_report)
 
     def _build_memory_adapter(self) -> ModelMemoryAdapter:
-        return ModelMemoryAdapter()
+        return EraserDiTMemoryAdapter()
 
     def close(self, *, terminal: bool = False) -> dict[str, object]:
         if getattr(self, "_closed", False):
@@ -321,7 +357,7 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
         spec: Any,
         crop_bbox: tuple[int, int, int, int] | None = None,
     ) -> torch.Tensor:
-        from videoerase.io.streaming import (
+        from pipelines.runtime.io.streaming import (
             materialize_object_window_mask as runtime_materialize,
         )
 
@@ -437,6 +473,7 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
             try:
                 close_ltx095_runtime_resources(context)
             finally:
+                batch.extra["memory_runtime"] = self._memory_adapter.snapshot()
                 batch.extra[TASK_STATE_KEY] = None
 
 

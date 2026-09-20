@@ -27,6 +27,8 @@
 # 说明：
 #   - --pipeline-name 不能省，服务端靠它选管线
 #   - --input-allowed-root 是输入白名单，必须是绝对路径，否则请求被拒
+#   - HF_HUB_OFFLINE 与 PYTORCH_CUDA_ALLOC_CONF（expandable_segments:True）下面已默认
+#     置好，不必手动 export；要换值直接 export 同名变量
 #   - 服务是长驻进程，跑完记得停；该卡有常驻租户，需空闲显存 >= 60 GiB
 #   - 模型路径有改动后必须重跑验收：M2 的首次验收跑在 cross-attention 修复之前，
 #     20 项端点检查全过，但它下载到的 mp4 是损坏版本产出的（端点检查不查画面）
@@ -39,6 +41,9 @@ PYTHON="${ERASERDIT_PYTHON:-/mnt/shanhai-ai/envs/conda/envs/EraserDiT/bin/python
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 # Match the frozen baseline's encoder settings (see vibe/environment.md).
 export MGERASE_FFMPEG_THREADS="${MGERASE_FFMPEG_THREADS:-auto}"
+# Same reason as inference_cli.sh: the VAE encode needs one contiguous 7.5 GiB
+# block, which the default allocator can strand behind its own free blocks.
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 
 exec "${PYTHON}" -m entrypoints.server.serve "$@"

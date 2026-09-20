@@ -155,5 +155,6 @@ tmp*.txt
 !tasks/*.json
 
 results/
+tasks/
 
 

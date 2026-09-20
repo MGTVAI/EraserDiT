@@ -9,7 +9,7 @@
 ```
 
 `--pipeline-name` 决定使用哪个模型；请求 schema、采样参数构造与 capability 标识都由该管线
-声明的 `service_contract` 提供（`service/contracts/`），服务骨架不感知模型。
+声明的 `service_contract` 提供（`config/service_contracts/`），服务骨架不感知模型。
 
 ## 端点
 
@@ -40,7 +40,7 @@
 框架默认的 `{"detail": ...}`。
 
 第一阶段只接受本地路径（受 `--input-allowed-root` 白名单约束）与本地结果存储。
-EraserDiT 的参数面见 `service/contracts/eraserdit.py`，默认值即冻结基线（50 步 / strength 0.8 /
+EraserDiT 的参数面见 `config/service_contracts/eraserdit.py`，默认值即冻结基线（50 步 / strength 0.8 /
 guidance 3.0 / infer_len 121 / overlap 9）。
 
 ## 验收

@@ -12,8 +12,8 @@ from fastapi.responses import JSONResponse
 from config.service_args import ServiceArgs
 from entrypoints.server.common_api import create_common_router
 from entrypoints.server.video_api import create_video_router
-from service.artifacts import TaskArtifactManager
-from service.task import ServiceError
+from entrypoints.server.artifacts import TaskArtifactManager
+from entrypoints.server.task import ServiceError
 
 
 def _error_response(error: ServiceError) -> JSONResponse:

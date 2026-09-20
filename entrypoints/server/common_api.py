@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from fastapi import APIRouter
 
 from entrypoints.server.protocol import ModelCard, ModelListResponse
-from service.task import ServiceError
+from entrypoints.server.task import ServiceError
 
 
 def create_common_router(model_summary: Mapping[str, object]) -> APIRouter:

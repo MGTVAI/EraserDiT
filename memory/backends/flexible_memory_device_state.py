@@ -76,6 +76,10 @@ class FlexibleMemoryDeviceState:
 
         if op_event.memory_effect > 0:
             self.flexible_wait_onload += abs(op_event.memory_effect)
+            self.peak_flexible_usage_bytes = max(
+                self.peak_flexible_usage_bytes,
+                self.flexible_usage_bytes + self.flexible_wait_onload,
+            )
         else:
             self.flexible_wait_offload += abs(op_event.memory_effect)
         self.event_queue.append(op_event)
@@ -106,6 +110,10 @@ class FlexibleMemoryDeviceState:
         remove event until timestemp in last event that be removed or no event in list anymore
         """
 
+        # A budget wait may already have retired this event. Do not consume
+        # newer transfers when its owning extent subsequently settles it.
+        if not any(event.timestamp == timestemp for event in self.event_queue):
+            return None, False
         last_event = None
         while True:
             if len(self.event_queue) < 1:

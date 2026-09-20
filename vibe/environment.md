@@ -226,7 +226,7 @@ allocated 与 reserved 相差约 16 GiB，是分配器保留的缓存；实际�
 ## M1 新架构（2026-09-18，进行中）
 
 MGErase `python/` 已平铺到仓库根（`config/ entrypoints/ layers/ loader/ models/ nodes/
-pipelines/ utils/ memory/ cache/ distributed/ parallel/ profiling/ service/ videoerase/`），
+pipelines/ utils/ memory/ cache/ distributed/ parallel/ profiling/`），
 import 全量改写为无前缀形式；原版 `models/{transformer_ltx,autoencoder_kl_ltx}.py` 移到
 `models/dits/eraserdit_transformer.py`、`models/vaes/eraserdit_vae.py` 并改名为
 `EraserDiT*` 类以免与 LTX095 模型类在 `models/registry.py` 中撞名；`utils/pre.py` 等原版
@@ -259,7 +259,7 @@ import 全量改写为无前缀形式；原版 `models/{transformer_ltx,autoenco
 | 输出码率 | `bit_rate//1e6` M（7M） | 输入的原始码率串（7.69M） | ~0.4 dB |
 | 掩码二值化阈值 | `255/2*0.039` = 4.97 | 共享读取器默认 `0.3*max` = 76.5 | 0.009% 像素 |
 
-改动：`videoerase/context.py` 增加适配器可声明的写出契约；`_create_output_writer` 与流式写出器
+改动：`pipelines/runtime/context.py` 增加适配器可声明的写出契约；`_create_output_writer` 与流式写出器
 统一走 `MGERASE_FFMPEG_THREADS`（EraserDiT CLI 默认 `auto`）；适配器默认
 `runtime_mode="windowed_preload"`（uint8 帧缓存）；`read_mask_array` 增加 `threshold_ratio`，
 适配器传 `mask_threshold/2`；文本编码补齐原版 autocast。

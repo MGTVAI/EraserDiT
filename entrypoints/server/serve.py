@@ -20,11 +20,11 @@ from config.service_args import ServiceArgs
 from entrypoints.http_server import create_http_server_app
 from entrypoints.server.storage import create_result_storage
 from pipelines.registry import DEFAULT_PIPELINE, PipelineRegistry
-from service.artifacts import TaskArtifactManager
-from service.contract import resolve_service_contract
-from service.scheduler import ServiceScheduler
-from service.task_store import TaskStore
-from service.worker import ResidentWorkerGroup
+from entrypoints.server.artifacts import TaskArtifactManager
+from config.service_contract import resolve_service_contract
+from entrypoints.server.scheduler import ServiceScheduler
+from entrypoints.server.task_store import TaskStore
+from entrypoints.server.worker import ResidentWorkerGroup
 from utils.distributed_runtime import (
     destroy_runtime_distributed,
     initialize_runtime_distributed,
@@ -59,9 +59,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--resource-policy",
         default="fullgpu",
-        choices=["fullgpu", "fullgpu_pin_memory", "dynamic_offload"],
+        choices=["fullgpu", "fullgpu_pin_memory", "dynamic_offload", "component_offload"],
     )
     parser.add_argument("--runtime-mode", default=None)
+    parser.add_argument("--max-weight-usage", type=int, default=5 * 1024**3,
+                        help="dynamic offload managed-weight budget in bytes (excludes activations)")
+    parser.add_argument("--pin-memory", action=argparse.BooleanOptionalAction, default=False,
+                        help="pin small unwrapped weights; dynamic extents always use pinned mirrors")
     parser.add_argument(
         "--attention-backend",
         default="sdpa",
@@ -115,6 +119,8 @@ def _build_server_args(args: argparse.Namespace, pipeline_cls: type) -> ServerAr
         device=args.device,
         weight_dtype=args.dtype,
         resource_policy=args.resource_policy,
+        max_weight_usage=args.max_weight_usage,
+        pin_memory=args.pin_memory,
         pipeline_config=config,
         component_architectures=architectures,
         attention_backend=args.attention_backend,
@@ -161,6 +167,11 @@ def _effective_acceleration(
     decision = getattr(server_args, "operator_fusion_decision", None)
     fusion = decision.as_dict() if hasattr(decision, "as_dict") else {}
     return {
+        "resource_policy": server_args.resolve_resource_policy().as_dict(),
+        "memory_runtime": (
+            pipeline._memory_adapter.snapshot()
+            if getattr(pipeline, "_memory_adapter", None) is not None else {}
+        ),
         "attention_backend": {
             "requested": server_args.attention_backend,
             "report": attention,

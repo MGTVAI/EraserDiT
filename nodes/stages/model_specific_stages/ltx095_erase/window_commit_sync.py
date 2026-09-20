@@ -5,7 +5,7 @@ from __future__ import annotations
 from config.server_args import ServerArgs
 from nodes.schedule_batch import Req
 from nodes.stages.base import PipelineStage
-from videoerase.windowing.commit_sync import (
+from pipelines.runtime.windowing.commit_sync import (
     synchronize_ltx095_window_commit,
 )
 

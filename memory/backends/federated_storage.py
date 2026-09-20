@@ -256,10 +256,10 @@ class FederatedStorage:
 
         tensors = {}
         for sub_module_name, sub_module in module.named_modules():
-            for name, param in sub_module.named_parameters(recurse=False):
+            for name, param in sub_module.named_parameters(recurse=False, remove_duplicate=False):
                 tensors[f"p_{sub_module_name}.{name}"] = param
 
-            for name, buffer in sub_module.named_buffers(recurse=False):
+            for name, buffer in sub_module.named_buffers(recurse=False, remove_duplicate=False):
                 tensors[f"b_{sub_module_name}.{name}"] = buffer
 
         federated_storage = FederatedStorage(
@@ -285,7 +285,7 @@ class FederatedStorage:
 
         tensors = federated_storage.get_tensors()
         for sub_module_name, sub_module in module.named_modules():
-            for name, param in sub_module.named_parameters(recurse=False):
+            for name, param in sub_module.named_parameters(recurse=False, remove_duplicate=False):
                 if check_device_cpu is not None:
                     if (param.device.type == "cpu") != check_device_cpu:
                         print(
@@ -294,7 +294,7 @@ class FederatedStorage:
 
                 sub_module._parameters[name] = tensors[f"p_{sub_module_name}.{name}"]
 
-            for name, buffer in sub_module.named_buffers(recurse=False):
+            for name, buffer in sub_module.named_buffers(recurse=False, remove_duplicate=False):
                 if check_device_cpu is not None:
                     if (buffer.device.type == "cpu") != check_device_cpu:
                         print(

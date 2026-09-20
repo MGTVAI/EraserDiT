@@ -11,7 +11,7 @@ from nodes.stages.model_specific_stages.ltx095_erase._common import (
     _official_vae_parallel_active,
     _record_official_parallel_event,
 )
-from videoerase.windowing.commit_sync import (
+from pipelines.runtime.windowing.commit_sync import (
     resolve_active_ltx095_window_commit_context,
 )
 from utils.erase_postprocess import postprocess_single_window

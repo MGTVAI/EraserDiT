@@ -11,10 +11,12 @@ from __future__ import annotations
 import torch
 
 from config.server_args import ServerArgs
+from memory.policies.component_offload import offload_component
 from nodes.schedule_batch import Req
 from nodes.stages.base import PipelineStage
 from nodes.stages.model_specific_stages.eraserdit_erase._common import field_summary
 from utils.logging_utils import init_logger
+from utils.resource_policy import module_device
 
 logger = init_logger(__name__)
 
@@ -64,10 +66,11 @@ class EraserDiTEraseTextEncodingStage(PipelineStage):
         prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
         return prompt_embeds, prompt_attention_mask.view(1, -1)
 
+    @offload_component("text_encoder")
     def forward(self, batch: Req, server_args: ServerArgs) -> Req:
         del server_args
         text_encoder = self._text_encoder
-        device = next(text_encoder.parameters()).device
+        device = module_device(text_encoder)
         dtype = text_encoder.dtype
         max_sequence_length = int(batch.max_sequence_length or 128)
 

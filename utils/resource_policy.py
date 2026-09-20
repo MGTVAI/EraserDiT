@@ -34,6 +34,7 @@ def normalize_resource_policy_name(value: str | None) -> str:
     if normalized not in {
         "fullgpu",
         "fullgpu_pin_memory",
+        "component_offload",
         "dynamic_offload",
     }:
         raise ValueError(f"Unsupported resource_policy: {value}")
@@ -44,6 +45,11 @@ def resolve_runtime_resource_policy(server_args) -> RuntimeResourcePolicy:
     requested_policy = normalize_resource_policy_name(
         getattr(server_args, "resource_policy", "fullgpu")
     )
+    pipeline_name = getattr(server_args, "pipeline_class_name", None)
+    if requested_policy == "component_offload" and pipeline_name not in (
+        None, "EraserDiTErasePipeline"
+    ):
+        raise ValueError("component_offload is currently implemented only for EraserDiT")
     fallback_reasons: list[str] = []
 
     requested_pin_memory = bool(getattr(server_args, "pin_memory", False))
@@ -66,11 +72,12 @@ def resolve_runtime_resource_policy(server_args) -> RuntimeResourcePolicy:
     if max_weight_usage <= 0:
         raise ValueError("max_weight_usage must be positive")
 
+    component_offload = requested_policy == "component_offload"
     text_offload = bool(
-        dynamic_offload or getattr(server_args, "text_encoder_cpu_offload", False)
+        component_offload or dynamic_offload or getattr(server_args, "text_encoder_cpu_offload", False)
     )
-    vae_offload = bool(dynamic_offload or getattr(server_args, "vae_cpu_offload", False))
-    dit_offload = bool(dynamic_offload or getattr(server_args, "dit_cpu_offload", False))
+    vae_offload = bool(component_offload or dynamic_offload or getattr(server_args, "vae_cpu_offload", False))
+    dit_offload = bool(component_offload or dynamic_offload or getattr(server_args, "dit_cpu_offload", False))
 
     if not torch.cuda.is_available():
         if pin_memory:

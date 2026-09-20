@@ -17,6 +17,8 @@ from __future__ import annotations
 import torch
 
 from config.server_args import ServerArgs
+from memory.policies.component_offload import offload_component
+from memory.policies.memory_phase_controller import MemoryPhase
 from nodes.schedule_batch import Req
 from nodes.stages.base import PipelineStage
 from nodes.stages.model_specific_stages.eraserdit_erase._common import (
@@ -28,6 +30,7 @@ from utils.resource_policy import module_device, module_dtype
 
 
 class EraserDiTEraseConditionEncodingStage(PipelineStage):
+    @offload_component("vae", phase=MemoryPhase.VAE_ENCODE)
     def forward(self, batch: Req, server_args: ServerArgs) -> Req:
         del server_args
         vae = batch.modules["vae"]

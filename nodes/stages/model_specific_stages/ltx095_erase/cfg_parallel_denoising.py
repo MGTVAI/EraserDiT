@@ -30,7 +30,7 @@ from parallel.sequence_sharding import (
     plan_sequence_shards,
     shard_sequence_tensor,
 )
-from service.control import service_checkpoint
+from entrypoints.server.control import service_checkpoint
 from utils.dynamic_cfg import calc_current_cfg
 from utils.mask import concrete_mask
 from utils.resource_policy import module_device, module_dtype

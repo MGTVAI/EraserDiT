@@ -120,6 +120,7 @@ class ModelMemoryAdapter:
         configure_device_fn: Callable[[torch.device, int], object] | None = None,
         reset_device_fn: Callable[[torch.device], None] | None = None,
         module_size_fn: Callable[[nn.Module], int] | None = None,
+        extent_max_size: int = 500 * 1024**2,
     ) -> None:
         self.extent_cls = extent_cls
         self.pin_module_fn = pin_module_fn
@@ -139,6 +140,7 @@ class ModelMemoryAdapter:
             )
         )
         self.module_size_fn = module_size_fn
+        self.extent_max_size = int(extent_max_size)
         self._candidate_modules: list[nn.Module] = []
         self._execution_roots: list[nn.Module] = []
         self._extents: list[object] = []
@@ -212,8 +214,8 @@ class ModelMemoryAdapter:
                 self.extent_cls.register_module_extent_by_size(
                     module,
                     self._device,
-                    min_size=15 * 1024**2,
-                    max_size=500 * 1024**2,
+                    min_size=min(15 * 1024**2, self.extent_max_size),
+                    max_size=self.extent_max_size,
                     init_offload=True,
                     module_size_fn=self.module_size_fn,
                 )
@@ -431,6 +433,10 @@ class ModelMemoryAdapter:
         return self._active_component_name
 
     def settle_component_transfers(self) -> None:
+        for extent in self._extents:
+            settle = getattr(extent, "settle_transfers", None)
+            if callable(settle):
+                settle()
         if (
             self._device is not None
             and self._device.type == "cuda"
@@ -476,6 +482,14 @@ class ModelMemoryAdapter:
                 ),
                 "extent_release_bytes": sum(
                     int(snapshot["resident_release_bytes"])
+                    for snapshot in extent_snapshots
+                ),
+                "total_onload_count": sum(
+                    int(snapshot.get("onload_count", 0))
+                    for snapshot in extent_snapshots
+                ),
+                "total_onload_bytes": sum(
+                    int(snapshot.get("onload_bytes", 0))
                     for snapshot in extent_snapshots
                 ),
                 "resident_fast_path_forward_count": sum(

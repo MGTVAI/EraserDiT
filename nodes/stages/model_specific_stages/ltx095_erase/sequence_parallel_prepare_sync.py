@@ -13,7 +13,7 @@ from nodes.schedule_batch import Req
 from nodes.stages.base import PipelineStage
 from distributed.group_coordinator import GroupCoordinator
 from distributed.parallel_state import ParallelContext
-from videoerase.windowing.sp_dispatch import (
+from pipelines.runtime.windowing.sp_dispatch import (
     LTX095ActiveSPWindowContext,
     resolve_active_ltx095_window_commit_context,
 )

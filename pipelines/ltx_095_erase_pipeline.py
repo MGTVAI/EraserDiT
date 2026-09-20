@@ -31,51 +31,51 @@ from nodes.stages.model_specific_stages.ltx095_erase._common import (
     _onload_module,
     _should_skip_writer_only_stage,
 )
-from videoerase.drivers.full import run_ltx095_full_runtime
-from videoerase.io.output import (
+from pipelines.runtime.drivers.full import run_ltx095_full_runtime
+from pipelines.runtime.io.output import (
     close_ltx095_runtime_resources,
     finalize_ltx095_output,
 )
-from videoerase.context import prepare_ltx095_runtime_context
-from videoerase.events import (
+from pipelines.runtime.context import prepare_ltx095_runtime_context
+from pipelines.runtime.events import (
     record_runtime_event as runtime_record_event,
     record_task_state_snapshot as runtime_record_task_state_snapshot,
     update_window_state as runtime_update_window_state,
 )
-from videoerase.scheduler import RuntimeTaskScheduler
-from videoerase.tracks import (
+from pipelines.runtime.scheduler import RuntimeTaskScheduler
+from pipelines.runtime.tracks import (
     _resolve_object_scenes,
     _resolve_object_value,
 )
-from videoerase.contracts import (
+from pipelines.runtime.contracts import (
     LTX095EraseRuntimeContext,
     ObjectRuntimeState,
     _is_windowed_runtime_mode,
 )
-from videoerase.io.streaming import (
+from pipelines.runtime.io.streaming import (
     ensure_window_cache_loaded as runtime_ensure_window_cache_loaded,
     evict_cache_before as runtime_evict_cache_before,
     flush_windowed_frames as runtime_flush_windowed_frames,
     materialize_object_window_mask as runtime_materialize_object_window_mask,
     release_mask_frames as runtime_release_mask_frames,
 )
-from videoerase.windowing.cache_ops import (
+from pipelines.runtime.windowing.cache_ops import (
     append_passthrough_gap as runtime_append_passthrough_gap,
     create_empty_cache_like as runtime_create_empty_cache_like,
     register_runtime_task_chain_hooks as runtime_register_task_chain_hooks,
     set_object_overlap_cache as runtime_set_object_overlap_cache,
 )
-from videoerase.windowing.commit_ops import (
+from pipelines.runtime.windowing.commit_ops import (
     commit_ltx095_window,
     commit_ltx095_window_to_object_output,
     record_ltx095_skipped_object_window,
     record_ltx095_skipped_window,
 )
-from videoerase.windowing.materializer import (
+from pipelines.runtime.windowing.materializer import (
     cache_ltx095_window_text_embeddings,
 )
-from videoerase.windowing.planner import build_ltx095_window_specs
-from videoerase.drivers.windowed import (
+from pipelines.runtime.windowing.planner import build_ltx095_window_specs
+from pipelines.runtime.drivers.windowed import (
     finalize_ltx095_object_window_step,
     maybe_flush_ltx095_streaming_runtime,
     object_input_ready,
@@ -98,7 +98,7 @@ from utils.video_io import (
     read_video_tensor,
 )
 from utils.windowing import WindowSpec
-from videoerase.windowing.handlers import (
+from pipelines.runtime.windowing.handlers import (
     _build_runtime_mask,
     _build_runtime_video,
     _commit_runtime_window_to_object_output,
@@ -155,7 +155,7 @@ class LTX095ErasePipeline(ComposedPipelineBase):
     pipeline_name = "LTX095ErasePipeline"
 
     # Adapter-provided service contract (schema, sampling builder, capability).
-    from service.contracts.ltx095 import LTX095_SERVICE_CONTRACT as service_contract
+    from config.service_contracts.ltx095 import LTX095_SERVICE_CONTRACT as service_contract
     pipeline_config_cls = LTX095PipelineConfig
     sampling_params_cls = LTX095EraseSamplingParams
 

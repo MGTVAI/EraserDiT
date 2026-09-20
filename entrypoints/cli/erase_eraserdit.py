@@ -27,7 +27,7 @@ from utils.distributed_runtime import destroy_runtime_distributed
 from utils.inference_timing import build_ltx095_pure_timing_payload
 from utils.determinism import enable_deterministic_mode
 from utils.logging_utils import init_logger
-from videoerase.session import EraseSession
+from pipelines.session import EraseSession
 
 logger = init_logger(__name__)
 
@@ -88,7 +88,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "windowed_streaming uses bf16 caches and is only for very long inputs",
     )
     parser.add_argument("--runtime-workdir", type=str, default=None)
-    parser.add_argument("--resource-policy", type=str, default="fullgpu")
+    parser.add_argument("--max-weight-usage", type=int, default=5 * 1024**3,
+                        help="dynamic offload managed-weight budget in bytes (excludes activations)")
+    parser.add_argument("--pin-memory", action=argparse.BooleanOptionalAction, default=False,
+                        help="pin small unwrapped weights; dynamic extents always use pinned mirrors")
+    parser.add_argument(
+        "--resource-policy", default="fullgpu",
+        choices=["fullgpu", "fullgpu_pin_memory", "dynamic_offload", "component_offload"],
+        help="component_offload keeps only the current compute component on GPU",
+    )
     parser.add_argument(
         "--attention-backend",
         type=str,
@@ -136,6 +144,8 @@ def _build_server_args(args: argparse.Namespace) -> ServerArgs:
         device=args.device,
         weight_dtype=args.dtype,
         resource_policy=args.resource_policy,
+        max_weight_usage=args.max_weight_usage,
+        pin_memory=args.pin_memory,
         pipeline_config=pipeline_config,
         component_architectures=dict(pipeline_config.component_architectures),
         attention_backend=args.attention_backend,
@@ -287,6 +297,8 @@ def main() -> None:
                     "e2e_seconds_excluding_warmup": elapsed - warmup_seconds,
                     "warmup": warmup,
                     "runtime_video_metadata": video_meta,
+                    "resource_policy": server_args.resolve_resource_policy().as_dict(),
+                    "memory_runtime": result.extra.get("memory_runtime"),
                     "timing": build_ltx095_pure_timing_payload(
                         result.metrics,
                         extra={
@@ -322,4 +334,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

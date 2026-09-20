@@ -11,7 +11,7 @@ import torch
 from config.ltx095 import LTX095EraseSamplingParams
 from config.server_args import ServerArgs
 from nodes.schedule_batch import Req
-from videoerase.session import LTX095EraseSession
+from pipelines.session import LTX095EraseSession
 from utils.distributed_runtime import get_runtime_distributed_context
 from utils.inference_timing import diagnostic_timing_enabled
 from utils.logging_utils import init_logger

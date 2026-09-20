@@ -18,11 +18,11 @@ from entrypoints.cli.erase_ltx095 import (
 from entrypoints.http_server import create_http_server_app
 from entrypoints.server.storage import create_result_storage
 from parallel.stage_policy import synchronize_stage_error
-from service.artifacts import TaskArtifactManager
-from service.scheduler import ServiceScheduler
-from service.task_store import TaskStore
-from service.worker import ResidentWorkerGroup
-from service.contracts.ltx095 import LTX095_SERVICE_CONTRACT
+from entrypoints.server.artifacts import TaskArtifactManager
+from entrypoints.server.scheduler import ServiceScheduler
+from entrypoints.server.task_store import TaskStore
+from entrypoints.server.worker import ResidentWorkerGroup
+from config.service_contracts.ltx095 import LTX095_SERVICE_CONTRACT
 from utils.distributed_runtime import (
     barrier_if_distributed,
     destroy_runtime_distributed,

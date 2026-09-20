@@ -64,6 +64,8 @@ class FlexibleModuleExtentCudaAsync(FlexibleModuleExtent):
         self._resident_release_bytes = 0
         self._resident_fast_path_forward_count = 0
         self._accept_tasks = True
+        self._onload_count = 0
+        self._onload_bytes = 0
 
     def _state(self) -> FlexibleMemoryDeviceState:
         if self._device_state is not None:
@@ -116,6 +118,8 @@ class FlexibleModuleExtentCudaAsync(FlexibleModuleExtent):
                 f"flexible memory background task failed on {state.device}"
             ) from state.background_error
         self._finish_previous_offload(state)
+        self._active_calc_event = None
+        self._active_onload_event = None
 
         required = self.estimated_memory_requirement()
         state.validate_extent_budget(self.module_ref.__class__.__name__, required)
@@ -126,30 +130,45 @@ class FlexibleModuleExtentCudaAsync(FlexibleModuleExtent):
             rely.sync_cpu()
             rely.end_cuda_event.synchronize()
 
-        with self._stream_context(state.htod_stream):
-            current = self._current_stream_fn()
-            onload_event.record_start(current)
-            super().weight_onload(label)
-            onload_event.record_end(current)
+        try:
+            with self._stream_context(state.htod_stream):
+                current = self._current_stream_fn()
+                onload_event.record_start(current)
+                super().weight_onload(label)
+                onload_event.record_end(current)
+        except BaseException:
+            # No event has been published yet. Roll back a partial HtoD copy
+            # only after that stream has finished touching the pinned storage.
+            state.htod_stream.synchronize()
+            super().weight_offload(f"{label}:onload_rollback")
+            raise
         state.add_op_event(onload_event)
         self._active_onload_event = onload_event
+        self._onload_count += 1
+        self._onload_bytes += required
 
     @torch.compiler.disable(recursive=False)
     def inference(self, label: str = "", *args, **kwargs) -> Any:
         state = self._state()
         calc_event = self._new_op_event(EventType.CALC)
         caller_stream = self._current_stream_fn()
-        with self._stream_context(state.compute_stream):
-            state.compute_stream.wait_event(
-                self._active_onload_event.end_cuda_event
-            )
-            current = self._current_stream_fn()
-            calc_event.record_start(current)
-            output = super().inference(label, *args, **kwargs)
-            calc_event.record_end(current)
-        if caller_stream is not state.compute_stream:
-            caller_stream.wait_event(calc_event.end_cuda_event)
-        self._active_calc_event = calc_event
+        if state.compute_stream != caller_stream:
+            state.compute_stream.wait_stream(caller_stream)
+        try:
+            with self._stream_context(state.compute_stream):
+                state.compute_stream.wait_event(
+                    self._active_onload_event.end_cuda_event
+                )
+                current = self._current_stream_fn()
+                calc_event.record_start(current)
+                try:
+                    output = super().inference(label, *args, **kwargs)
+                finally:
+                    calc_event.record_end(current)
+                    self._active_calc_event = calc_event
+        finally:
+            if self._active_calc_event is calc_event and caller_stream != state.compute_stream:
+                caller_stream.wait_event(calc_event.end_cuda_event)
         return output
 
     def _settle_active_onload(
@@ -203,6 +222,10 @@ class FlexibleModuleExtentCudaAsync(FlexibleModuleExtent):
                 state.dtoh_stream.wait_event(
                     self._active_calc_event.end_cuda_event
                 )
+            elif self._active_onload_event is not None:
+                state.dtoh_stream.wait_event(
+                    self._active_onload_event.end_cuda_event
+                )
             current = self._current_stream_fn()
             offload_event.record_start(current)
             offload_event.record_end(current)
@@ -238,6 +261,8 @@ class FlexibleModuleExtentCudaAsync(FlexibleModuleExtent):
 
     def residency_snapshot(self) -> dict[str, object]:
         return {
+            "onload_count": self._onload_count,
+            "onload_bytes": self._onload_bytes,
             "is_resident": self._resident,
             "resident_onload_count": self._resident_onload_count,
             "resident_onload_bytes": self._resident_onload_bytes,
@@ -247,6 +272,10 @@ class FlexibleModuleExtentCudaAsync(FlexibleModuleExtent):
                 self._resident_fast_path_forward_count
             ),
         }
+
+    def settle_transfers(self) -> None:
+        """Wait until a layer's queued offload has restored its CPU views."""
+        self._finish_previous_offload(self._state())
 
     def close(
         self,
@@ -265,3 +294,8 @@ class FlexibleModuleExtentCudaAsync(FlexibleModuleExtent):
             restore_forward=restore_forward,
             restore_module_storage=restore_module_storage,
         )
+        if restore_forward:
+            module = self.module_ref
+            if getattr(module, "flexible_extent", None) is self:
+                delattr(module, "flexible_extent")
+                delattr(module, "is_flexible")

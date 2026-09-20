@@ -13,10 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-import time
+from itertools import count
 import torch
 from concurrent.futures._base import Future
 from .event_type import EventType
+
+_EVENT_IDS = count()
 
 
 class OPEvent:
@@ -40,7 +42,9 @@ class OPEvent:
         self.object_id = object_id
         self.object_tag = object_tag
 
-        self.timestamp = int(time.time() * (10**9))
+        # Used as an event identity, including across worker threads. A float
+        # wall-clock timestamp can collide for adjacent operations.
+        self.timestamp = next(_EVENT_IDS)
         self.cpu_event = cpu_event
         self.start_cuda_event = (
             torch.cuda.Event() if start_cuda_event is None else start_cuda_event

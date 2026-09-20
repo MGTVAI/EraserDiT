@@ -16,11 +16,11 @@ from entrypoints.server.protocol import (
     VideoListResponse,
     VideoResponse,
 )
-from service.artifacts import (
+from entrypoints.server.artifacts import (
     TaskArtifactManager,
     resolve_allowed_input,
 )
-from service.task import ServiceError, TaskRecord, TaskStatus
+from entrypoints.server.task import ServiceError, TaskRecord, TaskStatus
 
 
 def create_video_router(

@@ -13,6 +13,7 @@ import time
 import torch
 
 from config.server_args import ServerArgs
+from memory.policies.component_offload import offload_component
 from nodes.schedule_batch import Req
 from nodes.stages.denoising import DenoisingStage
 from nodes.stages.model_specific_stages.eraserdit_erase._common import (
@@ -47,6 +48,7 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
         super().__init__(transformer, server_args)
         self._scheduler = scheduler
 
+    @offload_component("transformer")
     def forward(self, batch: Req, server_args: ServerArgs) -> Req:
         del server_args
         transformer = batch.modules.get("transformer") or self._transformer
