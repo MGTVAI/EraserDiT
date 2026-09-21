@@ -183,7 +183,7 @@ python scripts/m4_report.py                              # 汇总本文件的两
 | 项 | 值 |
 | --- | --- |
 | GPU | NVIDIA A100-SXM4-80GB，共享卡（同卡有其他租户常驻 ~18 GiB） |
-| 权重快照 | `models--jieeliu--EraserDiT/snapshots/904fb412da76235085dbbccaefdbde4979fa3d29` |
+| 权重快照 | `jieeliu/EraserDiT@904fb412da76235085dbbccaefdbde4979fa3d29` |
 | 种子 | 42（`B` 与 `N`/`A` 各自固定） |
 | 采样参数 | 默认：50 步 × strength 0.8 = 40 步、guidance 3.0、infer_len 121、overlap 9、fps 25 |
 | 随机性口径 | `B` 确定性；`N`/`A` 快速（`ERASERDIT_DETERMINISTIC=0`） |

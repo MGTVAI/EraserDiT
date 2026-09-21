@@ -26,10 +26,15 @@ def resolve_allowed_input(path: str, allowed_roots: tuple[str, ...]) -> Path:
             "local input paths are disabled for this deployment",
             status_code=422,
         )
-    resolved = Path(path).expanduser().resolve(strict=True)
+    try:
+        resolved = Path(path).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError, ValueError) as error:
+        raise ServiceError(
+            "invalid_input_path", "input path cannot be resolved", status_code=422
+        ) from error
     if not resolved.is_file():
         raise ServiceError("invalid_input_path", "input path is not a file", status_code=422)
-    roots = tuple(Path(root).resolve(strict=True) for root in allowed_roots)
+    roots = tuple(Path(root).resolve() for root in allowed_roots)
     if not any(_is_relative_to(resolved, root) for root in roots):
         raise ServiceError(
             "input_path_not_allowed",

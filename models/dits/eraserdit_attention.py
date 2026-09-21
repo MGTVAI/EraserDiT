@@ -271,9 +271,11 @@ class EraserDiTAttentionProcessor:
 
         query, key, value = self._to_bshd(attn, query, key, value)
         _selection, impl = self._resolve_self_attention(query, has_attn_mask=False)
-        output = impl.forward(
-            query, key, value, AttentionMetadata(attn_mask=None)
-        )
+        sp = getattr(self, "sequence_parallel", None)
+        if sp is None:
+            output = impl.forward(query, key, value, AttentionMetadata(attn_mask=None))
+        else:
+            output = sp.attention(query, key, value, impl, AttentionMetadata(attn_mask=None))
         return self._project_output(attn, output, query.dtype)
 
     def cross_attn(
@@ -282,6 +284,7 @@ class EraserDiTAttentionProcessor:
         hidden_states: torch.Tensor,
         encoder_hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
+        text_cache=None,
     ) -> torch.Tensor:
         batch_size, sequence_length, _ = encoder_hidden_states.shape
         if attention_mask is not None:
@@ -293,13 +296,17 @@ class EraserDiTAttentionProcessor:
             )
 
         query = attn.to_q(hidden_states)
-        key = attn.to_k(encoder_hidden_states)
-        value = attn.to_v(encoder_hidden_states)
+        if text_cache is None:
+            key = attn.to_k(encoder_hidden_states)
+            value = attn.to_v(encoder_hidden_states)
+        else:
+            key, value = text_cache.key_value(attn, encoder_hidden_states)
         # The reference processor applies ``norm_q``/``norm_k`` unconditionally,
         # so cross-attention is normalised too.  Only RoPE is self-attention
         # specific (``attn2`` is always called with ``image_rotary_emb=None``).
         query = attn.norm_q(query)
-        key = attn.norm_k(key)
+        if text_cache is None:
+            key = attn.norm_k(key)
         query = query.unflatten(2, (attn.heads, -1)).transpose(1, 2)
         key = key.unflatten(2, (attn.heads, -1)).transpose(1, 2)
         value = value.unflatten(2, (attn.heads, -1)).transpose(1, 2)
@@ -317,11 +324,12 @@ class EraserDiTAttentionProcessor:
         encoder_hidden_states: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         image_rotary_emb: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+        text_cache=None,
     ) -> torch.Tensor:
         if encoder_hidden_states is None:
             return self.self_attn(attn, hidden_states, image_rotary_emb)
         return self.cross_attn(
-            attn, hidden_states, encoder_hidden_states, attention_mask
+            attn, hidden_states, encoder_hidden_states, attention_mask, text_cache=text_cache
         )
 
 

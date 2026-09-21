@@ -1,5 +1,9 @@
 # P2：EraserDiT Transformer 缓存
 
+最新验收规则见 [优化验收标准](optimization_acceptance.md)：非 cache/量化优化采用 SSIM ≥ 0.985、MSE ≤ 36、MAE ≤ 6；cache/量化按视觉大致一致验收。下文历史字节一致结果保留，不再作为必须条件。
+
+最新完整视频、指定参考输出的正确性复测见 [cache_correctness.md](cache_correctness.md)。
+
 ## 接入与默认行为
 
 `transformer_cache_mode=off | teacache | cache_dit`，默认 `off`，同一请求只能选择一种。
@@ -7,9 +11,10 @@ CLI、task-file、HTTP 本地文件请求和 multipart parameters 使用相同�
 当前两种模式均为实验配置，不能与整个 Transformer 的 `torch.compile` 组合。
 可以与 P1 的 `dynamic_offload` 组合，缓存路径仍通过 block 卸载包装器执行。
 
-TeaCache 比较每步 `time_embed` 产生的 `temb`，在投影后缓存整个 block 栈的残差。
-**未使用 LTX095 的拟合系数**：策略 `eraserdit_temb_relative_l1_experimental` 为恒等多项式，
-直接累积 timestep 调制张量的相对 L1 距离。这是未校准的实验策略；`calibration_size=0`、
+TeaCache 比较第一层 `norm1(hidden_states) * (1 + scale_msa) + shift_msa`，在投影后缓存整个 block 栈的残差。
+探针通过第一层 forward 的卸载包装器计算，确保动态卸载时权重在正确设备上。
+**未使用 LTX095 的拟合系数**：策略 `eraserdit_modulated_input_relative_l1_experimental` 为恒等多项式，
+直接累积时间调制后视频特征的相对 L1 距离。这是未校准的实验策略；`calibration_size=0`、
 `coefficient_calibrated=false`，阈值不能照搬其他模型。
 
 cache-dit 使用项目已有 DBCache 控制器：每步计算前 F 层，比较前段残差与最近一次完整计算时的前段残差，
@@ -25,7 +30,7 @@ cache-dit 使用项目已有 DBCache 控制器：每步计算前 F 层，比较�
 |---|---:|---|
 | `transformer_cache_mode` | `off` | 缓存模式 |
 | `transformer_cache_force_compute` | `false` | 保持缓存接入但禁止复用，检查等价性 |
-| `teacache_threshold` | `0.005` | 原始 temb 距离的累计阈值，未校准 |
+| `teacache_threshold` | `0.005` | 第一层调制输入距离的累计阈值，未校准 |
 | `max_teacache_consecutive_skip` | `1` | TeaCache 连续跳步上限 |
 | `teacache_warmup_steps` | `4` | TeaCache 前段完整计算步数 |
 | `cache_dit_front_blocks` | `1` | 始终执行的前段层数 |
@@ -69,7 +74,7 @@ export HF_HUB_OFFLINE=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export PYTHONPATH=.
 PY=/mnt/shanhai-ai/envs/conda/envs/EraserDiT/bin/python
-MODEL=/root/.cache/huggingface/hub/models--jieeliu--EraserDiT/snapshots/904fb412da76235085dbbccaefdbde4979fa3d29
+MODEL=/mnt/shanhai-ai/shanhai-workspace/zhouhao6/EraserDiT/results/cache_prediction_model
 
 $PY entrypoints/cli/erase_eraserdit.py --model-path "$MODEL" \
   --video-input results/dynamic_offload_smoke/video_33.mp4 \
@@ -163,3 +168,48 @@ cache-dit 0.03 为 0.9592 / 28.95 dB。显式启用时的实验默认阈值据�
 P2 工程接入和小尺寸功能验证完成；正式验收待两组原尺寸完整步数、分区域/时序质量检查、
 每配置至少五次稳定负载测量。接下来优先对上述候选做原尺寸验证和 TeaCache 系数校准，
 再推进 P3 量化；不将尚未验收的缓存默认启用。
+
+### 增大阈值复测（2026-09-20）
+
+按用户要求，保持上组 192×320 / 33 帧 / 三窗口、50 调度步（实际 40 步）、SDPA、bf16、
+seed=42、dynamic_offload 2 GiB。仅改变请求阈值，保持前四步/末一步完整计算、最多连续复用一次；
+TeaCache 测 0.01/0.03/0.10，cache-dit 测 0.05/0.10/0.20。
+全部在物理 GPU 2 串行执行，GPU 3 未启动任务。前后各执行一次 off，共 8 次请求。
+
+| 配置 | 复用率 | 端到端秒 | 去噪秒 | 相对首个 off 耗时减少 | 整帧 SSIM-Y | PSNR-Y dB |
+|---|---:|---:|---:|---:|---:|---:|
+| off | 0.0% | 67.13 | 60.77 | +0.0% | 1.0000 | ∞ |
+| off_repeat | 0.0% | 86.56 | 81.06 | -28.9% | 1.0000 | ∞ |
+| tea_001 | 20.0% | 58.11 | 53.52 | +13.4% | 0.9266 | 25.76 |
+| tea_003 | 45.0% | 67.40 | 60.80 | -0.4% | 0.9015 | 24.28 |
+| tea_010 | 45.0% | 40.71 | 36.20 | +39.4% | 0.9015 | 24.28 |
+| dbc_005 | 23.3% | 58.90 | 54.42 | +12.3% | 0.9156 | 25.03 |
+| dbc_010 | 45.0% | 57.28 | 52.80 | +14.7% | 0.8950 | 24.16 |
+| dbc_020 | 45.0% | 61.07 | 56.26 | +9.0% | 0.8950 | 24.16 |
+
+**六个增大阈值配置均未通过整帧 SSIM ≥0.95 / PSNR ≥28 dB 的质量线。**
+两次 off 输出逐字节一致，并与上一组 50 步 off 一致，保证质量比较使用相同基准。
+
+TeaCache 0.03 与 0.10 都复用 108/240 次，视频逐字节一致；cache-dit 0.10 与 0.20 也都复用
+108/240 次，视频逐字节一致。当前 warmup/end-guard/max-consecutive=1 下，复用率已经达到
+45% 上限；继续增加这些阈值没有新增跳步收益。cache-dit 复用中段 27/28 层，对应总 block
+执行数减少约 43.4%，不是整个前向完全跳过。
+
+**表中耗时变化不能解释为稳定加速比。** 前后 off 为 67.13 / 86.56 秒，相差约 28.9%；
+相同输出、相同复用次数的 TeaCache 0.03/0.10 也分别耗时 67.40 / 40.71 秒。
+因此 TeaCache 0.10 的单次耗时下降 39.4% 是本轮观测值，不能归因于它比 0.03 多跳步。
+cache-dit 最快观测值为阈值 0.10、57.28 秒，相对首个 off 减少 14.7%。
+每档仅一次，尚不满足稳定负载、多次重复的性能门禁；本轮不提升默认阈值。
+
+可复现任务、输出、逐窗口命中、分区域质量和 GPU 2 采样：
+`results/transformer_cache_smoke/higher_thresholds/` 下的 `tasks.json`、`runs.json`、
+`quality.json`、`summary.json`、`gpu2.csv`、MP4 与完整日志。推理和监控进程均已退出。
+沿用本报告 CLI 命令，将 `--output-path` 与缓存模式替换为
+`--task-file results/transformer_cache_smoke/higher_thresholds/tasks.json`，保持 50 调度步；
+比较脚本的 `--directory` 改为该目录即可。
+
+### 后续优化
+
+FP32 残差、无损文本投影/KV 缓存及本轮 GPU 0、1、6、7 实测见
+[缓存优化报告](cache_optimization.md)。当前活动缓存模式默认自动复用文本投影；
+可用 `--no-cache-text-projections` 关闭，或在 `off` 模式用 `--cache-text-projections` 单独启用无损档。

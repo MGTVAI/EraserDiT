@@ -359,7 +359,11 @@ class ServiceScheduler:
             }
 
     def health_snapshot(self) -> dict[str, object]:
-        return self.worker_group.health_snapshot()
+        health = dict(self.worker_group.health_snapshot())
+        with self._condition:
+            health["accepting"] = self._accepting
+            health["ready"] = bool(health["ready"] and self._accepting)
+        return health
 
     def shutdown(self, *, timeout: float) -> None:
         with self._condition:

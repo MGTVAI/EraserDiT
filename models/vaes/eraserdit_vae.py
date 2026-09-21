@@ -224,14 +224,27 @@ class LTXVideoDownsampler3d(nn.Module):
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         hidden_states = torch.cat([hidden_states[:, :, : self.stride[0] - 1], hidden_states], dim=2)
 
+        residual_input = hidden_states
+        layout = getattr(self, "_parallel_spatial_layout", None)
+        if layout is not None:
+            total_units, start_unit, end_unit = layout
+            factor = hidden_states.shape[-2] // (end_unit - start_unit)
+            # Preserve the original reduction layout of residual.mean(dim=2).
+            # BF16 channel-group reduction depends on the spatial strides.
+            residual_input = torch.nn.functional.pad(
+                hidden_states, (0, 0, start_unit * factor, (total_units - end_unit) * factor)
+            )
         residual = (
-            hidden_states.unflatten(4, (-1, self.stride[2]))
+            residual_input.unflatten(4, (-1, self.stride[2]))
             .unflatten(3, (-1, self.stride[1]))
             .unflatten(2, (-1, self.stride[0]))
         )
         residual = residual.permute(0, 1, 3, 5, 7, 2, 4, 6).flatten(1, 4)
         residual = residual.unflatten(1, (-1, self.group_size))
         residual = residual.mean(dim=2)
+        if layout is not None:
+            output_factor = residual.shape[-2] // total_units
+            residual = residual[..., start_unit * output_factor:end_unit * output_factor, :].contiguous()
 
         hidden_states = self.conv(hidden_states)
         hidden_states = (

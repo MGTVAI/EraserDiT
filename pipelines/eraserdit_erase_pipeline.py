@@ -1,6 +1,6 @@
 """EraserDiT erase pipeline with full-video window commit.
 
-Serial, single-GPU implementation of phase 1: the whole model layer is the ported
+The whole model layer is the ported
 EraserDiT algorithm, the windowing / commit / IO layer is the shared
 ``pipelines.runtime`` runtime.
 """
@@ -122,6 +122,12 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
     }
 
     def load_modules(self, server_args, loaded_modules=None):
+        from models.dits.eraserdit_quantization import validate_quantization
+        validate_quantization(server_args)
+        from parallel.eraserdit_cfg import validate_cfg_parallel
+        validate_cfg_parallel(server_args)
+        from parallel.eraserdit_mesh import resolve_mesh
+        resolve_mesh(server_args)
         policy = server_args.resolve_resource_policy()
         if policy.requested_dynamic_offload and (
             torch.device(server_args.device).type != "cuda" or not torch.cuda.is_available()
@@ -141,6 +147,11 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
         ):
             if enabled:
                 modules[name].to(device="cpu")
+        if server_args.transformer_quantization == "int8_w8a8_native":
+            from models.dits.eraserdit_quantization import quantize_transformer
+            report = quantize_transformer(modules["transformer"], server_args.pipeline_config.quantization_scope)
+            server_args.effective_transformer_quantization = report["mode"]
+            server_args.transformer_quantization_report = report
         return modules
 
     def create_pipeline_stages(self, server_args: ServerArgs) -> None:
@@ -429,6 +440,12 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
 
     @torch.no_grad()
     def forward(self, batch: Req, server_args: ServerArgs) -> Req:
+        from models.dits.eraserdit_quantization import validate_quantization, runtime_report
+        validate_quantization(server_args, batch)
+        from parallel.eraserdit_cfg import validate_cfg_parallel
+        validate_cfg_parallel(server_args, batch)
+        from parallel.eraserdit_mesh import resolve_mesh
+        resolve_mesh(server_args, batch)
         if getattr(self, "_closed", False):
             raise RuntimeError("EraserDiTErasePipeline is closed")
         params = _as_eraserdit_params(batch)
@@ -473,6 +490,7 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
                 "diagnostic.pipeline.output_finalize",
                 time.perf_counter() - output_finalize_start,
             )
+            result.extra["quantization"] = runtime_report(batch.modules["transformer"])
             return result
         finally:
             try:

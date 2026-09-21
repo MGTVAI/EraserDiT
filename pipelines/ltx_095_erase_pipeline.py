@@ -438,7 +438,7 @@ class LTX095ErasePipeline(ComposedPipelineBase):
         logger.info("Model memory registration: %s", self.memory_registration_summary)
         profile_detail = os.environ.get("MGERASE_LTX095_TRANSFORMER_PROFILE", "").strip()
         if profile_detail:
-            from profiling.cuda_module_profiler import (
+            from utils.cuda_module_profiler import (
                 build_ltx095_cuda_profiler,
             )
 

@@ -38,6 +38,12 @@ def collect_ltx095_window_transformer_cache_status(
     batch: Req,
     window_batch: Req,
 ) -> None:
+    cfg_status = window_batch.extra.get("cfg_parallel")
+    if cfg_status is not None:
+        batch.extra.setdefault("cfg_parallel", []).append(deepcopy(cfg_status))
+    for key in ("dit_parallel", "vae_parallel_encode", "vae_parallel_decode"):
+        if key in window_batch.extra:
+            batch.extra.setdefault("parallel_history", []).append({key: deepcopy(window_batch.extra[key])})
     status = window_batch.extra.get(TRANSFORMER_CACHE_STATUS_KEY)
     if status is None:
         return

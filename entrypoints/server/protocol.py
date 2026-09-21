@@ -65,6 +65,8 @@ class VideoListResponse(BaseModel):
     object: Literal["list"] = "list"
     data: list[VideoResponse]
     has_more: bool
+    first_id: str | None = None
+    last_id: str | None = None
 
 
 class DeletedTaskResponse(BaseModel):

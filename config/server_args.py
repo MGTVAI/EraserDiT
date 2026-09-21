@@ -87,12 +87,12 @@ class ServerArgs:
             self.transformer_quantization
         ).strip().lower()
         if self.transformer_quantization not in {
-            "none", "fp8_w8a8", "fp8_w8a8_triton_selective",
+            "none", "fp8_w8a8", "fp8_w8a8_triton_selective", "int8_w8a8_native",
             "int8_w8a8_viditq",
         }:
             raise ValueError(
                 "transformer_quantization must be one of: none, fp8_w8a8, "
-                "fp8_w8a8_triton_selective, int8_w8a8_viditq"
+                "fp8_w8a8_triton_selective, int8_w8a8_viditq, int8_w8a8_native"
             )
         self.text_encoder_quantization = str(
             self.text_encoder_quantization
@@ -115,7 +115,7 @@ class ServerArgs:
             raise ValueError("fp8_fast_accum must be boolean")
         if (
             self.transformer_quantization in {
-                "fp8_w8a8", "fp8_w8a8_triton_selective",
+                "fp8_w8a8", "fp8_w8a8_triton_selective", "int8_w8a8_native",
                 "int8_w8a8_viditq",
             }
             and self.weight_dtype is not None

@@ -40,6 +40,8 @@ class EraserDiTVideoRequest(BaseModel):
 
     transformer_cache_mode: Literal["off", "teacache", "cache_dit"] = "off"
     transformer_cache_force_compute: bool = False
+    cache_text_projections: bool | None = None
+    cache_residual_predictor: Literal["none", "linear"] = "none"
     teacache_threshold: float = Field(default=0.005, gt=0, allow_inf_nan=False)
     max_teacache_consecutive_skip: int = Field(default=1, ge=1)
     teacache_warmup_steps: int = Field(default=4, ge=0)

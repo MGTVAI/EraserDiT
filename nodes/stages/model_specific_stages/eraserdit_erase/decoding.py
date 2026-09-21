@@ -28,7 +28,6 @@ from utils.resource_policy import module_device, module_dtype
 class EraserDiTEraseDecodingStage(PipelineStage):
     @offload_component("vae", phase=MemoryPhase.VAE_DECODE)
     def forward(self, batch: Req, server_args: ServerArgs) -> Req:
-        del server_args
         vae = batch.modules["vae"]
         state = get_task_state(batch)
         latents = batch.latents
@@ -62,7 +61,8 @@ class EraserDiTEraseDecodingStage(PipelineStage):
         latents = (1 - decode_noise_scale) * latents + decode_noise_scale * noise
 
         with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
-            video = vae.decode(latents, decode_timestep, return_dict=False)[0]
+            from parallel.eraserdit_vae import tiled_vae
+            video = tiled_vae(vae, latents, server_args, batch, operation="decode", temb=decode_timestep)
 
         processor = VideoProcessor(
             vae_scale_factor=int(getattr(vae, "spatial_compression_ratio", 32))

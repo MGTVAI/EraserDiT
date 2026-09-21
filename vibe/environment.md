@@ -36,14 +36,16 @@
 ## 模型路径
 
 - 原代码默认模型标识：`jieeliu/EraserDiT`。
-- 加载位置：`utils/inference_utils.py` 中 `init(..., pre_dir=...)`。
-- 本地快照（后续显式模型路径）：
+- 原版加载位置：冻结基线的 `utils/inference_utils.py` 中 `init(..., pre_dir=...)`；该旧模块已从当前仓库删除。
+- 后续 CLI、服务和性能复测统一显式使用的模型路径：
 
 ```text
-/root/.cache/huggingface/hub/models--jieeliu--EraserDiT/snapshots/904fb412da76235085dbbccaefdbde4979fa3d29
+/mnt/shanhai-ai/shanhai-workspace/zhouhao6/EraserDiT/results/cache_prediction_model
 ```
 
-快照实测完整，共约 28 GB，无断链，各组件齐备：
+2026-09-20 核验：16 个模型文件共约 29.24 GB，权重软链接均可访问，
+与官方固定版本 `jieeliu/EraserDiT@904fb412da76235085dbbccaefdbde4979fa3d29` 校验一致。
+校验记录：`results/cache_prediction_model/availability_verified.json`。各组件齐备：
 
 | 组件 | 文件 | 大小 |
 | --- | --- | --- |
@@ -110,7 +112,7 @@ cd /mnt/shanhai-ai/shanhai-workspace/zhouhao6/EraserDiT
 - `import torch` 6.3 秒返回；`torch.cuda.is_available()` 为真，可见 8 个设备。
 - CUDA 版本 12.6，cuDNN 9.5.1，设备算力 `(8, 0)`。
 - bf16 矩阵运算正常。
-- 原版 `inference.py`、`utils/`、`models/`、`pipelines/` 的全部 import 均可解析。
+- 迁移前原版 `inference.py`、`utils/`、`models/`、`pipelines/` 的全部 import 均可解析（历史检查；当前仓库已删除旧入口及其专用工具）。
 - 注意力与编译路径的实际前向均跑通：SDPA、`flash_attn_func`、`sageattn`、`torch.compile`。
 
 > 早期记录过"尝试导入 `torch` 长时间未返回"。该现象在本次检查中未复现——环境于 09-17 17:35 重建过，问题应已随重建消失。
@@ -210,7 +212,7 @@ allocated 与 reserved 相差约 16 GiB，是分配器保留的缓存；实际�
 | 基线提交 | `9944867`（参考副本 `EraserDiT-ref`，detached 只读）；运行副本 `EraserDiT-baseline` 分支 `baseline-run` |
 | 外挂改动 | ① 固定随机源（`BASELINE_SEED=42`，已提交）② 常驻 pipeline wrapper（已提交）③ 确定性开关（**当前在工作区，未提交**） |
 | 外挂工具 | `baseline_runner.py`（常驻运行、计时、md5）、`compare_outputs.py`（质量指标口径） |
-| 权重快照 | `models--jieeliu--EraserDiT/snapshots/904fb412da76235085dbbccaefdbde4979fa3d29`，加载一律 `HF_HUB_OFFLINE=1` |
+| 权重快照 | `jieeliu/EraserDiT@904fb412da76235085dbbccaefdbde4979fa3d29`，加载一律 `HF_HUB_OFFLINE=1` |
 | 环境 | conda `EraserDiT`：Python 3.10.21 / torch 2.6.0+cu126 / cuDNN 9.5.1 / A100-SXM4-80GB |
 | 提示词与采样参数 | 见「仓库与输入视频」「硬件与运行约定」两节 |
 | 基准视频 | `10268234`：`results/2026-09-18T11-59-22-10268234/`，md5 `90cb85b29c33d88bbd239dedb77cac59`；`113000356`：`results/2026-09-18T12-22-28-113000356/`，md5 `23ff1ab8ea0327dcf9ac6b17d0e966cc` |
@@ -226,11 +228,15 @@ allocated 与 reserved 相差约 16 GiB，是分配器保留的缓存；实际�
 ## M1 新架构（2026-09-18，进行中）
 
 MGErase `python/` 已平铺到仓库根（`config/ entrypoints/ layers/ loader/ models/ nodes/
-pipelines/ utils/ memory/ cache/ distributed/ parallel/ profiling/`），
+pipelines/ utils/ memory/ cache/ distributed/ parallel/`，其中 profiling 模块已合并到 `utils/` 根目录），
 import 全量改写为无前缀形式；原版 `models/{transformer_ltx,autoencoder_kl_ltx}.py` 移到
 `models/dits/eraserdit_transformer.py`、`models/vaes/eraserdit_vae.py` 并改名为
 `EraserDiT*` 类以免与 LTX095 模型类在 `models/registry.py` 中撞名；`utils/pre.py` 等原版
 实现的语义已逐函数搬进 `utils/eraserdit_*.py` 与 `nodes/stages/model_specific_stages/eraserdit_erase/`。
+旧入口 `inference.py` 及其专用的 `utils/{inference_utils,pre,post,post_pkg,common}.py`
+已删除；文档与代码注释中的原版文件行号用于追溯冻结基线。
+`pipelines/eraserdit_video2video.py` 仍供 `scripts/m1b_model_ab.py` 做模型 A/B 验证，
+`utils/colorfix_wmask.py` 仍由当前后处理模块使用。
 
 入口：`./inference_cli.sh`（单任务参数或 `--task-file` JSON 任务数组），
 `ERASERDIT_DETERMINISTIC=0` 关闭确定性口径（默认开）。渲染在 GPU 2 上实测：
@@ -299,7 +305,7 @@ import 全量改写为无前缀形式；原版 `models/{transformer_ltx,autoenco
 
 ```bash
 HF_HUB_OFFLINE=1 ./inference_cli.sh \
-  --model-path /root/.cache/huggingface/hub/models--jieeliu--EraserDiT/snapshots/904fb412da76235085dbbccaefdbde4979fa3d29 \
+  --model-path /mnt/shanhai-ai/shanhai-workspace/zhouhao6/EraserDiT/results/cache_prediction_model \
   --video-input data/10268234.mp4 --mask-input data/10268234_mask.mp4 \
   --output-path results/m1b/final2_10268234.mp4 \
   --prompt "There is a bridge over the lake."
@@ -321,7 +327,7 @@ python EraserDiT-baseline/compare_outputs.py \
 （`completed`，window/object 计数与指标齐备）、结果下载与删除。
 
 ```
-./inference_server.sh --pipeline-name EraserDiTErasePipeline --model-path <snapshot> \
+./inference_server.sh --pipeline-name EraserDiTErasePipeline --model-path /mnt/shanhai-ai/shanhai-workspace/zhouhao6/EraserDiT/results/cache_prediction_model \
   --task-root /tmp/mgerase_svc_tasks --input-allowed-root "$PWD/data"
 python scripts/service_smoke.py --base-url http://127.0.0.1:30000 \
   --video data/10268234.mp4 --mask data/10268234_mask.mp4 --prompt "There is a bridge over the lake."

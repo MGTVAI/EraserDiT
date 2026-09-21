@@ -274,14 +274,16 @@ class TeaCacheController:
         state.previous_step = step
         state.previous_modulated_input = modulated_input.detach().clone()
         state.previous_layout_signature = state.pending_layout_signature
-        state.previous_residual = (
-            output_hidden_states - input_hidden_states
-        ).detach().clone()
+        state.previous_residual = self._compute_residual(input_hidden_states, output_hidden_states)
         state.accumulated_distance = 0.0
         state.consecutive_skips = 0
         state.calc_steps += 1
         state.pending = None
         state.pending_step = None
+
+    @staticmethod
+    def _compute_residual(input_hidden_states, output_hidden_states):
+        return (output_hidden_states - input_hidden_states).detach().clone()
 
     def finish_window(self) -> dict[str, Any]:
         return self._close(abort_reason=None)

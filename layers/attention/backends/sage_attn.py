@@ -128,6 +128,8 @@ class SageAttentionImpl(AttentionImpl):
         key: torch.Tensor,
         value: torch.Tensor,
         attn_metadata: AttentionMetadata,
+        *,
+        key_already_smoothed: bool = False,
     ) -> torch.Tensor:
         validate_bshd_qkv(query, key, value)
         if attn_metadata.attn_mask is not None:
@@ -144,4 +146,5 @@ class SageAttentionImpl(AttentionImpl):
             is_causal=self.causal,
             sm_scale=self.softmax_scale,
             return_lse=False,
+            smooth_k=not key_already_smoothed,
         )

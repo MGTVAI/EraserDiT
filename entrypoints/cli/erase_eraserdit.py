@@ -28,6 +28,8 @@ from utils.inference_timing import build_ltx095_pure_timing_payload
 from utils.determinism import enable_deterministic_mode
 from utils.logging_utils import init_logger
 from pipelines.session import EraseSession
+from parallel.eraserdit_cfg import validate_cfg_parallel
+from parallel.eraserdit_mesh import resolve_mesh
 
 logger = init_logger(__name__)
 
@@ -56,8 +58,10 @@ _PARAM_FIELDS = {
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run the EraserDiT erase pipeline (windowed, single GPU)."
+        description="Run the EraserDiT erase pipeline (windowed, optional dual-GPU CFG)."
     )
+    parser.add_argument("--transformer-quantization", choices=("none", "int8_w8a8_native"), default="none")
+    parser.add_argument("--quantization-scope", choices=("blocks", "ffn"), default="blocks")
     parser.add_argument("--model-path", type=str, required=False)
     parser.add_argument("--video-input", type=str, default=None)
     parser.add_argument("--mask-input", type=str, default=None)
@@ -83,13 +87,28 @@ def _build_parser() -> argparse.ArgumentParser:
         options = {"default": default}
         if name == "transformer_cache_mode":
             options["choices"] = ("off", "teacache", "cache_dit")
-        elif isinstance(default, bool):
+        elif name == "cache_residual_predictor":
+            options["choices"] = ("none", "linear")
+        elif name == "cache_text_projections" or isinstance(default, bool):
             options["action"] = argparse.BooleanOptionalAction
         else:
             options["type"] = type(default)
         parser.add_argument("--" + name.replace("_", "-"), **options)
     parser.add_argument("--dtype", type=str, default="bf16")
     parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--cfg-parallel-device", default=None,
+                        help="secondary local CUDA device for negative CFG, e.g. cuda:1")
+    parser.add_argument("--sp-degree", type=int, default=1)
+    parser.add_argument("--sp-linear-mode", choices=["reference", "sharded"], default="reference",
+                        help="reference preserves full GEMM shape; sharded is experimental BF16 numerics")
+    parser.add_argument("--cfg-degree", type=int, default=1)
+    parser.add_argument("--vae-degree", type=int, default=1)
+    parser.add_argument("--parallel-devices", type=lambda s: tuple(int(i) for i in s.split(',')), default=None,
+                        help="ordered local CUDA indices, e.g. 0,1,2,3")
+    parser.add_argument("--vae-tiling", action=argparse.BooleanOptionalAction, default=False,
+                        help="explicit spatial tiling; numerics differ from untiled VAE")
+    parser.add_argument("--vae-tile-size", type=int, default=512)
+    parser.add_argument("--vae-tile-stride", type=int, default=448)
     parser.add_argument(
         "--runtime-mode",
         type=str,
@@ -145,14 +164,21 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _build_server_args(args: argparse.Namespace) -> ServerArgs:
     pipeline_config = EraserDiTPipelineConfig(
+        quantization_scope=args.quantization_scope,
         dit_precision=args.dtype,
         vae_precision=args.dtype,
         text_encoder_precision=args.dtype,
+        cfg_parallel_device=args.cfg_parallel_device,
+        sp_degree=args.sp_degree, cfg_degree=args.cfg_degree, vae_degree=args.vae_degree,
+        sp_linear_mode=args.sp_linear_mode,
+        parallel_devices=args.parallel_devices, vae_tiling=args.vae_tiling,
+        vae_tile_size=args.vae_tile_size, vae_tile_stride=args.vae_tile_stride,
     )
     return ServerArgs(
         model_path=str(Path(args.model_path).expanduser().resolve()),
         pipeline_class_name=PIPELINE_NAME,
         device=args.device,
+        transformer_quantization=args.transformer_quantization,
         weight_dtype=args.dtype,
         resource_policy=args.resource_policy,
         max_weight_usage=args.max_weight_usage,
@@ -256,6 +282,8 @@ def main() -> None:
     task_params = [_task_to_sampling_params(task, args) for task in tasks]
     for params in task_params:
         resolve_eraserdit_cache_params(params, enable_torch_compile=server_args.enable_torch_compile)
+        validate_cfg_parallel(server_args, params)
+        resolve_mesh(server_args, params)
 
     session = None
     try:
@@ -318,6 +346,9 @@ def main() -> None:
                     "runtime_video_metadata": video_meta,
                     "resource_policy": server_args.resolve_resource_policy().as_dict(),
                     "memory_runtime": result.extra.get("memory_runtime"),
+                    "cfg_parallel": result.extra.get("cfg_parallel"),
+                    "quantization": result.extra.get("quantization"),
+                    "parallel_history": result.extra.get("parallel_history", []),
                     "transformer_cache_history": result.extra.get("transformer_cache_history", []),
                     "timing": build_ltx095_pure_timing_payload(
                         result.metrics,

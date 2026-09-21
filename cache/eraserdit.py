@@ -5,8 +5,9 @@ from uuid import uuid4
 import torch
 
 from cache.base import CacheBranch
-from cache.cache_dit import CacheDitController
+from cache.eraserdit_text import EraserDiTTextCache
 from cache.teacache import TeaCacheController
+from cache.eraserdit_prediction import EraserDiTTeaCacheController, EraserDiTCacheDitController
 from config.eraserdit_cache import (
     MODEL_IDENTITY, resolve_eraserdit_cache_params, select_eraserdit_coefficients,
 )
@@ -20,6 +21,13 @@ class EraserDiTCacheWindow:
         self.batch = batch
         self.mode = mode.value
         self.controller = None
+        self._peak_retained_bytes = 0
+        text_cache_setting = getattr(batch, 'cache_text_projections', None)
+        enable_text_cache = self.mode != 'off' if text_cache_setting is None else text_cache_setting
+        self.text_caches = (
+            {branch: EraserDiTTextCache(self._record_retained_bytes) for branch in CacheBranch}
+            if enable_text_cache else {}
+        )
         if self.mode == 'off':
             return
         extra = batch.extra
@@ -33,25 +41,52 @@ class EraserDiTCacheWindow:
             model_identity=MODEL_IDENTITY,
         )
         if self.mode == 'teacache':
-            self.controller = TeaCacheController(
-                tea, coefficient_selector=select_eraserdit_coefficients, **common,
+            self.controller = EraserDiTTeaCacheController(
+                tea, residual_predictor=getattr(batch, 'cache_residual_predictor', 'none'),
+                coefficient_selector=select_eraserdit_coefficients, **common,
             )
         else:
             if self.force_compute:
                 dbc = replace(dbc, warmup_steps=max(total_steps, dbc.warmup_steps))
-            self.controller = CacheDitController(dbc, num_transformer_blocks=num_blocks, **common)
+            self.controller = EraserDiTCacheDitController(
+                dbc, residual_predictor=getattr(batch, 'cache_residual_predictor', 'none'),
+                num_transformer_blocks=num_blocks, **common,
+            )
+        self.controller._eraserdit_observe_retained = self._record_retained_bytes
+
+    def _record_retained_bytes(self):
+        storages = {}
+        for cache in self.text_caches.values():
+            storages.update(cache.retained_storages)
+        if self.controller is not None:
+            for state in (*self.controller._states.values(), *self.controller._forecasts.values()):
+                for t in vars(state).values():
+                    if isinstance(t, torch.Tensor):
+                        storages[(str(t.device), t.untyped_storage().data_ptr())] = t.untyped_storage().nbytes()
+        self._peak_retained_bytes = max(self._peak_retained_bytes, sum(storages.values()))
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc, tb):
+        self._record_retained_bytes()
         if self.controller is None:
             report = {'mode': 'off'}
         elif exc_type is None:
             report = self.controller.finish_window()
         else:
             report = self.controller.abort_window(exc_type.__name__)
-        report['peak_retained_tensor_bytes'] = getattr(self.controller, '_eraserdit_peak_retained_bytes', 0)
+        report['text_cache'] = {branch.value: cache.stats() for branch, cache in self.text_caches.items()}
+        for cache in self.text_caches.values():
+            cache.clear()
+            cache.on_update = None
+        if self.controller is not None:
+            self.controller._eraserdit_observe_retained = None
+        report['peak_retained_tensor_bytes'] = self._peak_retained_bytes
+        report['cache_text_projections'] = bool(self.text_caches)
+        if self.text_caches:
+            report['closed'] = True
+            report['aborted'] = exc_type is not None
         report['force_compute'] = self.force_compute
         report['experimental'] = self.mode != 'off'
         if self.mode == 'teacache':
@@ -60,31 +95,28 @@ class EraserDiTCacheWindow:
         return False
 
     def kwargs(self, branch, step):
-        if self.controller is None:
-            return {}
-        return {'cache_adapter': EraserDiTCacheBranch(self.controller, CacheBranch(branch), step)}
+        branch = CacheBranch(branch)
+        kwargs = {'text_cache': self.text_caches[branch]} if self.text_caches else {}
+        if self.controller is not None:
+            kwargs['cache_adapter'] = EraserDiTCacheBranch(self.controller, branch, step)
+        return kwargs
 
 
 class EraserDiTCacheBranch:
     def __init__(self, controller, branch, step):
         self.controller, self.branch, self.step = controller, branch, step
 
-    def run(self, hidden_states, temb, run_blocks, *, num_blocks, layout):
+    def run(self, hidden_states, modulated_input, run_blocks, *, num_blocks, layout):
         try:
-            return self._run(hidden_states, temb, run_blocks, num_blocks=num_blocks, layout=layout)
+            return self._run(hidden_states, modulated_input, run_blocks, num_blocks=num_blocks, layout=layout)
         finally:
-            # Retained cache tensors only; allocator peaks include transient activations.
-            storages = {}
-            for state in self.controller._states.values():
-                for value in vars(state).values():
-                    if isinstance(value, torch.Tensor):
-                        storage = value.untyped_storage()
-                        storages[(str(value.device), storage.data_ptr())] = storage.nbytes()
-            self.controller._eraserdit_peak_retained_bytes = max(
-                getattr(self.controller, '_eraserdit_peak_retained_bytes', 0), sum(storages.values()),
-            )
+            # Include exact text projections and borrowed conditioning storage,
+            # deduplicating storage across CFG branches and tensor views.
+            observer = self.controller._eraserdit_observe_retained
+            if observer is not None:
+                observer()
 
-    def _run(self, hidden_states, temb, run_blocks, *, num_blocks, layout):
+    def _run(self, hidden_states, modulated_input, run_blocks, *, num_blocks, layout):
         c = self.controller
         common = dict(
             branch=self.branch, step=self.step,
@@ -96,15 +128,15 @@ class EraserDiTCacheBranch:
             hidden_width=hidden_states.shape[-1],
         )
         if isinstance(c, TeaCacheController):
-            decision = c.check(modulated_input=temb, **common)
+            decision = c.check(modulated_input=modulated_input, **common)
             if decision.should_skip:
                 return c.apply_cached_update(
-                    branch=self.branch, step=self.step, modulated_input=temb,
+                    branch=self.branch, step=self.step, modulated_input=modulated_input,
                     input_hidden_states=hidden_states,
                 )
             output = run_blocks(hidden_states, 0, num_blocks)
             c.record_compute(
-                branch=self.branch, step=self.step, modulated_input=temb,
+                branch=self.branch, step=self.step, modulated_input=modulated_input,
                 input_hidden_states=hidden_states, output_hidden_states=output,
             )
             return output

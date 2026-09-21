@@ -85,6 +85,13 @@ class TaskStore:
         limit: int = 20,
         order: str = "desc",
     ) -> list[TaskRecord]:
+        records, _ = self.list_page(after=after, limit=limit, order=order)
+        return records
+
+    def list_page(
+        self, *, after: str | None = None, limit: int = 20, order: str = "desc"
+    ) -> tuple[list[TaskRecord], bool]:
+        """Select a page and determine whether another row exists under one lock."""
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ServiceError(
                 "invalid_limit", "limit must be in [1, 100]", status_code=422
@@ -112,7 +119,7 @@ class TaskStore:
                         status_code=422,
                     )
                 records = records[indexes[0] + 1 :]
-            return list(records[:limit])
+            return list(records[:limit]), len(records) > limit
 
     def transition(
         self,

@@ -49,7 +49,7 @@ ffmpeg -hide_banner -loglevel error -y -i data/10268234_mask.mp4 \
 
 for policy in fullgpu component_offload; do
   CUDA_VISIBLE_DEVICES=2 ./inference_cli.sh \
-    --model-path /root/.cache/huggingface/hub/models--jieeliu--EraserDiT/snapshots/904fb412da76235085dbbccaefdbde4979fa3d29 \
+    --model-path /mnt/shanhai-ai/shanhai-workspace/zhouhao6/EraserDiT/results/cache_prediction_model \
     --video-input results/component_offload_smoke/video.mp4 \
     --mask-input results/component_offload_smoke/mask.mp4 \
     --output-path "results/component_offload_smoke/${policy}.mp4" \

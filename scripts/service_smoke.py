@@ -86,6 +86,8 @@ def main() -> int:
     )
     check("GET /model_info", request(base, "GET", "/model_info")[0] == 200)
     check("GET /stats", request(base, "GET", "/stats")[0] == 200)
+    for path in ("/ready", "/get_server_info", "/get_model_info", "/openapi.json"):
+        check(f"GET {path}", request(base, "GET", path)[0] == 200)
     check(
         f"GET /v1/models/{model_id}",
         request(base, "GET", f"/v1/models/{model_id}")[0] == 200,
@@ -117,19 +119,26 @@ def main() -> int:
     status, created = request(
         base,
         "POST",
-        "/v1/videos",
+        "/v1/videos/eraser",
         {
             "video_path": str(Path(args.video).resolve()),
             "mask_path": str(Path(args.mask).resolve()),
             "prompt": args.prompt,
+            "model": model_id,
         },
     )
-    check("POST /v1/videos", status == 202, f"status={status}")
+    check("POST /v1/videos/eraser", status == 202, f"status={status}")
     if status != 202:
         print(json.dumps(created, indent=2)[:2000])
         return 1
     task_id = created["id"]
     check("created response has a queue position", "queue_position" in created)
+    status, progress = request(base, "GET", f"/v1/videos/{task_id}/progress")
+    check(
+        "GET /v1/videos/{id}/progress",
+        status == 200 and progress.get("id") == task_id and "progress" in progress,
+        f"status={status}",
+    )
 
     deadline = time.time() + args.timeout_seconds
     final = created

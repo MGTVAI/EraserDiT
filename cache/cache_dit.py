@@ -183,7 +183,9 @@ class CacheDitController:
                 device=device,
                 hidden_width=hidden_width,
             )
-            front_residual = front_output_hidden_states - input_hidden_states
+            # Use the same arithmetic policy for the decision probe and the
+            # cached middle. EraserDiT overrides this to subtract in FP32.
+            front_residual = self._compute_residual(input_hidden_states, front_output_hidden_states)
         except BaseException as error:
             validation_error = error
         validation_device = (
@@ -275,11 +277,13 @@ class CacheDitController:
             raise ValueError("Cache-DiT middle block output shape changed")
         assert state.pending_front_residual is not None
         state.previous_front_residual = state.pending_front_residual
-        state.cached_middle_residual = (
-            middle_output_hidden_states - front_output_hidden_states
-        ).detach().clone()
+        state.cached_middle_residual = self._compute_residual(front_output_hidden_states, middle_output_hidden_states)
         state.previous_layout_signature = state.pending_layout_signature
         state.previous_computed_step = step
+
+    @staticmethod
+    def _compute_residual(input_hidden_states, output_hidden_states):
+        return (output_hidden_states - input_hidden_states).detach().clone()
 
     def complete_step(self, *, branch: CacheBranch, step: int) -> None:
         self._require_open()

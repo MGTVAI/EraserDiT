@@ -32,7 +32,6 @@ from utils.resource_policy import module_device, module_dtype
 class EraserDiTEraseConditionEncodingStage(PipelineStage):
     @offload_component("vae", phase=MemoryPhase.VAE_ENCODE)
     def forward(self, batch: Req, server_args: ServerArgs) -> Req:
-        del server_args
         vae = batch.modules["vae"]
         state = get_task_state(batch)
 
@@ -41,11 +40,9 @@ class EraserDiTEraseConditionEncodingStage(PipelineStage):
             device=module_device(vae), dtype=module_dtype(vae)
         )
         with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
-            posterior = vae.encode(vae_input)
-            if hasattr(posterior, "latent_dist"):
-                cond_latents = posterior.latent_dist.sample(state.generator)
-            else:
-                cond_latents = posterior.latents
+            from parallel.eraserdit_vae import tiled_vae
+            posterior = tiled_vae(vae, vae_input, server_args, batch, operation="encode")
+            cond_latents = posterior.sample(state.generator)
         cond_latents = cond_latents.to(torch.float32)
         batch.cond_latents = normalize_latents(
             cond_latents,

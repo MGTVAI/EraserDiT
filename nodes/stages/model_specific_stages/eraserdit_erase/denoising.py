@@ -13,6 +13,8 @@ import time
 import torch
 
 from cache.eraserdit import EraserDiTCacheWindow
+from parallel.eraserdit_cfg import EraserDiTCFGWindow, validate_cfg_parallel
+from parallel.eraserdit_mesh import EraserDiTMeshWindow, resolve_mesh
 
 from config.server_args import ServerArgs
 from memory.policies.component_offload import offload_component
@@ -47,6 +49,7 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
             from config.server_args import get_global_server_args
 
             server_args = get_global_server_args()
+        validate_cfg_parallel(server_args)
         super().__init__(transformer, server_args)
         self._scheduler = scheduler
 
@@ -87,7 +90,9 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
             dynamic_cfg=False,
         )
 
-        with EraserDiTCacheWindow(
+        parallel_device = validate_cfg_parallel(server_args, batch)
+        mesh_plan = resolve_mesh(server_args, batch)
+        with EraserDiTMeshWindow(transformer, mesh_plan) as mesh, EraserDiTCFGWindow(transformer, parallel_device) as cfg_window, EraserDiTCacheWindow(
             batch, total_steps=len(timesteps),
             num_blocks=len(transformer.transformer_blocks),
             enable_torch_compile=server_args.enable_torch_compile,
@@ -99,7 +104,7 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
                 mask_input = mask_values.to(device=device)
                 expanded_timestep = timestep.expand(1)
 
-                noise_pred_uncond = transformer_for_forward(
+                negative_kwargs = dict(
                     hidden_states=latent_model_input,
                     encoder_hidden_states=negative_prompt_embeds,
                     timestep=expanded_timestep,
@@ -113,9 +118,15 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
                     cond_latents=cond_input,
                     mask_values=mask_input,
                     **cache_window.kwargs("negative", step_index),
-                )[0].float()
+                )
+                if mesh.active:
+                    pass
+                elif parallel_device is not None:
+                    negative_future = cfg_window.submit(**negative_kwargs)
+                else:
+                    noise_pred_uncond = transformer_for_forward(**negative_kwargs)[0].float()
 
-                noise_pred_text = transformer_for_forward(
+                positive_kwargs = dict(
                     hidden_states=latent_model_input,
                     encoder_hidden_states=prompt_embeds,
                     timestep=expanded_timestep,
@@ -129,7 +140,14 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
                     cond_latents=cond_input,
                     mask_values=mask_input,
                     **cache_window.kwargs("positive", step_index),
-                )[0].float()
+                )
+                if mesh.active:
+                    noise_pred_uncond, noise_pred_text = mesh.predict(negative_kwargs, positive_kwargs)
+                else:
+                    noise_pred_text = transformer_for_forward(**positive_kwargs)[0].float()
+
+                if parallel_device is not None:
+                    noise_pred_uncond = negative_future.result().to(device)
 
                 noise_pred = noise_pred_uncond + guidance_scale * (
                     noise_pred_text - noise_pred_uncond
@@ -139,6 +157,17 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
                 if batch.metrics is not None:
                     batch.metrics.record_step(time.perf_counter() - step_start)
 
+            if mesh.active:
+                batch.extra["dit_parallel"] = mesh.report()
+
+        if parallel_device is not None:
+            batch.extra["cfg_parallel"] = {
+                "enabled": True, "positive_device": str(device),
+                "negative_device": str(parallel_device), "steps": cfg_window.steps,
+                "replica_setup_seconds": cfg_window.setup_seconds,
+                "secondary_peak_allocated_gib": torch.cuda.max_memory_allocated(parallel_device) / 1024**3,
+                "transformer_cache_mode": "off",
+            }
         if batch.metrics is not None:
             batch.metrics.record_operation("denoise")
         # Report the backend the forwards actually resolved to, not the request:

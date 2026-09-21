@@ -86,6 +86,8 @@ def main():
                 def fail(*values, **kwargs):
                     nonlocal calls
                     output = original(*values, **kwargs)
+                    if kwargs.get('cache_probe_only', False):
+                        return output
                     calls += 1
                     if calls == 3:
                         raise InjectedFailure('after first full CFG step')
@@ -94,9 +96,12 @@ def main():
                 def checked_close(window, *exc):
                     result = close_window(window, *exc)
                     if window.controller is not None:
-                        for state in window.controller._states.values():
+                        for state in (*window.controller._states.values(), *window.controller._forecasts.values()):
                             if any(isinstance(v, torch.Tensor) for v in vars(state).values()):
                                 raise AssertionError('cache tensors leaked after window')
+                    for cache in window.text_caches.values():
+                        if cache.source is not None or cache.projected is not None or cache.entries:
+                            raise AssertionError('text cache tensors leaked after window')
                     report['failure_cache_report'] = window.batch.extra['transformer_cache']
                     return result
                 params = _task_to_sampling_params({'output': str(report_path.with_suffix('.failed.mp4'))}, args)

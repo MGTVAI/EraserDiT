@@ -11,10 +11,12 @@ from config.teacache import TeaCacheParams, TeaCacheCoefficientSelection
 from config.transformer_cache import validate_transformer_cache_request
 
 MODEL_IDENTITY = 'jieeliu/EraserDiT'
-TEACACHE_POLICY = 'eraserdit_temb_relative_l1_experimental'
+TEACACHE_POLICY = 'eraserdit_modulated_input_relative_l1_experimental'
 CACHE_DEFAULTS = {
     'transformer_cache_mode': 'off',
     'transformer_cache_force_compute': False,
+    'cache_residual_predictor': 'none',
+    'cache_text_projections': None,
     'teacache_threshold': 0.005,
     'max_teacache_consecutive_skip': 1,
     'teacache_warmup_steps': 4,
@@ -34,7 +36,7 @@ class EraserDiTTeaCacheParams(TeaCacheParams):
 
 
 def select_eraserdit_coefficients(sequence_length):
-    # Identity polynomial: accumulate raw timestep-modulation relative L1.
+    # Identity polynomial: accumulate raw first-block modulated-input relative L1.
     # This is an explicit experimental policy, NOT a fitted model calibration.
     return TeaCacheCoefficientSelection(
         policy=TEACACHE_POLICY, model_identity=MODEL_IDENTITY,
@@ -50,6 +52,12 @@ def resolve_eraserdit_cache_params(source, *, enable_torch_compile=False, num_bl
     mode = validate_transformer_cache_request(
         mode=get('transformer_cache_mode'), enable_torch_compile=enable_torch_compile,
     )
+    if get('cache_text_projections') is not None and type(get('cache_text_projections')) is not bool:
+        raise TypeError('cache_text_projections must be a bool or None (auto)')
+    if get('cache_text_projections') and enable_torch_compile:
+        raise ValueError('EraserDiT text cache cannot be combined with torch.compile')
+    if get('cache_residual_predictor') not in ('none', 'linear'):
+        raise ValueError('cache_residual_predictor must be none or linear')
     force = get('transformer_cache_force_compute')
     if type(force) is not bool:
         raise TypeError('transformer_cache_force_compute must be a bool')

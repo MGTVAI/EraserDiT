@@ -96,7 +96,7 @@ TeaCache 系数表已有的 32640 条目。
 ```
 config/ entrypoints/{cli,server}/ layers/{attention,operator_fusion,quantization,rotary_embedding}/
 loader/component_loaders/ models/{dits,schedulers,text_encoders,vaes}/ nodes/{preprocess,executors,stages}/
-pipelines/ memory/{adapters,backends,policies}/ cache/ distributed/ parallel/ profiling/
+pipelines/ memory/{adapters,backends,policies}/ cache/ distributed/ parallel/
 utils/ data/ docs/ docker/ vibe/ scripts/
 inference_cli.sh  inference_server.sh
 ```

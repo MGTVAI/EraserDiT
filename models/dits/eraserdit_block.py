@@ -35,6 +35,7 @@ def forward_eraserdit_block(
     encoder_attention_mask: Optional[torch.Tensor] = None,
     *,
     decision: OperatorFusionDecision,
+    text_cache=None,
 ) -> torch.Tensor:
     batch_size = hidden_states.size(0)
     norm_hidden_states = block.norm1(hidden_states)
@@ -67,6 +68,7 @@ def forward_eraserdit_block(
         encoder_hidden_states=encoder_hidden_states,
         image_rotary_emb=None,
         attention_mask=encoder_attention_mask,
+        text_cache=text_cache,
     )
     hidden_states = hidden_states + attn_hidden_states
 

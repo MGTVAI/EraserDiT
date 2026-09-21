@@ -32,6 +32,17 @@ class EraserDiTPipelineConfig:
     text_encoder_precision: str = "bf16"
     vae_spatial_compression_ratio: int = 32
     vae_temporal_compression_ratio: int = 8
+    # Local CUDA index after CUDA_VISIBLE_DEVICES; None preserves serial CFG.
+    cfg_parallel_device: str | None = None
+    quantization_scope: str = "blocks"
+    sp_degree: int = 1
+    sp_linear_mode: str = "reference"
+    cfg_degree: int = 1
+    vae_degree: int = 1
+    parallel_devices: tuple[int, ...] | None = None
+    vae_tiling: bool = False
+    vae_tile_size: int = 512
+    vae_tile_stride: int = 448
     # Plan §4.1: the adapter declares its own component class names instead of
     # relying on the checkpoint's ``model_index.json`` / ``_class_name``.
     component_architectures: dict[str, str] = field(
@@ -104,6 +115,8 @@ class EraserDiTEraseSamplingParams(SamplingParams):
 
     transformer_cache_mode: str = "off"
     transformer_cache_force_compute: bool = False
+    cache_text_projections: bool | None = None
+    cache_residual_predictor: str = "none"
     teacache_threshold: float = 0.005
     max_teacache_consecutive_skip: int = 1
     teacache_warmup_steps: int = 4

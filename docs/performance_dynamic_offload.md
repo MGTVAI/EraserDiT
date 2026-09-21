@@ -48,7 +48,7 @@ EraserDiT 支持 `--resource-policy dynamic_offload`，默认管理权重预算�
 CUDA_VISIBLE_DEVICES=2 HF_HUB_OFFLINE=1 PYTHONPATH=. \
   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
   /mnt/shanhai-ai/envs/conda/envs/EraserDiT/bin/python scripts/offload_verify.py \
-  --model-path /path/to/EraserDiT/snapshot \
+  --model-path /mnt/shanhai-ai/shanhai-workspace/zhouhao6/EraserDiT/results/cache_prediction_model \
   --video-input /path/to/video.mp4 --mask-input /path/to/mask.mp4 \
   --output-path results/offload_verify.json \
   --prompt 'There is a bridge over the lake.' \
@@ -92,7 +92,7 @@ CUDA_VISIBLE_DEVICES=2 /mnt/shanhai-ai/envs/conda/envs/EraserDiT/bin/python \
 
 ```bash
 CUDA_VISIBLE_DEVICES=2 ./inference_cli.sh \
-  --model-path /path/to/EraserDiT/snapshot \
+  --model-path /mnt/shanhai-ai/shanhai-workspace/zhouhao6/EraserDiT/results/cache_prediction_model \
   --video-input data/10268234.mp4 --mask-input data/10268234_mask.mp4 \
   --output-path results/dynamic.mp4 --prompt 'There is a bridge over the lake.' \
   --resource-policy dynamic_offload --max-weight-usage 5368709120

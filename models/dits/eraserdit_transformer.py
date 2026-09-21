@@ -286,11 +286,22 @@ class LTXVideoTransformerBlock(nn.Module):
         encoder_attention_mask: Optional[torch.Tensor] = None,
         *,
         decision=None,
+        text_cache=None,
+        cache_probe_only=False,
     ) -> torch.Tensor:
+        if cache_probe_only:
+            # Invoke through block.forward so dynamic offload makes norm/table
+            # weights resident before reading them. No attention/MLP is run.
+            norm_hidden_states = self.norm1(hidden_states)
+            ada_values = self.scale_shift_table[None, None] + temb.reshape(
+                hidden_states.size(0), temb.size(1), self.scale_shift_table.shape[0], -1
+            )
+            shift_msa, scale_msa = ada_values[:, :, 0], ada_values[:, :, 1]
+            return norm_hidden_states * (1 + scale_msa) + shift_msa
         if decision is not None:
             return forward_eraserdit_block(
                 self, hidden_states, encoder_hidden_states, temb,
-                image_rotary_emb, encoder_attention_mask, decision=decision,
+                image_rotary_emb, encoder_attention_mask, decision=decision, text_cache=text_cache,
             )
         batch_size = hidden_states.size(0)
         norm_hidden_states = self.norm1(hidden_states)
@@ -312,6 +323,7 @@ class LTXVideoTransformerBlock(nn.Module):
             encoder_hidden_states=encoder_hidden_states,
             image_rotary_emb=None,
             attention_mask=encoder_attention_mask,
+            text_cache=text_cache,
         )
         hidden_states = hidden_states + attn_hidden_states
         norm_hidden_states = self.norm2(hidden_states) * (1 + scale_mlp) + shift_mlp
@@ -441,6 +453,8 @@ class EraserDiTLTXVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalM
         cond_latents=None,
         mask_values=None,
         cache_adapter=None,
+        text_cache=None,
+        sequence_parallel=None,
     ) -> torch.Tensor:
         if attention_kwargs is not None:
             attention_kwargs = attention_kwargs.copy()
@@ -474,7 +488,16 @@ class EraserDiTLTXVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalM
                 torch.cat([hidden_states, cond_latents], dim=1), self.config.patch_size, self.config.patch_size_t
             )
 
+        # Keep the narrow input projection at the original token shape. BF16
+        # GEMM kernel selection at this projection is sensitive to M; a single
+        # rounding difference can be amplified by the full denoising chain.
         hidden_states = self.proj_in(hidden_states)
+        if sequence_parallel is not None:
+            if cache_adapter is not None or text_cache is not None:
+                raise ValueError("sequence parallel requires caches disabled")
+            shard = sequence_parallel.partition(hidden_states.shape[1])
+            hidden_states = hidden_states[:, shard]
+            image_rotary_emb = tuple(t[:, shard] for t in image_rotary_emb)
 
         temb, embedded_timestep = self.time_embed(
             timestep.flatten(),
@@ -485,7 +508,8 @@ class EraserDiTLTXVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalM
         temb = temb.view(batch_size, -1, temb.size(-1))
         embedded_timestep = embedded_timestep.view(batch_size, -1, embedded_timestep.size(-1))
 
-        encoder_hidden_states = self.caption_projection(encoder_hidden_states)
+        encoder_hidden_states = (self.caption_projection(encoder_hidden_states) if text_cache is None
+                                 else text_cache.project(encoder_hidden_states, self.caption_projection))
         encoder_hidden_states = encoder_hidden_states.view(batch_size, -1, hidden_states.size(-1))
 
         if cache_adapter is not None:
@@ -500,7 +524,7 @@ class EraserDiTLTXVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalM
                         hidden_states = block(
                             hidden_states, encoder_hidden_states, temb,
                             image_rotary_emb, encoder_attention_mask,
-                            decision=self.operator_fusion_decision,
+                            decision=self.operator_fusion_decision, text_cache=text_cache,
                         )
                     else:
                         hidden_states = forward_eraserdit_block(
@@ -510,11 +534,16 @@ class EraserDiTLTXVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalM
                             temb,
                             image_rotary_emb,
                             encoder_attention_mask,
-                            decision=self.operator_fusion_decision,
+                            decision=self.operator_fusion_decision, text_cache=text_cache,
                         )
                 return hidden_states
+            cache_probe = temb
+            if cache_adapter.controller.mode.value == 'teacache':
+                cache_probe = self.transformer_blocks[0](
+                    hidden_states, encoder_hidden_states, temb, cache_probe_only=True,
+                )
             hidden_states = cache_adapter.run(
-                hidden_states, temb, run_blocks,
+                hidden_states, cache_probe, run_blocks,
                 num_blocks=len(self.transformer_blocks),
                 layout=(num_frames, height, width, repr(rope_interpolation_scale)),
             )
@@ -536,7 +565,7 @@ class EraserDiTLTXVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalM
                     hidden_states = block(
                         hidden_states, encoder_hidden_states, temb,
                         image_rotary_emb, encoder_attention_mask,
-                        decision=self.operator_fusion_decision,
+                        decision=self.operator_fusion_decision, text_cache=text_cache,
                     )
                 else:
                     hidden_states = forward_eraserdit_block(
@@ -546,7 +575,7 @@ class EraserDiTLTXVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalM
                         temb,
                         image_rotary_emb,
                         encoder_attention_mask,
-                        decision=self.operator_fusion_decision,
+                        decision=self.operator_fusion_decision, text_cache=text_cache,
                     )
 
         scale_shift_values = self.scale_shift_table[None, None] + embedded_timestep[:, :, None]
@@ -560,7 +589,8 @@ class EraserDiTLTXVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalM
             # remove `lora_scale` from each PEFT layer
             unscale_lora_layers(self, lora_scale)
 
-        output = unpack_latents(output, num_frames, height, width, self.config.patch_size, self.config.patch_size_t)
+        if sequence_parallel is None:
+            output = unpack_latents(output, num_frames, height, width, self.config.patch_size, self.config.patch_size_t)
         if not return_dict:
             return (output,)
         return Transformer2DModelOutput(sample=output)

@@ -52,19 +52,38 @@ CUDA_HOME=/usr/local/cuda-12.6 PATH=/usr/local/cuda-12.6/bin:$PATH \
 ## 🧸 Inference
 
 EraserDiT requires >60GB GPU memory for a 2K‑resolution video.
-Multi‑GPU support is in progress and will be open‑sourced later.
+An experimental dual-GPU CFG CLI path is available; see
+[parallel validation and commands](docs/performance_cfg_parallel.md).
+With `CUDA_VISIBLE_DEVICES=2,3`, add `--cfg-parallel-device cuda:1`
+to compute the two CFG branches concurrently. Keep `--transformer-cache-mode off`
+and `--no-cache-text-projections`; this version requires `fullgpu` without torch.compile.
+
+单卡 INT8 W8A8 实验入口：`--transformer-quantization int8_w8a8_native`，见 [量化说明](docs/performance_quantization.md)。
+
+CFG/SP/VAE/DP 组合入口与测试矩阵见 [并行说明](docs/performance_parallel.md)。
+`--cfg-degree 2` 或 `--sp-degree 2` 使用两卡去噪；`--vae-degree 2`
+在 VAE 阶段复用两卡并交换卷积边界。SP 默认保留原矩阵形状以控制 BF16 数值漂移；
+额外启用 `--vae-tiling` 会切换为近似分块，需单独验收质量。
+多视频用 `python -m entrypoints.cli.erase_parallel --dp-degree 2 ...`。
+四卡测试脚本 `scripts/parallel_four_gpu.sh` 仅在 2、3、6、7 号卡全部空闲时启动。
 
 本仓库已迁移到 MGErase 组合式架构（stages + 常驻 pipeline + 服务端骨架），运行入口是
-`inference_cli.sh` 与 `inference_server.sh`。原版单体入口 `inference.py` 属历史遗留，
-不再是受支持的路径。
+`inference_cli.sh` 与 `inference_server.sh`。原版单体入口 `inference.py` 及其专用的
+加载、预处理、后处理和工具代码已删除。
 
 目录职责：`pipelines/runtime/` 管理视频窗口、调度与读写，`pipelines/session.py` 管理常驻会话；
 `entrypoints/server/` 管理 HTTP API、任务队列与 worker；`config/service_contract.py` 和
 `config/service_contracts/` 定义公共及各模型的服务请求契约。
 
+后续 CLI、服务和性能复测统一使用以下已校验模型路径：
+
+```bash
+SNAP=/mnt/shanhai-ai/shanhai-workspace/zhouhao6/EraserDiT/results/cache_prediction_model
 ```
-SNAP=/root/.cache/huggingface/hub/models--jieeliu--EraserDiT/snapshots/904fb412da76235085dbbccaefdbde4979fa3d29
-```
+
+该目录的权重通过软链接指向共享存储，16 个模型文件（约 29.24 GB）已与官方版本
+`jieeliu/EraserDiT@904fb412da76235085dbbccaefdbde4979fa3d29` 校验一致。
+校验记录见 [availability_verified.json](results/cache_prediction_model/availability_verified.json)。
 
 两个启动脚本内部已默认 `HF_HUB_OFFLINE=1`（加载本地快照时直连 huggingface.co 会静默卡住）与
 `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`（VAE 编码要一整块 7.5 GiB 连续显存，默认
@@ -75,7 +94,7 @@ SNAP=/root/.cache/huggingface/hub/models--jieeliu--EraserDiT/snapshots/904fb412d
 单条素材（推荐加速配置，去噪 1.22×、端到端 1.17–1.44×，两组素材均过门禁）：
 
 ```
-CUDA_VISIBLE_DEVICES=2 ./inference_cli.sh \
+CUDA_VISIBLE_DEVICES=6 ./inference_cli.sh \
   --model-path "$SNAP" \
   --video-input data/10268234.mp4 \
   --mask-input  data/10268234_mask.mp4 \
@@ -187,7 +206,7 @@ EraserDiT CLI 和通用服务入口可设置 `--resource-policy component_offloa
 
 ```bash
 CUDA_VISIBLE_DEVICES=2 ./inference_cli.sh \
-  --model-path /path/to/EraserDiT/snapshot \
+  --model-path /mnt/shanhai-ai/shanhai-workspace/zhouhao6/EraserDiT/results/cache_prediction_model \
   --video-input data/10268234.mp4 --mask-input data/10268234_mask.mp4 \
   --output-path results/offload.mp4 --prompt "There is a bridge over the lake." \
   --resource-policy component_offload
