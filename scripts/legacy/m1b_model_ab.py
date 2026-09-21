@@ -5,7 +5,7 @@ Both sides run in one process on one GPU, on the *same* window input, the same
 weights and the same seed, so any difference in the decoded frames is a genuine
 implementation difference rather than run-to-run noise.
 
-    CUDA_VISIBLE_DEVICES=N PYTHONPATH=. python scripts/m1b_model_ab.py \
+    CUDA_VISIBLE_DEVICES=N PYTHONPATH=. python scripts/legacy/m1b_model_ab.py \
         --video data/10268234.mp4 --mask data/10268234_mask.mp4 \
         --prompt "There is a bridge over the lake."
 
@@ -23,7 +23,7 @@ from pathlib import Path
 
 import torch
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
 from config.eraserdit import ERASERDIT_NEGATIVE_PROMPT, EraserDiTEraseSamplingParams

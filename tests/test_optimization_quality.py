@@ -5,7 +5,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from scripts.optimization_quality import compare, frame_metrics, passes
+from scripts.validation.optimization_quality import compare, frame_metrics, passes
 
 
 class QualityGateTests(unittest.TestCase):

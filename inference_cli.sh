@@ -27,7 +27,7 @@
 # 多任务共用常驻 pipeline（预热只付一次，两种画幅可混用）：
 #
 #   CUDA_VISIBLE_DEVICES=2 ./inference_cli.sh --model-path "$SNAP" \
-#     --task-file tasks/acceptance_tasks.json \
+#     --task-file tasks.json \
 #     --attention-backend sage_attn --enable-torch-compile --warmup
 #
 # 不加速的对照（矩阵里的 N）：
@@ -57,7 +57,7 @@ export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 # on 1080x1920 that is a single contiguous 7.5 GiB request.  Without
 # expandable_segments the allocator strands it behind blocks it already holds:
 # 2026-09-20 the single-clip run OOMed with 61 GiB free, while the harnessed
-# entry points (scripts/acceptance.py, scripts/m3_measure.sh) pass with this set.
+# entry points (scripts/validation/acceptance.py, scripts/legacy/m3_measure.sh) pass with this set.
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 

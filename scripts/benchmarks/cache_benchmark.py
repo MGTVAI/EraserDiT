@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Resident-session cache A/B with interleaved repeats and decoded video metrics.
 
-Example: CUDA_VISIBLE_DEVICES=0 python scripts/cache_benchmark.py --model-path MODEL
+Example: CUDA_VISIBLE_DEVICES=0 python scripts/benchmarks/cache_benchmark.py --model-path MODEL
 --video VIDEO --mask MASK --prompt PROMPT --directory results/cache_prediction --repeats 5
 """
 import argparse
@@ -65,7 +65,7 @@ def main():
         tasks.extend(task(f'{name}_{repeat}', configs[name]) for name in order)
     task_file = directory / 'tasks.json'
     task_file.write_text(json.dumps(tasks, indent=2) + '\n')
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     command = [sys.executable, '-m', 'entrypoints.cli.erase_eraserdit',
                '--model-path', str(args.model_path.resolve()), '--video-input', str(args.video.resolve()),
                '--mask-input', str(args.mask.resolve()), '--task-file', str(task_file),
@@ -83,14 +83,14 @@ def main():
     runs = json.JSONDecoder().raw_decode(log[log.index('{\n  "tasks"'):])[0]
     (directory / 'runs.json').write_text(json.dumps(runs, indent=2) + '\n')
     with (directory / 'quality.log').open('w') as log:
-        subprocess.run([sys.executable, str(root / 'scripts/cache_compare.py'),
+        subprocess.run([sys.executable, str(root / 'scripts/validation/cache_compare.py'),
                         '--directory', str(directory), '--mask', str(args.mask.resolve()),
                         '--baseline', 'off_0', '--names', *[t['id'] for t in tasks if t['id'] != 'warmup']],
                        cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
     quality = json.loads((directory / 'quality.json').read_text())['outputs']
     if args.reference:
         with (directory / 'reference_quality.log').open('w') as log:
-            subprocess.run([sys.executable, str(root / 'scripts/cache_compare.py'),
+            subprocess.run([sys.executable, str(root / 'scripts/validation/cache_compare.py'),
                             '--directory', str(directory), '--mask', str(args.mask.resolve()),
                             '--reference', str(args.reference.resolve()), '--report-name', 'reference_quality.json',
                             '--names', *[t['id'] for t in tasks if t['id'] != 'warmup']],

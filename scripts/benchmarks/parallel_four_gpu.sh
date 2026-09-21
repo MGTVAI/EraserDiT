@@ -2,7 +2,7 @@
 # Four-card validation is authorized only after ALL selected cards are idle.
 # Pass --wait first to wait for availability; otherwise exit 75 when occupied.
 set -euo pipefail
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PYTHON="${ERASERDIT_PYTHON:-/mnt/shanhai-ai/envs/conda/envs/EraserDiT/bin/python}"
 WAIT_FOR_GPUS=0
 if [[ "${1:-}" == "--wait" ]]; then
@@ -37,5 +37,5 @@ PY
   fi
   sleep 30
 done
-exec "$PYTHON" scripts/parallel_benchmark.py \
+exec "$PYTHON" scripts/benchmarks/parallel_benchmark.py \
   --matrix-configs serial cfg2_sp2 sp4 spatial_vae4 cfg2_sp2_spatial_vae4 sp4_spatial_vae4 "$@"

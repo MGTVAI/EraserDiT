@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Assemble the M4 acceptance matrix (plan §6.1) for both clips.
 
-    python scripts/m4_report.py [--clip 10268234 ...] [--skip-quality]
+    python scripts/legacy/m4_report.py [--clip 10268234 ...] [--skip-quality]
 
 Three configurations per clip:
 
@@ -26,7 +26,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parents[2]
 BASELINE = Path("/mnt/shanhai-ai/shanhai-workspace/zhouhao6/EraserDiT-baseline")
 COMPARE = BASELINE / "compare_outputs.py"
 PYTHON = "/mnt/shanhai-ai/envs/conda/envs/EraserDiT/bin/python"

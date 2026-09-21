@@ -1,6 +1,6 @@
 # 后续性能优化计划
 
-最新验收规则见 [优化验收标准](../docs/optimization_acceptance.md)：非 cache/量化优化采用 SSIM ≥ 0.985、MSE ≤ 36、MAE ≤ 6；cache/量化按视觉大致一致验收。下文历史字节一致结果保留，不再作为必须条件。
+最新验收规则见 [优化验收标准](../docs/performance.md#acceptance)：非 cache/量化优化采用 SSIM ≥ 0.985、MSE ≤ 36、MAE ≤ 6；cache/量化按视觉大致一致验收。下文历史字节一致结果保留，不再作为必须条件。
 
 更新时间：2026-09-20。最新用户要求：关闭 TeaCache / cache-dit，优先推进并行优化，使用物理 2、3 号卡。此前卸载与缓存实验记录保留；最新授权已开始单卡量化，缓存保持关闭。
 本文件接续 `plan.md`，不替换此前架构、服务和注意力加速的验收记录。
@@ -9,17 +9,17 @@
 
 最新扩展授权：实现 CFG / SP / VAE / DP 及组合，不做 TP / PP；先测 2、3 双卡，
 只有 6、7 号卡空闲后才允许使用 2、3、6、7 四卡组合。TeaCache、Cache-DiT 保持关闭。
-实现、参数与验收矩阵见 [并行说明](../docs/performance_parallel.md)。
+实现、参数与验收矩阵见 [并行说明](../docs/performance.md#parallel)。
 CFG / Ulysses SP / VAE 空间分片 / DP 及组合参数已接入 CLI。
 原尺寸 SP=2：209.975 → 150.021 s；CFG=2+VAE=2：121.353 s，均与串行字节一致。
 VAE 组合未优于 CFG 单独，当前双卡优先 CFG。DP=2 四任务与独立单卡输出一致。
 小尺寸双窗口 50 步的 VAE / CFG+VAE / SP+VAE 组合全部字节一致；
 2026-09-21 用户直接指定使用四卡后完成物理验证：CFG×SP 87.682 s、CFG×SP+VAE4 88.191 s，
-相对本轮单卡 210.302 s 输出均字节一致。7 号卡有其他常驻占用；详见 [四卡报告](../docs/performance_parallel_four_gpu.md)。
+相对本轮单卡 210.302 s 输出均字节一致。7 号卡有其他常驻占用；详见 [四卡报告](../docs/performance.md#parallel)。
 
 ## 现状与原则
 
-- 当前推进双卡 CFG：主卡正分支、辅卡负分支，保持原 float32 CFG 合并与单卡 scheduler；CLI 使用 `--cfg-parallel-device cuda:1`，启动时 `CUDA_VISIBLE_DEVICES=2,3`。关闭所有 Transformer / 文本投影缓存，首版限定 fullgpu、compile 关闭。实现与实测见 [并行报告](../docs/performance_cfg_parallel.md)。
+- 当前推进双卡 CFG：主卡正分支、辅卡负分支，保持原 float32 CFG 合并与单卡 scheduler；CLI 使用 `--cfg-parallel-device cuda:1`，启动时 `CUDA_VISIBLE_DEVICES=2,3`。关闭所有 Transformer / 文本投影缓存，首版限定 fullgpu、compile 关闭。实现与实测见 [并行报告](../docs/performance.md#parallel)。
 - 首轮原尺寸单窗口 40 步：209.788 → 118.259 s（1.774×），去噪 181.240 → 91.399 s；输出逐字节一致。辅卡峰值 allocated 5.631 GiB。仅一次探索测量，≥5 次稳态统计与第二组原尺寸验收待做。
 
 - EraserDiT 已有独立的文本编码、VAE 编码、去噪和 VAE 解码阶段。加载器已有 CPU 加载开关，但此前 EraserDiT 没有阶段搬运，`dynamic_offload` 也没有注册模型。
@@ -64,13 +64,13 @@ P1a 门禁：同参数输出与 fullgpu 对照一致，任务结束模型参数�
 
 - 已实现 P1a 的阶段卸载、加载路径和入口开关。
 - 已增加边界测试：关闭路径无搬运、阶段搬运、执行异常、部分搬运失败、CPU 加载策略，以及 GPU 重复搬运的参数绑定/缓冲区/输出检查。
-- 9 项回归全部通过；192×320、25 帧双窗口真实模型 A/B 输出逐字节一致。allocated 峰值 15.055 → 8.923 GiB，单次端到端 3.050 → 30.704 秒；仅为功能冒烟，传输开销明显。详见 [验证报告](../docs/performance_offload.md)。
-- P1b 已接入动态块注册、权重预算、pinned 镜像和异步阶段调度；修复 T5 共享 embedding、Transformer 融合前向绕过卸载包装器的问题。2 GiB 小尺寸对照逐字节一致；三窗口连续请求和故障恢复通过。见 [P1b 报告](../docs/performance_dynamic_offload.md)。
+- 9 项回归全部通过；192×320、25 帧双窗口真实模型 A/B 输出逐字节一致。allocated 峰值 15.055 → 8.923 GiB，单次端到端 3.050 → 30.704 秒；仅为功能冒烟，传输开销明显。详见 [验证报告](../docs/performance.md#offload)。
+- P1b 已接入动态块注册、权重预算、pinned 镜像和异步阶段调度；修复 T5 共享 embedding、Transformer 融合前向绕过卸载包装器的问题。2 GiB 小尺寸对照逐字节一致；三窗口连续请求和故障恢复通过。见 [P1b 报告](../docs/performance.md#offload)。
 - 原尺寸第一组素材、40 个有效去噪步在物理 2 号卡完成同卡对照，输出逐字节一致；allocated 47.115 → 33.631 GiB（−28.6%），端到端 210.138 → 215.269 秒（+2.4%）。22 项回归与 HTTP 全部检查也在 2 号卡通过，临时服务已关闭。
 - 正式两组原尺寸素材、每配置 ≥5 次重复测量待做。
 - P2 已接入请求配置、CLI/HTTP、Transformer 前向、独立 CFG/窗口状态和实际生效报告；关闭缓存与两种强制全计算的三窗口真实视频逐字节一致。TeaCache 使用未校准的 EraserDiT temb 距离实验策略，不借用 LTX095 系数。
-- 20 步小尺寸阈值筛选中，有命中的配置均未通过既定质量线；TeaCache 0.005 无命中且输出一致。默认 50 步复核中，TeaCache 0.005 / cache-dit 0.03 以约 15% 复用率通过小尺寸整帧数值门槛，已作为收紧后的实验起点；32 项回归、两种缓存的真实模型故障恢复通过。最终测量和限制见 [P2 报告](../docs/performance_transformer_cache.md)。默认缓存关闭，原尺寸正式质量/性能验收尚未完成。
-- P3 已开始 EraserDiT 单卡 INT8 W8A8 实现与原尺寸验证，详见 [量化报告](../docs/performance_quantization.md)。
+- 20 步小尺寸阈值筛选中，有命中的配置均未通过既定质量线；TeaCache 0.005 无命中且输出一致。默认 50 步复核中，TeaCache 0.005 / cache-dit 0.03 以约 15% 复用率通过小尺寸整帧数值门槛，已作为收紧后的实验起点；32 项回归、两种缓存的真实模型故障恢复通过。最终测量和限制见 [P2 报告](../docs/performance.md#cache)。默认缓存关闭，原尺寸正式质量/性能验收尚未完成。
+- P3 已开始 EraserDiT 单卡 INT8 W8A8 实现与原尺寸验证，详见 [量化报告](../docs/performance.md#quantization)。
 
 - 增大阈值复测已完成：50 步下 TeaCache 0.01/0.03/0.10、cache-dit 0.05/0.10/0.20 均未过质量线。较高两档分别达到 45% 复用上限且输出逐字节相同；耗时波动明显（两次 off 67.13 / 86.56 秒），不能宣称稳定加速比。阈值维持原实验默认值，详见 P2 报告的增大阈值复测记录。
 

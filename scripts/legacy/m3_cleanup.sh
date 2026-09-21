@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Confirm the leading M3 candidate on its own window.
 #
-#   scripts/m3_cleanup.sh <gpu> [candidate-repeats] [reference-repeats]
+#   scripts/legacy/m3_cleanup.sh <gpu> [candidate-repeats] [reference-repeats]
 #
 # The probe stream screened the combinations; `sage_attn + 全融合` came out on
 # top but only had two repeats on a contended card.  This gives it the plan's
@@ -19,7 +19,7 @@ GPU="${1:?gpu index required}"
 REPEATS="${2:-5}"
 REF_REPEATS="${3:-2}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$HERE/.."
+cd "$HERE/../.."
 
 export ERASERDIT_DETERMINISTIC=0
 export M3_GPU="$GPU"

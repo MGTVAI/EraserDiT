@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Aggregate the M3 sweep into the plan's report matrix.
 
-    python scripts/m3_report.py --results-dir results/m3 results/m3-clean
+    python scripts/legacy/m3_report.py --results-dir results/m3 results/m3-clean
 
 Timings come from the per-repeat JSONL, quality from comparing each config's
 first repeat against the reference (`sdpa` is the unaccelerated architecture

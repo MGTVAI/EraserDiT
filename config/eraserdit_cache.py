@@ -1,7 +1,7 @@
 """Experimental EraserDiT policies; default off, no borrowed LTX095 coefficients.
 
 Active-mode thresholds are sweep starting points, not quality-approved presets.
-See docs/performance_transformer_cache.md for measured limits.
+See docs/performance.md#cache for measured limits.
 """
 from dataclasses import dataclass
 from typing import ClassVar

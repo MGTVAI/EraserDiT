@@ -15,7 +15,7 @@ task cannot show:
   untouched parts of the frame);
 * the per-task timings and window counters are reported.
 
-    python scripts/acceptance.py --task-file tasks/acceptance_tasks.json \
+    python scripts/validation/acceptance.py --task-file tasks.json \
         --attention-backend sage_attn --enable-torch-compile --warmup
 """
 
@@ -29,7 +29,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parents[2]
 COMPARE = Path(
     "/mnt/shanhai-ai/shanhai-workspace/zhouhao6/EraserDiT-baseline/compare_outputs.py"
 )

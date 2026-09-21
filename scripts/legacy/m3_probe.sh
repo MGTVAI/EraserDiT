@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Second M3 stream: screening run on its own card, alongside m3_sweep.sh.
 #
-#   scripts/m3_probe.sh <gpu> [repeats]      # default 2
+#   scripts/legacy/m3_probe.sh <gpu> [repeats]      # default 2
 #
 # Two questions the main sweep does not answer:
 #   1. the fusion x attention-backend *combinations* the plan asks for, and
@@ -15,7 +15,7 @@ set -euo pipefail
 GPU="${1:?gpu index required}"
 REPEATS="${2:-2}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$HERE/.."
+cd "$HERE/../.."
 
 export ERASERDIT_DETERMINISTIC=0
 export M3_GPU="$GPU"

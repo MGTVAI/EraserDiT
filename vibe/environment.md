@@ -235,7 +235,7 @@ import 全量改写为无前缀形式；原版 `models/{transformer_ltx,autoenco
 实现的语义已逐函数搬进 `utils/eraserdit_*.py` 与 `nodes/stages/model_specific_stages/eraserdit_erase/`。
 旧入口 `inference.py` 及其专用的 `utils/{inference_utils,pre,post,post_pkg,common}.py`
 已删除；文档与代码注释中的原版文件行号用于追溯冻结基线。
-`pipelines/eraserdit_video2video.py` 仍供 `scripts/m1b_model_ab.py` 做模型 A/B 验证，
+`pipelines/eraserdit_video2video.py` 仍供 `scripts/legacy/m1b_model_ab.py` 做模型 A/B 验证，
 `utils/colorfix_wmask.py` 仍由当前后处理模块使用。
 
 入口：`./inference_cli.sh`（单任务参数或 `--task-file` JSON 任务数组），
@@ -254,7 +254,7 @@ import 全量改写为无前缀形式；原版 `models/{transformer_ltx,autoenco
 
 **M1b 等价性：模型路径已逐位对齐，写出侧已修正三处口径差异。**
 
-`scripts/m1b_model_ab.py` 在同一进程、同一 GPU、同一窗口输入上对跑「原版 diffusers 管线」与
+`scripts/legacy/m1b_model_ab.py` 在同一进程、同一 GPU、同一窗口输入上对跑「原版 diffusers 管线」与
 「新阶段链」，`cond_latents`、初始 latents 与**解码帧全部逐位相同** —— 新架构的模型路径
 （VAE 编码 → 40 步去噪 → VAE 解码）与原版一致。逐段排查后修掉四处写出侧差异：
 
@@ -322,14 +322,14 @@ python EraserDiT-baseline/compare_outputs.py \
 
 ## M2 服务端（2026-09-18/19）
 
-服务骨架改为模型适配器提供契约后，用 `scripts/service_smoke.py` 对 EraserDiT 做端到端验收，
+服务骨架改为模型适配器提供契约后，用 `scripts/validation/service_smoke.py` 对 EraserDiT 做端到端验收，
 **全部通过**：11 个端点、严格请求契约（未声明字段 422）、任务生命周期到终态
 （`completed`，window/object 计数与指标齐备）、结果下载与删除。
 
 ```
 ./inference_server.sh --pipeline-name EraserDiTErasePipeline --model-path /mnt/shanhai-ai/shanhai-workspace/zhouhao6/EraserDiT/results/cache_prediction_model \
   --task-root /tmp/mgerase_svc_tasks --input-allowed-root "$PWD/data"
-python scripts/service_smoke.py --base-url http://127.0.0.1:30000 \
+python scripts/validation/service_smoke.py --base-url http://127.0.0.1:30000 \
   --video data/10268234.mp4 --mask data/10268234_mask.mp4 --prompt "There is a bridge over the lake."
 ```
 

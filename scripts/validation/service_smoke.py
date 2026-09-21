@@ -7,7 +7,7 @@ endpoint set, the task lifecycle and the result download.
     ./inference_server.sh --pipeline-name EraserDiTErasePipeline \
         --model-path <snapshot> --task-root /tmp/mgerase_tasks \
         --input-allowed-root "$PWD/data" &
-    python scripts/service_smoke.py --base-url http://127.0.0.1:30000 \
+    python scripts/validation/service_smoke.py --base-url http://127.0.0.1:30000 \
         --video data/10268234.mp4 --mask data/10268234_mask.mp4 \
         --prompt "There is a bridge over the lake."
 """

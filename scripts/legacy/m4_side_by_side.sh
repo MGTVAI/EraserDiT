@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Side-by-side review videos for the M4 delivery (plan §M4).
 #
-#   scripts/m4_side_by_side.sh <clip> [source] [B] [N] [A]
+#   scripts/legacy/m4_side_by_side.sh <clip> [source] [B] [N] [A]
 #
 # Defaults take the clip from data/ and the three pipeline outputs from
 # results/m4/.  Panels that do not exist are dropped, so the script works with
@@ -15,7 +15,7 @@ set -euo pipefail
 
 CLIP="${1:?clip id required}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$HERE/.."
+cd "$HERE/../.."
 
 SOURCE="${2:-data/${CLIP}.mp4}"
 B="${3:-results/m4/${CLIP}_B.mp4}"

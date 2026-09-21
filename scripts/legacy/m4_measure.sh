@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # M4 acceptance measurements for the two plan clips (plan §6.1).
 #
-#   scripts/m4_measure.sh <clip> <N|A> <repeats> [gpu]
+#   scripts/legacy/m4_measure.sh <clip> <N|A> <repeats> [gpu]
 #
 # N = new architecture, unaccelerated (sdpa).  A = the recommended accelerated
-# configuration from docs/m3_report.md.  B (the frozen baseline) is a different
+# configuration from docs/performance.md#single-gpu.  B (the frozen baseline) is a different
 # codebase and runs through EraserDiT-baseline/baseline_runner.py instead; see
-# docs/m4_report.md.
+# docs/performance.md#single-gpu.
 #
 # Results land in results/m4/<clip>_<config>.jsonl via m3_measure.sh, which
 # already owns the single-process guard, the GPU pick and the bookkeeping.
@@ -17,7 +17,7 @@ CONFIG="${2:?config N or A required}"
 REPEATS="${3:?repeat count required}"
 GPU="${4:-}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$HERE/.."
+cd "$HERE/../.."
 
 export ERASERDIT_DETERMINISTIC=0
 export M3_VIDEO="data/${CLIP}.mp4"

@@ -16,13 +16,13 @@
 #
 # 另开终端验收（全部端点 + 严格契约 + 任务生命周期 + 结果下载与删除）：
 #
-#   python3 scripts/service_smoke.py --base-url http://127.0.0.1:30000 \
+#   python3 scripts/validation/service_smoke.py --base-url http://127.0.0.1:30000 \
 #     --video data/10268234.mp4 --mask data/10268234_mask.mp4 \
 #     --prompt "There is a bridge over the lake."
 #
 # 或一键起服务 + 验收（自动等一张空闲卡，无论成败都拆干净）：
 #
-#   scripts/service_verify.sh 2
+#   scripts/validation/service_verify.sh 2
 #
 # 说明：
 #   - --pipeline-name 不能省，服务端靠它选管线

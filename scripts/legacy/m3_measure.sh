@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # M3 measurement harness: run one configuration N times and append the timings.
 #
-#   scripts/m3_measure.sh <config-name> <repeats> [extra inference_cli.sh args...]
+#   scripts/legacy/m3_measure.sh <config-name> <repeats> [extra inference_cli.sh args...]
 #
 # Results go to results/m3/<config>.jsonl, one JSON object per repeat with the
 # end-to-end seconds and the pure-inference stage breakdown.
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
 CONFIG="${1:?config name required}"; shift

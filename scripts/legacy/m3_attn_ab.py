@@ -7,7 +7,7 @@ the loaded transformer with ``EraserDiTAttentionProcessor``, then the same
 forward with every block swapped back to the vendored
 ``LTXVideoAttentionProcessor2_0``.  Any difference is a processor regression.
 
-    CUDA_VISIBLE_DEVICES=N HF_HUB_OFFLINE=1 PYTHONPATH=. python scripts/m3_attn_ab.py
+    CUDA_VISIBLE_DEVICES=N HF_HUB_OFFLINE=1 PYTHONPATH=. python scripts/legacy/m3_attn_ab.py
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import torch
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
 from config.server_args import ServerArgs, set_global_server_args

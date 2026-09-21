@@ -1,10 +1,14 @@
 # 服务端接口
 
+[CLI](cli.md) · [性能与验收](performance.md)
+
+从仓库根目录运行，使用已安装依赖的解释器；可设置 `ERASERDIT_PYTHON="$(command -v python)"`。
+
 启动：
 
 ```bash
 ./inference_server.sh --pipeline-name EraserDiTErasePipeline \
-  --model-path /mnt/shanhai-ai/shanhai-workspace/zhouhao6/EraserDiT/results/cache_prediction_model \
+  --model-path results/cache_prediction_model \
   --task-root /tmp/mgerase_tasks --input-allowed-root "$PWD/data"
 ```
 
@@ -92,7 +96,7 @@ python -m unittest discover -s tests -p test_service_api.py -v
 ## 验收
 
 ```bash
-python scripts/service_smoke.py --base-url http://127.0.0.1:30000 \
+python scripts/validation/service_smoke.py --base-url http://127.0.0.1:30000 \
   --video data/10268234.mp4 --mask data/10268234_mask.mp4 \
   --prompt "There is a bridge over the lake."
 ```
@@ -102,11 +106,10 @@ python scripts/service_smoke.py --base-url http://127.0.0.1:30000 \
 一键起服务 + 验收（等卡、起服务、跑验收、无论成败都拆干净）：
 
 ```bash
-scripts/service_verify.sh          # 自动等一张 ≥60 GiB 空闲的卡
-scripts/service_verify.sh 2        # 指定卡
+ERASERDIT_MODEL="$PWD/results/cache_prediction_model" scripts/validation/service_verify.sh          # 自动等一张 ≥60 GiB 空闲的卡
+ERASERDIT_MODEL="$PWD/results/cache_prediction_model" scripts/validation/service_verify.sh 2        # 指定卡
 ```
 
-**模型路径有改动后必须重跑。** M2 的首次验收（`6c714f2`）跑在 cross-attention 修复
-（`26c5a6b`）之前：端点检查全过，但它下载到的 mp4 是损坏版本产出的——验收查的是接口
-行为，不查画面。修复后重验通过，且下载产物与 M1b 验收产物 md5 一致
-（`ea93b4f2…`），即服务端内容也回到了已验证状态。
+模型或权重路径变更后应重新验收。接口验收不判断画面质量，需另按
+[质量标准](performance.md#acceptance) 对照输出视频。回环请求受环境代理影响时，
+设置 `NO_PROXY=127.0.0.1,localhost`。

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Bring up the erase service and run the end-to-end acceptance against it.
 #
-#   scripts/service_verify.sh [gpu] [min-free-mib]
+#   scripts/validation/service_verify.sh [gpu] [min-free-mib]
 #
 # With no GPU argument it waits for a card to free up, because the resident
 # pipeline needs ~60 GiB and this host is shared.  Everything is torn down on
@@ -14,7 +14,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$HERE/.."
+cd "$HERE/../.."
 
 MODEL="${ERASERDIT_MODEL:-/root/.cache/huggingface/hub/models--jieeliu--EraserDiT/snapshots/904fb412da76235085dbbccaefdbde4979fa3d29}"
 PORT="${SERVICE_PORT:-30000}"
@@ -71,7 +71,7 @@ done
 curl -sf "http://127.0.0.1:${PORT}/health" > /dev/null || {
   echo "service never became healthy"; tail -30 "$LOG"; exit 1; }
 
-python3 scripts/service_smoke.py \
+python3 scripts/validation/service_smoke.py \
   --base-url "http://127.0.0.1:${PORT}" \
   --video data/10268234.mp4 --mask data/10268234_mask.mp4 \
   --prompt "There is a bridge over the lake."

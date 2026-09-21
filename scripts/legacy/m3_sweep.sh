@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # M3 measurement sweep: every acceleration configuration in the plan, repeated.
 #
-#   scripts/m3_sweep.sh [repeats]        # default 5
+#   scripts/legacy/m3_sweep.sh [repeats]        # default 5
 #
 # Delegates to m3_measure.sh, which owns the single-inference guard, the GPU
 # pick and the JSONL bookkeeping.  Results land in results/m3/<config>.jsonl.
@@ -13,7 +13,7 @@ set -euo pipefail
 
 REPEATS="${1:-5}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$HERE/.."
+cd "$HERE/../.."
 
 export ERASERDIT_DETERMINISTIC=0
 

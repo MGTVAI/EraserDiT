@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare decoded Y planes in cache smoke outputs, including erase/edge regions.
 
-Example: python scripts/cache_compare.py --directory results/transformer_cache_smoke
+Example: python scripts/validation/cache_compare.py --directory results/transformer_cache_smoke
 --mask results/dynamic_offload_smoke/mask_33.mp4
 Regions use EraserDiT's RGB mask threshold, with a 9x9 morphological boundary ring.
 """
