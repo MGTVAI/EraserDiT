@@ -18,7 +18,7 @@ from utils.logging_utils import init_logger
 logger = init_logger(__name__)
 
 PIPELINES_PATH = os.path.dirname(__file__)
-DEFAULT_PIPELINE = "LTX095ErasePipeline"
+DEFAULT_PIPELINE = "EraserDiTErasePipeline"
 
 
 @lru_cache(maxsize=None)

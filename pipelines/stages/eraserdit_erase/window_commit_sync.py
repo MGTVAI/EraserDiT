@@ -9,9 +9,9 @@ from __future__ import annotations
 from config.server_args import ServerArgs
 from nodes.schedule_batch import Req
 from nodes.stages.base import PipelineStage
-from pipelines.runtime.windowing.commit_sync import synchronize_ltx095_window_commit
+from pipelines.runtime.windowing.commit_sync import synchronize_window_commit
 
 
 class EraserDiTEraseWindowCommitSyncStage(PipelineStage):
     def forward(self, batch: Req, server_args: ServerArgs) -> Req:
-        return synchronize_ltx095_window_commit(batch, server_args)
+        return synchronize_window_commit(batch, server_args)

@@ -20,11 +20,11 @@ CUDA_VISIBLE_DEVICES='' ERASERDIT_TEST_TWO_GPU=0 ERASERDIT_TEST_INT8=0 \
 | --- | --- |
 | `test_architecture.py` | 单向依赖边界、取消机制独立导入 |
 | `test_execution_control.py` | 本地取消、对端取消传播、服务端兼容符号 |
-| `test_assembly_contracts.py` | 两种模型契约选择、并行计划类型兼容及默认策略 |
+| `test_assembly_contracts.py` | EraserDiT 默认契约与旧模型拒绝、并行计划类型兼容及默认策略 |
 | `test_stage_compatibility.py` | stage 导入顺序、模块身份、patch 与装配契约 |
 | `test_parallel_compatibility.py` | 通用并行/算子独立导入、模型适配模块身份及 patch 契约 |
 | `test_runtime_boundaries.py` | 分布式状态与日志判断、资源策略回退、异步视频 IO 与编码契约 |
-| `test_prepost_boundaries.py` | 两模型预/后处理导入契约、patch 行为、通用裁剪独立导入及局部输出契约 |
+| `test_prepost_boundaries.py` | EraserDiT 预/后处理导入契约、patch 行为、通用裁剪独立导入 |
 | `test_service_api.py` | HTTP 契约、任务和产物；使用 scheduler stub，无权重 |
 | `test_component_offload.py` | 组件租约、异常清理；CUDA 可用时附加设备验证 |
 | `test_dynamic_offload.py` | 事件、预算、搬运回滚与恢复；部分测试需要 CUDA |

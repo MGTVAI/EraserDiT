@@ -1,4 +1,4 @@
-"""Runtime metadata helpers for the LTX095 videoerase pipeline."""
+"""Runtime metadata helpers for the video erase pipeline."""
 
 from __future__ import annotations
 
@@ -6,18 +6,18 @@ from copy import deepcopy
 from dataclasses import asdict
 from typing import Any
 
-from config.ltx095 import LTX095EraseSamplingParams
+from config.eraserdit import EraserDiTEraseSamplingParams
 from nodes.schedule_batch import Req
-from pipelines.runtime.contracts import LTX095EraseRuntimeContext
+from pipelines.runtime.contracts import EraseRuntimeContext
 
 RUNTIME_TASK_CONTRACT_VERSION = "phase3_scheduler_scene_tail_flush_parity"
-LTX095_VAE_PARALLEL_HISTORY_KEY = "ltx095_vae_parallel_history"
+VAE_PARALLEL_HISTORY_KEY = "vae_parallel_history"
 TORCH_COMPILE_STATUS_KEY = "torch_compile"
 TRANSFORMER_CACHE_STATUS_KEY = "transformer_cache"
 TRANSFORMER_CACHE_HISTORY_KEY = "transformer_cache_history"
 
 
-def collect_ltx095_window_torch_compile_status(
+def collect_window_torch_compile_status(
     *,
     batch: Req,
     window_batch: Req,
@@ -33,7 +33,7 @@ def collect_ltx095_window_torch_compile_status(
     batch.extra[TORCH_COMPILE_STATUS_KEY] = deepcopy(status)
 
 
-def collect_ltx095_window_transformer_cache_status(
+def collect_window_transformer_cache_status(
     *,
     batch: Req,
     window_batch: Req,
@@ -61,17 +61,17 @@ def collect_ltx095_window_transformer_cache_status(
     history.append(deepcopy(status))
 
 
-def collect_ltx095_window_vae_parallel_history(
+def collect_window_vae_parallel_history(
     *,
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     window_batch: Req,
 ) -> None:
-    history = window_batch.extra.get(LTX095_VAE_PARALLEL_HISTORY_KEY)
+    history = window_batch.extra.get(VAE_PARALLEL_HISTORY_KEY)
     if history is None:
         return
     if not isinstance(history, list):
         raise TypeError(
-            f"{LTX095_VAE_PARALLEL_HISTORY_KEY} must be a list, "
+            f"{VAE_PARALLEL_HISTORY_KEY} must be a list, "
             f"got {type(history).__name__}"
         )
     context.vae_parallel_history.extend(history)
@@ -79,8 +79,8 @@ def collect_ltx095_window_vae_parallel_history(
 
 def build_runtime_video_metadata(
     *,
-    context: LTX095EraseRuntimeContext,
-    params: LTX095EraseSamplingParams,
+    context: EraseRuntimeContext,
+    params: EraserDiTEraseSamplingParams,
     runtime_window_cache_impl: str,
 ) -> dict[str, object]:
     return {
@@ -128,17 +128,17 @@ def build_runtime_video_metadata(
         ),
         "vae_parallel_enabled": bool(
             context.official_parallel_metadata.get(
-                "ltx095_native_vae_parallel_enabled", False
+                "native_vae_parallel_enabled", False
             )
         ),
         "vae_parallel_degree": int(
             context.official_parallel_metadata.get(
-                "ltx095_native_vae_parallel_degree", 1
+                "native_vae_parallel_degree", 1
             )
         ),
         "vae_parallel_mode": str(
             context.official_parallel_metadata.get(
-                "ltx095_native_vae_parallel_mode", "disabled"
+                "native_vae_parallel_mode", "disabled"
             )
         ),
     }
@@ -147,8 +147,8 @@ def build_runtime_video_metadata(
 def write_runtime_mode_batch_extra(
     *,
     batch: Req,
-    context: LTX095EraseRuntimeContext,
-    params: LTX095EraseSamplingParams,
+    context: EraseRuntimeContext,
+    params: EraserDiTEraseSamplingParams,
     object_count: int,
     runtime_window_cache_impl: str,
 ) -> None:
@@ -163,7 +163,7 @@ def write_runtime_mode_batch_extra(
 def write_runtime_history_batch_extra(
     *,
     batch: Req,
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     include_text_embedding_history: bool,
     include_load_event_history: bool,
     include_flush_event_history: bool,
@@ -195,7 +195,7 @@ def write_runtime_history_batch_extra(
     batch.extra["runtime_task_state_history"] = context.task_state_history
     batch.extra["runtime_task_contract_enabled"] = True
     batch.extra["runtime_task_contract_version"] = RUNTIME_TASK_CONTRACT_VERSION
-    batch.extra[LTX095_VAE_PARALLEL_HISTORY_KEY] = list(
+    batch.extra[VAE_PARALLEL_HISTORY_KEY] = list(
         context.vae_parallel_history
     )
     controller = context.memory_phase_controller
@@ -227,7 +227,7 @@ def write_runtime_history_batch_extra(
 
 def compute_runtime_final_video_shape(
     *,
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     num_frames: int,
     height: int,
     width: int,
@@ -245,7 +245,7 @@ def compute_runtime_final_video_shape(
 def write_runtime_result_batch_extra(
     *,
     batch: Req,
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     flat_window_specs: list[dict[str, Any]],
     final_video_shape: tuple[int, int, int, int, int],
     include_window_state_history: bool,

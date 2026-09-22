@@ -1,14 +1,11 @@
-"""Project-owned Cache-DiT DBCache request contract for LTX095."""
+"""Project-owned Cache-DiT DBCache request contract for video erase."""
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
 
-from config.transformer_cache import TransformerCacheMode
 
-LTX095_CACHE_DIT_MODEL_IDENTITY = "ltxvideo/erase/checkpoint-206K"
-LTX095_CACHE_DIT_NUM_BLOCKS = 28
 
 
 @dataclass(frozen=True)
@@ -68,37 +65,3 @@ class CacheDitParams:
                 "Cache-DiT front_blocks + back_blocks must be smaller than "
                 "num_transformer_blocks"
             )
-
-
-def resolve_ltx095_cache_dit_params(
-    *,
-    mode: TransformerCacheMode,
-    front_blocks: object,
-    back_blocks: object,
-    warmup_steps: object,
-    residual_diff_threshold: object,
-    max_consecutive_cached_steps: object,
-    end_guard_steps: object,
-    num_transformer_blocks: int = LTX095_CACHE_DIT_NUM_BLOCKS,
-) -> CacheDitParams:
-    if not isinstance(mode, TransformerCacheMode):
-        raise TypeError("mode must be a TransformerCacheMode")
-    params = CacheDitParams(
-        enabled=mode is TransformerCacheMode.CACHE_DIT,
-        front_blocks=front_blocks,
-        back_blocks=back_blocks,
-        warmup_steps=warmup_steps,
-        residual_diff_threshold=residual_diff_threshold,
-        max_consecutive_cached_steps=max_consecutive_cached_steps,
-        end_guard_steps=end_guard_steps,
-    )
-    params.validate_block_count(num_transformer_blocks)
-    return params
-
-
-__all__ = (
-    "CacheDitParams",
-    "LTX095_CACHE_DIT_MODEL_IDENTITY",
-    "LTX095_CACHE_DIT_NUM_BLOCKS",
-    "resolve_ltx095_cache_dit_params",
-)

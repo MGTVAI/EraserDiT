@@ -1,4 +1,4 @@
-"""Optional fused operators for the local MGErase runtime."""
+"""Optional fused operators for the local EraserDiT runtime."""
 
 from .config import (
     OPERATOR_FUSION_BACKENDS,

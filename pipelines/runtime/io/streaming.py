@@ -1,4 +1,4 @@
-"""Streaming runtime IO and lifecycle helpers for LTX095 pipelines.runtime."""
+"""Streaming runtime IO and lifecycle helpers for pipelines.runtime."""
 
 from __future__ import annotations
 
@@ -7,10 +7,10 @@ from typing import Callable
 
 import torch
 
-from pipelines.runtime.contracts import LTX095EraseRuntimeContext
+from pipelines.runtime.contracts import EraseRuntimeContext
 from pipelines.runtime.contracts import ObjectRuntimeState
 from pipelines.runtime.contracts import _is_windowed_runtime_mode
-from pipelines.runtime.io.masks import materialize_ltx095_window_mask
+from pipelines.runtime.io.masks import materialize_window_mask
 from media.video_io import (
     TensorFrameCache,
     binarize_mask_array,
@@ -21,7 +21,7 @@ from utils.windowing import WindowSpec
 
 def _write_streaming_frames(
     *,
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     frames: torch.Tensor,
 ) -> None:
     """Convert BF16 frames once at the writer boundary."""
@@ -39,7 +39,7 @@ def _write_streaming_frames(
 
 def release_mask_frames(
     *,
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     release_end: int,
     source: str,
     record_runtime_event: Callable[..., dict],
@@ -71,7 +71,7 @@ def release_mask_frames(
 
 def ensure_window_cache_loaded(
     *,
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     spec: WindowSpec,
     record_runtime_event: Callable[..., dict],
 ) -> None:
@@ -161,7 +161,7 @@ def ensure_window_cache_loaded(
 
 def evict_cache_before(
     *,
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     frame_index: int,
     record_runtime_event: Callable[..., dict],
 ) -> None:
@@ -281,7 +281,7 @@ def evict_cache_before(
 
 def flush_windowed_frames(
     *,
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     flush_end: int,
     record_runtime_event: Callable[..., dict],
     evict_cache_before_fn: Callable[..., None],
@@ -352,14 +352,14 @@ def flush_windowed_frames(
 
 def materialize_object_window_mask(
     *,
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     object_state: ObjectRuntimeState,
     spec: WindowSpec,
     ensure_window_cache_loaded_fn: Callable[..., None],
     crop_bbox: tuple[int, int, int, int] | None = None,
 ):
     _ = object_state
-    return materialize_ltx095_window_mask(
+    return materialize_window_mask(
         context=context,
         spec=spec,
         ensure_window_cache_loaded_fn=ensure_window_cache_loaded_fn,

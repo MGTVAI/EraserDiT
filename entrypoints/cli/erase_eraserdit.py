@@ -24,7 +24,7 @@ from config.eraserdit import (
 from config.server_args import ServerArgs
 from entrypoints.erase_runner import resolve_output_file_name
 from parallel.runtime import destroy_runtime_distributed
-from utils.inference_timing import build_ltx095_pure_timing_payload
+from utils.inference_timing import build_pure_timing_payload
 from utils.determinism import enable_deterministic_mode
 from utils.logging_utils import init_logger
 from pipelines.session import EraseSession
@@ -350,7 +350,7 @@ def main() -> None:
                     "quantization": result.extra.get("quantization"),
                     "parallel_history": result.extra.get("parallel_history", []),
                     "transformer_cache_history": result.extra.get("transformer_cache_history", []),
-                    "timing": build_ltx095_pure_timing_payload(
+                    "timing": build_pure_timing_payload(
                         result.metrics,
                         extra={
                             "torch_compile": result.extra.get("torch_compile"),

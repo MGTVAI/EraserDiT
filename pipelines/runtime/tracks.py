@@ -1,4 +1,4 @@
-"""BBox/object track helpers for LTX095 pipelines.runtime."""
+"""BBox/object track helpers for pipelines.runtime."""
 
 from __future__ import annotations
 

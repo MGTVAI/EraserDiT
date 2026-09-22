@@ -1,4 +1,4 @@
-"""Experimental EraserDiT policies; default off, no borrowed LTX095 coefficients.
+"""Experimental EraserDiT policies; disabled by default.
 
 Active-mode thresholds are sweep starting points, not quality-approved presets.
 See docs/performance.md#cache for measured limits.

@@ -1,4 +1,4 @@
-"""Lightweight distributed runtime helpers for MGErase."""
+"""Lightweight distributed runtime helpers for EraserDiT."""
 
 from __future__ import annotations
 
@@ -71,70 +71,15 @@ def _normalize_distributed_compute_mode(value: str | None) -> str:
     return normalized
 
 
-def resolve_ltx095_native_vae_parallel_status(
-    server_args,
-) -> tuple[bool, int, str]:
-    """Return the project-owned LTX095 VAE tile-parallel status.
-
-    LTX095 uses ``parallel_context.plan`` for its spatial VAE tiles.  This is
-    intentionally separate from the legacy ``official_parallel_context``,
-    whose VAE compatibility path is disabled for LTX095.
-    """
-    if str(getattr(server_args, "pipeline_class_name", "") or "") != (
-        "LTX095ErasePipeline"
-    ):
-        return False, 1, "not_ltx095"
-    context = getattr(server_args, "parallel_context", None)
-    plan = getattr(context, "plan", None)
-    if (
-        context is None
-        or not bool(getattr(context, "enabled", False))
-        or plan is None
-    ):
-        return False, 1, "disabled"
-    degree = int(getattr(plan, "vae_degree", 1) or 1)
-    world_size = int(getattr(plan, "world_size", 1) or 1)
-    if degree <= 1:
-        return False, 1, "degree_one"
-    if degree != world_size:
-        return False, 1, "requires_world_coverage"
-    return True, degree, "spatial_tiles"
-
-
 def _resolve_runtime_acceleration_plan(server_args, *, world_size: int):
-    """Resolve the topology, applying the LTX095 production auto profile.
-
-    The generic planner keeps its framework-neutral AUTO mesh.  LTX095's
-    default is intentionally different: its validated four-rank fast path is
-    SP4/CFG1/VAE4, while one and two ranks retain the corresponding SP1 and
-    SP2 profiles.  Explicit ``manual`` and ``disabled`` requests remain exact.
-    """
-    requested_mode = ParallelMode(server_args.parallel_mode)
-    if (
-        str(getattr(server_args, "pipeline_class_name", "") or "")
-        == "LTX095ErasePipeline"
-        and requested_mode is ParallelMode.AUTO
-    ):
-        sp_degree, cfg_degree, vae_degree = {
-            1: (1, 1, 1),
-            2: (2, 1, 2),
-            4: (4, 1, 4),
-        }[world_size]
-        config = AccelerationConfig(
-            parallel_mode=ParallelMode.MANUAL,
-            sp_degree=sp_degree,
-            cfg_degree=cfg_degree,
-            vae_degree=vae_degree,
-            writer_rank=int(server_args.writer_rank),
-        )
-    else:
-        config = AccelerationConfig(
-            parallel_mode=requested_mode,
-            sp_degree=int(server_args.sp_degree),
-            cfg_degree=int(server_args.cfg_parallel_degree),
-            vae_degree=int(server_args.vae_parallel_degree),
-            writer_rank=int(server_args.writer_rank),
-        )
+    """Resolve the explicitly requested runtime topology."""
+    config = AccelerationConfig(
+        parallel_mode=ParallelMode(server_args.parallel_mode),
+        sp_degree=int(server_args.sp_degree),
+        cfg_degree=int(server_args.cfg_parallel_degree),
+        vae_degree=int(server_args.vae_parallel_degree),
+        writer_rank=int(server_args.writer_rank),
+    )
     return resolve_acceleration_plan(config, world_size=world_size)
 
 
@@ -477,8 +422,7 @@ def _initialize_official_parallel_context(
         cpu_rank = int(dist.get_rank(group=cpu_group))
         cpu_world_size = int(dist.get_world_size(group=cpu_group))
 
-    pipeline_class_name = str(getattr(server_args, "pipeline_class_name", "") or "")
-    vae_parallel_supported = pipeline_class_name != "LTX095ErasePipeline"
+    vae_parallel_supported = True
     vae_enabled, vae_degree, vae_mode, memory_required_gb, memory_available_gb = (
         _resolve_vae_parallel_degree(
             server_args,
@@ -488,11 +432,6 @@ def _initialize_official_parallel_context(
             device=context.device,
         )
     )
-    if not vae_parallel_supported:
-        vae_enabled = False
-        vae_degree = 1
-        if compute_mode == "official_vae_parallel":
-            vae_mode = "unsupported_official_model"
     parallel_context = RuntimeOfficialParallelContext(
         enabled=context.distributed_enabled and compute_mode == "official_vae_parallel",
         distributed_compute_mode_requested=requested_mode,
@@ -510,14 +449,14 @@ def _initialize_official_parallel_context(
         vae_parallel_memory_required_gb=float(memory_required_gb),
         vae_parallel_memory_available_gb=float(memory_available_gb),
         writer_only_stage_names=(
-            "LTX095EraseTextEncodingStage",
-            "LTX095EraseLatentPreparationStage",
-            "LTX095EraseTimestepPreparationStage",
-            "LTX095EraseDenoisingStage",
+            "EraserDiTEraseTextEncodingStage",
+            "EraserDiTEraseLatentPreparationStage",
+            "EraserDiTEraseTimestepPreparationStage",
+            "EraserDiTEraseDenoisingStage",
         ),
         all_rank_vae_stage_names=(
-            "LTX095EraseConditionEncodingStage",
-            "LTX095EraseDecodingStage",
+            "EraserDiTEraseConditionEncodingStage",
+            "EraserDiTEraseDecodingStage",
         ),
         non_writer_required_modules=("vae",),
         cpu_dist_group=cpu_group,

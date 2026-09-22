@@ -1,4 +1,4 @@
-"""Mask helpers for the local LTX0.9.5 erase stages."""
+"""Mask helpers for the local video erase erase stages."""
 
 from __future__ import annotations
 

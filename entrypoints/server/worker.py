@@ -1,4 +1,4 @@
-"""Resident all-rank worker group for LTX095 erase requests."""
+"""Resident all-rank worker group for EraserDiT erase requests."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from config.service_contract import PipelineServiceContract
 from pipelines.service_contract import resolve_service_contract
 from entrypoints.server.control import ServiceProgressState
 from nodes.control import CancellationToken
-from pipelines.session import LTX095EraseSession
+from pipelines.session import EraseSession
 
 
 _FATAL_ERROR_MARKERS = (
@@ -59,7 +59,7 @@ class ResidentWorkerGroup:
             getattr(server_args, "pipeline_class_name", None)
         )
         self.task_store = task_store
-        self.session = LTX095EraseSession(server_args)
+        self.session = EraseSession(server_args)
         self.context = self.session.distributed_context
         self._sequence = 0
         self._last_received_sequence = 0

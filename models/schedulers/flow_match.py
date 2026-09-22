@@ -1,4 +1,4 @@
-"""Local LTX0.9.5 flow-match scheduler wrapper."""
+"""Shared flow-match scheduler wrapper."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from diffusers.schedulers.scheduling_flow_match_euler_discrete import (
 from models.schedulers.base import BaseScheduler
 
 
-class LTX095FlowMatchEulerDiscreteScheduler(
+class FlowMatchEulerDiscreteScheduler(
     _DiffusersFlowMatchEulerDiscreteScheduler, BaseScheduler
 ):
     """Official flow-match scheduler with the local runtime compatibility layer."""
@@ -66,6 +66,5 @@ class LTX095FlowMatchEulerDiscreteScheduler(
         self._shift = shift
 
 
-FlowMatchEulerDiscreteScheduler = LTX095FlowMatchEulerDiscreteScheduler
-EntryClass = LTX095FlowMatchEulerDiscreteScheduler
+EntryClass = FlowMatchEulerDiscreteScheduler
 

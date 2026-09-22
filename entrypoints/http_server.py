@@ -1,4 +1,4 @@
-"""FastAPI application composition for the resident MGErase service."""
+"""FastAPI application composition for the resident EraserDiT service."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ def create_http_server_app(
     effective_acceleration: Any = None,
 ) -> FastAPI:
     capability = str(model_summary.get("capability", "video_erase"))
-    app = FastAPI(title=f"MGErase {capability} Service", version="1")
+    app = FastAPI(title=f"EraserDiT {capability} Service", version="1")
     app.state.ready = True
     app.state.started_at = time.time()
 

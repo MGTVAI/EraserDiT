@@ -1,4 +1,4 @@
-"""Minimal model registry for the local MGErase runtime."""
+"""Minimal model registry for the local EraserDiT runtime."""
 
 from __future__ import annotations
 
@@ -83,10 +83,3 @@ class _ModelRegistry:
 
 
 ModelRegistry = _ModelRegistry()
-
-# ── LTX095 aliases ────────────────────────────────────────────────────
-ModelRegistry.register_alias("LTX095Transformer3DModel", "LTXVideoTransformer3DModel")
-ModelRegistry.register_alias("LTX095AutoencoderKLLTXVideo", "AutoencoderKLLTXVideo")
-ModelRegistry.register_alias(
-    "FlowMatchEulerDiscreteScheduler", "LTX095FlowMatchEulerDiscreteScheduler"
-)

@@ -1,4 +1,4 @@
-"""Windowed runtime driver for the LTX095 videoerase pipeline."""
+"""Windowed runtime driver for the video erase pipeline."""
 
 from __future__ import annotations
 
@@ -8,20 +8,20 @@ from typing import Any
 
 import torch
 
-from config.ltx095 import LTX095EraseSamplingParams
+from config.eraserdit import EraserDiTEraseSamplingParams
 from config.server_args import ServerArgs
 from nodes.schedule_batch import Req
 from pipelines.runtime.windowing.commit_sync import (
-    release_ltx095_window_commit_payload,
-    synchronize_ltx095_window_runtime_boundary,
+    release_window_commit_payload,
+    synchronize_window_runtime_boundary,
 )
 from pipelines.runtime.objects import (
-    build_ltx095_object_runtime_states,
+    build_object_runtime_states,
 )
 from pipelines.runtime.metadata import (
-    collect_ltx095_window_torch_compile_status,
-    collect_ltx095_window_transformer_cache_status,
-    collect_ltx095_window_vae_parallel_history,
+    collect_window_torch_compile_status,
+    collect_window_transformer_cache_status,
+    collect_window_vae_parallel_history,
     compute_runtime_final_video_shape,
     write_runtime_history_batch_extra,
     write_runtime_mode_batch_extra,
@@ -29,30 +29,30 @@ from pipelines.runtime.metadata import (
 )
 from pipelines.runtime.scheduler import RuntimeTaskScheduler
 from pipelines.runtime.contracts import (
-    LTX095EraseRuntimeContext,
+    EraseRuntimeContext,
     ObjectRuntimeState,
 )
 from pipelines.runtime.windowing.sp_dispatch import (
-    LTX095SPWindowCommand,
-    LTX095SPWindowCommandCode,
-    dispatch_ltx095_sp_window_command,
-    resolve_active_ltx095_window_commit_context,
+    SPWindowCommand,
+    SPWindowCommandCode,
+    dispatch_sp_window_command,
+    resolve_active_window_commit_context,
 )
 from pipelines.runtime.windowing.materializer import (
-    build_ltx095_sp_peer_window_batch,
-    cache_ltx095_window_text_embeddings,
-    materialize_ltx095_window_batch,
+    build_sp_peer_window_batch,
+    cache_window_text_embeddings,
+    materialize_window_batch,
 )
-from pipelines.runtime.windowing.planner import infer_ltx095_window_bbox
+from pipelines.runtime.windowing.planner import infer_window_bbox
 from pipelines.runtime.windowing.reclaim import (
-    reclaim_completed_ltx095_window,
-    transfer_completed_ltx095_window,
+    reclaim_completed_window,
+    transfer_completed_window,
 )
 from memory.policies.memory_phase_controller import MemoryPhase
 from nodes.control import service_checkpoint
 from utils.inference_timing import record_diagnostic_stage
 from utils.bbox import resolve_single_window_crop_bbox
-from utils.ltx095_origin_contract import (
+from utils.window_contract import (
     resolve_runtime_sp_degree,
     resolve_spatial_alignment,
 )
@@ -69,7 +69,7 @@ def object_input_ready(
 
 def prime_windowed_object_chain_inputs(
     *,
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     object_states: list[ObjectRuntimeState],
     ensure_window_cache_loaded_fn,
 ) -> bool:
@@ -94,9 +94,9 @@ def prime_windowed_object_chain_inputs(
     return False
 
 
-def finalize_ltx095_object_window_step(
+def finalize_object_window_step(
     *,
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     object_states: list[ObjectRuntimeState],
     object_state: ObjectRuntimeState,
     spec: WindowSpec,
@@ -173,24 +173,24 @@ def finalize_ltx095_object_window_step(
     )
 
 
-def compute_ltx095_streaming_stable_end(
-    context: LTX095EraseRuntimeContext,
+def compute_streaming_stable_end(
+    context: EraseRuntimeContext,
 ) -> int:
     if context.scheduler is None:
         return int(context.next_write_index)
     return context.scheduler.compute_tail_flush_end(context)
 
 
-def maybe_flush_ltx095_streaming_runtime(
+def maybe_flush_streaming_runtime(
     *,
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     evict_cache_before_fn,
     release_mask_frames_fn,
     flush_windowed_frames_fn,
 ) -> None:
     if context.window_runtime_mode != "streaming":
         return
-    stable_end = compute_ltx095_streaming_stable_end(context)
+    stable_end = compute_streaming_stable_end(context)
     if context.sequential_video_writer is None:
         if stable_end > context.next_write_index:
             context.next_write_index = stable_end
@@ -205,7 +205,7 @@ def maybe_flush_ltx095_streaming_runtime(
     flush_windowed_frames_fn(context, flush_end=stable_end)
 
 
-class _LTX095SPWriterCommandController:
+class _SPWriterCommandController:
     def __init__(
         self,
         *,
@@ -216,9 +216,9 @@ class _LTX095SPWriterCommandController:
         self.runtime_mode = runtime_mode
         self.command_dispatched = False
 
-    def _dispatch(self, command: LTX095SPWindowCommand, *, phase: str) -> None:
+    def _dispatch(self, command: SPWindowCommand, *, phase: str) -> None:
         self.command_dispatched = True
-        dispatched = dispatch_ltx095_sp_window_command(
+        dispatched = dispatch_sp_window_command(
             self.server_args,
             runtime_mode=self.runtime_mode,
             prepare_writer_command=lambda: command,
@@ -235,8 +235,8 @@ class _LTX095SPWriterCommandController:
         scene_index: int,
     ) -> None:
         self._dispatch(
-            LTX095SPWindowCommand(
-                code=LTX095SPWindowCommandCode.RUN,
+            SPWindowCommand(
+                code=SPWindowCommandCode.RUN,
                 object_index=object_index,
                 window_index=window_index,
                 scene_index=scene_index,
@@ -254,8 +254,8 @@ class _LTX095SPWriterCommandController:
         reason_code: int,
     ) -> None:
         self._dispatch(
-            LTX095SPWindowCommand(
-                code=LTX095SPWindowCommandCode.SKIP,
+            SPWindowCommand(
+                code=SPWindowCommandCode.SKIP,
                 object_index=object_index,
                 window_index=window_index,
                 scene_index=scene_index,
@@ -266,8 +266,8 @@ class _LTX095SPWriterCommandController:
 
     def dispatch_end(self) -> None:
         self._dispatch(
-            LTX095SPWindowCommand(
-                code=LTX095SPWindowCommandCode.END,
+            SPWindowCommand(
+                code=SPWindowCommandCode.END,
                 object_index=-1,
                 window_index=-1,
                 scene_index=-1,
@@ -277,10 +277,10 @@ class _LTX095SPWriterCommandController:
         )
 
     def dispatch_preparation_error(self, error: BaseException) -> None:
-        def raise_preparation_error() -> LTX095SPWindowCommand:
+        def raise_preparation_error() -> SPWindowCommand:
             raise error
 
-        dispatch_ltx095_sp_window_command(
+        dispatch_sp_window_command(
             self.server_args,
             runtime_mode=self.runtime_mode,
             prepare_writer_command=raise_preparation_error,
@@ -291,9 +291,9 @@ class _LTX095SPWriterCommandController:
         self.command_dispatched = False
 
 
-def _reclaim_pending_ltx095_window(
+def _reclaim_pending_window(
     *,
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     server_args: ServerArgs,
 ) -> None:
     pending = context.pending_window_reclaim
@@ -307,7 +307,7 @@ def _reclaim_pending_ltx095_window(
                 if controller is not None
                 else None
             )
-            reclaim_completed_ltx095_window(
+            reclaim_completed_window(
                 pending,
                 device=getattr(server_args, "device", "cpu"),
                 snapshot=snapshot,
@@ -315,7 +315,7 @@ def _reclaim_pending_ltx095_window(
             context.pending_window_reclaim = None
     except BaseException as error:
         reclaim_error = error
-    synchronize_ltx095_window_runtime_boundary(reclaim_error, server_args)
+    synchronize_window_runtime_boundary(reclaim_error, server_args)
     context.window_reclaim_events.append(
         {
             "event": "window_reclaim",
@@ -331,8 +331,8 @@ def _reclaim_pending_ltx095_window(
     )
 
 
-def _drop_pending_ltx095_window_refs(
-    context: LTX095EraseRuntimeContext,
+def _drop_pending_window_refs(
+    context: EraseRuntimeContext,
 ) -> None:
     pending = context.pending_window_reclaim
     if pending is not None:
@@ -348,28 +348,28 @@ def _drop_pending_ltx095_window_refs(
         context.pending_window_reclaim = None
 
 
-def _close_ltx095_memory_phase_controller(
-    context: LTX095EraseRuntimeContext,
+def _close_memory_phase_controller(
+    context: EraseRuntimeContext,
 ) -> None:
     controller = context.memory_phase_controller
     if controller is not None:
         controller.close()
 
 
-def _run_ltx095_writer_window_runtime(
+def _run_writer_window_runtime(
     *,
     executor,
     stages,
     batch: Req,
-    context: LTX095EraseRuntimeContext,
-    params: LTX095EraseSamplingParams,
+    context: EraseRuntimeContext,
+    params: EraserDiTEraseSamplingParams,
     server_args: ServerArgs,
     logger,
     handlers,
-    command_controller: _LTX095SPWriterCommandController | None,
+    command_controller: _SPWriterCommandController | None,
 ) -> Req:
     runtime_setup_start = time.perf_counter()
-    object_states, total_windows = build_ltx095_object_runtime_states(
+    object_states, total_windows = build_object_runtime_states(
         context=context,
         params=params,
         create_empty_cache_like_fn=handlers.create_empty_cache_like,
@@ -395,7 +395,7 @@ def _run_ltx095_writer_window_runtime(
 
     if not batch.suppress_logs:
         logger.info(
-            "LTX095 erase pipeline objects=%d infer_len=%d overlap=%d time_sample=%d time_shift=%d fps=%.3f runtime_requested=%s runtime_effective=%s window_backend=%s cache_impl=%s flush_policy=%s distributed_compute_mode=%s native_vae_parallel=%s degree=%d mode=%s",
+            "Erase pipeline objects=%d infer_len=%d overlap=%d time_sample=%d time_shift=%d fps=%.3f runtime_requested=%s runtime_effective=%s window_backend=%s cache_impl=%s flush_policy=%s distributed_compute_mode=%s native_vae_parallel=%s degree=%d mode=%s",
             object_count,
             params.infer_len,
             params.overlap,
@@ -411,15 +411,15 @@ def _run_ltx095_writer_window_runtime(
                 "distributed_compute_mode", "entry_only"
             ),
             context.official_parallel_metadata.get(
-                "ltx095_native_vae_parallel_enabled", False
+                "native_vae_parallel_enabled", False
             ),
             int(
                 context.official_parallel_metadata.get(
-                    "ltx095_native_vae_parallel_degree", 1
+                    "native_vae_parallel_degree", 1
                 )
             ),
             context.official_parallel_metadata.get(
-                "ltx095_native_vae_parallel_mode", "disabled"
+                "native_vae_parallel_mode", "disabled"
             ),
         )
 
@@ -511,7 +511,7 @@ def _run_ltx095_writer_window_runtime(
             else None
         )
         if object_bbox_frames is not None:
-            window_bbox = infer_ltx095_window_bbox(
+            window_bbox = infer_window_bbox(
                 bbox_frames=object_bbox_frames,
                 spec=spec,
                 window_mask=None,
@@ -521,7 +521,7 @@ def _run_ltx095_writer_window_runtime(
             window_mask = handlers.materialize_object_window_mask(
                 context, ready_state, spec
             )
-            window_bbox = infer_ltx095_window_bbox(
+            window_bbox = infer_window_bbox(
                 bbox_frames=None,
                 spec=spec,
                 window_mask=window_mask,
@@ -559,7 +559,7 @@ def _run_ltx095_writer_window_runtime(
                         spec.scene_index,
                     ),
                 )
-                finalize_ltx095_object_window_step(
+                finalize_object_window_step(
                     context=context,
                     object_states=object_states,
                     object_state=ready_state,
@@ -568,7 +568,7 @@ def _run_ltx095_writer_window_runtime(
                     record_runtime_event_fn=handlers.record_runtime_event,
                     record_task_state_snapshot_fn=handlers.record_task_state_snapshot,
                 )
-                maybe_flush_ltx095_streaming_runtime(
+                maybe_flush_streaming_runtime(
                     context=context,
                     evict_cache_before_fn=handlers.evict_cache_before,
                     release_mask_frames_fn=handlers.release_mask_frames,
@@ -576,7 +576,7 @@ def _run_ltx095_writer_window_runtime(
                 )
             except BaseException as error:
                 lifecycle_error = error
-            synchronize_ltx095_window_runtime_boundary(lifecycle_error, server_args)
+            synchronize_window_runtime_boundary(lifecycle_error, server_args)
             service_checkpoint(
                 batch,
                 server_args,
@@ -632,11 +632,11 @@ def _run_ltx095_writer_window_runtime(
         elif isinstance(ready_state.input_cache, TensorFrameCache):
             x, y, width, height = aligned_crop_bbox
             window_mask = window_mask[..., y : y + height, x : x + width].contiguous()
-        _reclaim_pending_ltx095_window(
+        _reclaim_pending_window(
             context=context,
             server_args=server_args,
         )
-        window_batch = materialize_ltx095_window_batch(
+        window_batch = materialize_window_batch(
             batch=batch,
             context=context,
             params=params,
@@ -700,15 +700,15 @@ def _run_ltx095_writer_window_runtime(
             window_batch,
             server_args,
         )
-        collect_ltx095_window_vae_parallel_history(
+        collect_window_vae_parallel_history(
             context=context,
             window_batch=window_batch,
         )
-        collect_ltx095_window_torch_compile_status(
+        collect_window_torch_compile_status(
             batch=batch,
             window_batch=window_batch,
         )
-        collect_ltx095_window_transformer_cache_status(
+        collect_window_transformer_cache_status(
             batch=batch,
             window_batch=window_batch,
         )
@@ -735,7 +735,7 @@ def _run_ltx095_writer_window_runtime(
                     window_batch.extra.get("cached_text_embeddings"), dict
                 )
             ):
-                cache_ltx095_window_text_embeddings(
+                cache_window_text_embeddings(
                     context=context,
                     object_index=ready_state.object_index,
                     scene_index=spec.scene_index,
@@ -755,8 +755,8 @@ def _run_ltx095_writer_window_runtime(
                     window_batch=window_batch,
                 )
             finally:
-                release_ltx095_window_commit_payload(window_batch, server_args)
-            finalize_ltx095_object_window_step(
+                release_window_commit_payload(window_batch, server_args)
+            finalize_object_window_step(
                 context=context,
                 object_states=object_states,
                 object_state=ready_state,
@@ -765,7 +765,7 @@ def _run_ltx095_writer_window_runtime(
                 record_runtime_event_fn=handlers.record_runtime_event,
                 record_task_state_snapshot_fn=handlers.record_task_state_snapshot,
             )
-            maybe_flush_ltx095_streaming_runtime(
+            maybe_flush_streaming_runtime(
                 context=context,
                 evict_cache_before_fn=handlers.evict_cache_before,
                 release_mask_frames_fn=handlers.release_mask_frames,
@@ -784,11 +784,11 @@ def _run_ltx095_writer_window_runtime(
                     if lifecycle_error is None:
                         lifecycle_error = error
         if lifecycle_error is None:
-            context.pending_window_reclaim = transfer_completed_ltx095_window(
+            context.pending_window_reclaim = transfer_completed_window(
                 window_batch
             )
             window_batch = None
-        synchronize_ltx095_window_runtime_boundary(lifecycle_error, server_args)
+        synchronize_window_runtime_boundary(lifecycle_error, server_args)
         service_checkpoint(
             batch,
             server_args,
@@ -837,7 +837,7 @@ def _run_ltx095_writer_window_runtime(
     ]
 
     if context.window_runtime_mode == "streaming":
-        maybe_flush_ltx095_streaming_runtime(
+        maybe_flush_streaming_runtime(
             context=context,
             evict_cache_before_fn=handlers.evict_cache_before,
             release_mask_frames_fn=handlers.release_mask_frames,
@@ -891,12 +891,12 @@ def _run_ltx095_writer_window_runtime(
         command_controller.dispatch_end()
     finalize_error = None
     try:
-        _drop_pending_ltx095_window_refs(context)
-        _close_ltx095_memory_phase_controller(context)
+        _drop_pending_window_refs(context)
+        _close_memory_phase_controller(context)
     except BaseException as error:
         finalize_error = error
     if command_controller is not None:
-        synchronize_ltx095_window_runtime_boundary(finalize_error, server_args)
+        synchronize_window_runtime_boundary(finalize_error, server_args)
     elif finalize_error is not None:
         raise finalize_error
     batch.extra["runtime_window_reclaim_events"] = list(
@@ -929,18 +929,18 @@ def _run_ltx095_writer_window_runtime(
     return batch
 
 
-def run_ltx095_legacy_window_runtime(
+def run_legacy_window_runtime(
     *,
     executor,
     stages,
     batch: Req,
-    context: LTX095EraseRuntimeContext,
-    params: LTX095EraseSamplingParams,
+    context: EraseRuntimeContext,
+    params: EraserDiTEraseSamplingParams,
     server_args: ServerArgs,
     logger,
     handlers,
 ) -> Req:
-    return _run_ltx095_writer_window_runtime(
+    return _run_writer_window_runtime(
         executor=executor,
         stages=stages,
         batch=batch,
@@ -953,23 +953,23 @@ def run_ltx095_legacy_window_runtime(
     )
 
 
-def run_ltx095_sp_writer_window_runtime(
+def run_sp_writer_window_runtime(
     *,
     executor,
     stages,
     batch: Req,
-    context: LTX095EraseRuntimeContext,
-    params: LTX095EraseSamplingParams,
+    context: EraseRuntimeContext,
+    params: EraserDiTEraseSamplingParams,
     server_args: ServerArgs,
     logger,
     handlers,
 ) -> Req:
-    controller = _LTX095SPWriterCommandController(
+    controller = _SPWriterCommandController(
         server_args=server_args,
         runtime_mode=context.effective_runtime_mode,
     )
     try:
-        return _run_ltx095_writer_window_runtime(
+        return _run_writer_window_runtime(
             executor=executor,
             stages=stages,
             batch=batch,
@@ -986,20 +986,20 @@ def run_ltx095_sp_writer_window_runtime(
         raise
 
 
-def run_ltx095_sp_peer_window_runtime(
+def run_sp_peer_window_runtime(
     *,
     executor,
     stages,
     batch: Req,
-    context: LTX095EraseRuntimeContext,
-    params: LTX095EraseSamplingParams,
+    context: EraseRuntimeContext,
+    params: EraserDiTEraseSamplingParams,
     server_args: ServerArgs,
     logger,
     handlers,
 ) -> Req:
     del logger, handlers
     while True:
-        command = dispatch_ltx095_sp_window_command(
+        command = dispatch_sp_window_command(
             server_args,
             runtime_mode=context.effective_runtime_mode,
             prepare_writer_command=None,
@@ -1007,30 +1007,30 @@ def run_ltx095_sp_peer_window_runtime(
         )
         if command is None:
             raise RuntimeError("active SP peer did not receive a window command")
-        if command.code is LTX095SPWindowCommandCode.END:
+        if command.code is SPWindowCommandCode.END:
             finalize_error = None
             try:
-                _drop_pending_ltx095_window_refs(context)
-                _close_ltx095_memory_phase_controller(context)
+                _drop_pending_window_refs(context)
+                _close_memory_phase_controller(context)
             except BaseException as error:
                 finalize_error = error
-            synchronize_ltx095_window_runtime_boundary(finalize_error, server_args)
+            synchronize_window_runtime_boundary(finalize_error, server_args)
             return batch
-        if command.code is LTX095SPWindowCommandCode.SKIP:
-            synchronize_ltx095_window_runtime_boundary(None, server_args)
+        if command.code is SPWindowCommandCode.SKIP:
+            synchronize_window_runtime_boundary(None, server_args)
             service_checkpoint(
                 batch,
                 server_args,
                 phase="window_skip_complete",
             )
             continue
-        if command.code is not LTX095SPWindowCommandCode.RUN:
+        if command.code is not SPWindowCommandCode.RUN:
             raise RuntimeError(f"unsupported SP peer window command: {command.code}")
-        _reclaim_pending_ltx095_window(
+        _reclaim_pending_window(
             context=context,
             server_args=server_args,
         )
-        window_batch = build_ltx095_sp_peer_window_batch(
+        window_batch = build_sp_peer_window_batch(
             batch=batch,
             params=params,
             object_index=command.object_index,
@@ -1042,23 +1042,23 @@ def run_ltx095_sp_peer_window_runtime(
             window_batch,
             server_args,
         )
-        collect_ltx095_window_vae_parallel_history(
+        collect_window_vae_parallel_history(
             context=context,
             window_batch=window_batch,
         )
-        collect_ltx095_window_torch_compile_status(
+        collect_window_torch_compile_status(
             batch=batch,
             window_batch=window_batch,
         )
-        collect_ltx095_window_transformer_cache_status(
+        collect_window_transformer_cache_status(
             batch=batch,
             window_batch=window_batch,
         )
-        context.pending_window_reclaim = transfer_completed_ltx095_window(
+        context.pending_window_reclaim = transfer_completed_window(
             window_batch
         )
         window_batch = None
-        synchronize_ltx095_window_runtime_boundary(None, server_args)
+        synchronize_window_runtime_boundary(None, server_args)
         service_checkpoint(
             batch,
             server_args,
@@ -1066,35 +1066,35 @@ def run_ltx095_sp_peer_window_runtime(
         )
 
 
-def is_ltx095_sp_writer_owned_window_runtime(
-    context: LTX095EraseRuntimeContext,
+def is_sp_writer_owned_window_runtime(
+    context: EraseRuntimeContext,
     server_args: ServerArgs,
 ) -> bool:
     return bool(
         context.sp_writer_owned_runtime
         and context.effective_runtime_mode == "windowed_streaming"
-        and resolve_active_ltx095_window_commit_context(server_args) is not None
+        and resolve_active_window_commit_context(server_args) is not None
     )
 
 
-def run_ltx095_windowed_runtime(
+def run_windowed_runtime(
     *,
     executor,
     stages,
     batch: Req,
-    context: LTX095EraseRuntimeContext,
-    params: LTX095EraseSamplingParams,
+    context: EraseRuntimeContext,
+    params: EraserDiTEraseSamplingParams,
     server_args: ServerArgs,
     logger,
     handlers,
 ) -> Req:
-    if is_ltx095_sp_writer_owned_window_runtime(context, server_args):
-        active = resolve_active_ltx095_window_commit_context(server_args)
+    if is_sp_writer_owned_window_runtime(context, server_args):
+        active = resolve_active_window_commit_context(server_args)
         assert active is not None
         runtime_fn = (
-            run_ltx095_sp_writer_window_runtime
+            run_sp_writer_window_runtime
             if active.is_writer
-            else run_ltx095_sp_peer_window_runtime
+            else run_sp_peer_window_runtime
         )
         return runtime_fn(
             executor=executor,
@@ -1106,7 +1106,7 @@ def run_ltx095_windowed_runtime(
             logger=logger,
             handlers=handlers,
         )
-    return run_ltx095_legacy_window_runtime(
+    return run_legacy_window_runtime(
         executor=executor,
         stages=stages,
         batch=batch,

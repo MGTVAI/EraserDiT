@@ -1,4 +1,4 @@
-"""Sampling parameter objects used by the minimal MGErase runtime."""
+"""Sampling parameter objects used by the minimal EraserDiT runtime."""
 
 from __future__ import annotations
 

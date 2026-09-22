@@ -1,7 +1,7 @@
 """EraserDiT erase – condition encoding stage.
 
 Port of the first half of ``LTXVideoToVideoPipeline.prepare_latents``: the VAE
-encode of the masked window video.  Two details differ from the LTX095 path and
+encode of the masked window video.  Two details differ from the EraserDiT path and
 are load-bearing:
 
 * The baseline keeps the VAE's ``latents_mean`` / ``latents_std`` normalisation

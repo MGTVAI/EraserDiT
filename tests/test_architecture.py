@@ -24,14 +24,11 @@ from memory.tensor_ops import (
 """
 
 UTILITY_ALIASES = {
-    "utils/erase_preprocess.py": "models.adapters.ltx095.preprocess",
-    "utils/erase_postprocess.py": "models.adapters.ltx095.postprocess",
     "utils/eraserdit_preprocess.py": "models.adapters.eraserdit.preprocess",
     "utils/eraserdit_postprocess.py": "models.adapters.eraserdit.postprocess",
 
     "utils/video_io.py": "media.video_io",
     "utils/distributed_runtime.py": "parallel.runtime",
-    "utils/ltx095_text.py": "models.text_encoders.ltx095_text",
 }
 
 
@@ -115,7 +112,6 @@ class ArchitectureTests(unittest.TestCase):
                         "nodes.stages.model_specific_stages"
                     ) or target.startswith("parallel.eraserdit_") or target in {
                         "utils.resource_policy", "utils.video_io", "utils.distributed_runtime",
-                        "utils.ltx095_text", "utils.erase_preprocess", "utils.erase_postprocess",
                         "utils.eraserdit_preprocess", "utils.eraserdit_postprocess",
                     }
                     if legacy and path != ROOT / "nodes/__init__.py":

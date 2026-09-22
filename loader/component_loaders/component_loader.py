@@ -1,4 +1,4 @@
-"""Minimal LTX0.9.5 component loader registry for the local MGErase runtime."""
+"""Minimal video erase component loader registry for the local EraserDiT runtime."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ _SUPPORTED_COMPONENTS = {
 
 
 class ComponentLoader(ABC):
-    """Base class for loading the minimal set of LTX0.9.5 components."""
+    """Base class for loading the minimal set of video erase components."""
 
     component_names: list[str] = []
     expected_library: str = ""

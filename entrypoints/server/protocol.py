@@ -1,4 +1,4 @@
-"""Strict public request and response contracts for the MGErase video API."""
+"""Strict public request and response contracts for the EraserDiT video API."""
 
 from __future__ import annotations
 
@@ -6,11 +6,11 @@ from typing import Annotated, Any, Literal
 
 # Request schemas are model-provided service contracts; re-exported here for
 # callers that still import them from the protocol module.
-from config.service_contracts.ltx095 import (  # noqa: F401
-    DEFAULT_NEGATIVE_PROMPT,
-    LocalVideoCreateRequest,
-    MultipartVideoParameters,
-    VideoSamplingRequest,
+from config.eraserdit import ERASERDIT_NEGATIVE_PROMPT as DEFAULT_NEGATIVE_PROMPT
+from config.service_contracts.eraserdit import (
+    EraserDiTLocalVideoCreateRequest as LocalVideoCreateRequest,
+    EraserDiTMultipartVideoParameters as MultipartVideoParameters,
+    EraserDiTVideoRequest as VideoSamplingRequest,
 )
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator

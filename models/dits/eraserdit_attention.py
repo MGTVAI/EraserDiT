@@ -45,7 +45,7 @@ _BACKEND_CLASSES = {
     AttentionBackendEnum.SAGE_FP8: SageFP8AttentionBackend,
 }
 
-# Same preference order the LTX095 path uses: Sage, then FlashAttention, then SDPA.
+# Preference order: Sage, then FlashAttention, then SDPA.
 ERASERDIT_AUTO_BACKENDS = (
     AttentionBackendEnum.SAGE_ATTN,
     AttentionBackendEnum.FLASH_ATTN,

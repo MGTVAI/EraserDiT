@@ -1,4 +1,4 @@
-"""Result publication backends for the MGErase video API."""
+"""Result publication backends for the EraserDiT video API."""
 
 from __future__ import annotations
 

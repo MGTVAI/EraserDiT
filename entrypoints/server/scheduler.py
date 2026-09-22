@@ -1,4 +1,4 @@
-"""Strict FIFO scheduler with one active LTX095 GPU request."""
+"""Strict FIFO scheduler with one active  GPU request."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from entrypoints.server.task import (
     TaskRecord,
     TaskStatus,
 )
-from utils.inference_timing import build_ltx095_pure_timing_payload
+from utils.inference_timing import build_pure_timing_payload
 from utils.logging_utils import init_logger
 
 logger = init_logger(__name__)
@@ -234,7 +234,7 @@ class ServiceScheduler:
                     storage_mode=storage_outcome.mode,
                     storage_fallback=storage_outcome.fallback,
                 )
-                pure_timing = build_ltx095_pure_timing_payload(result.metrics)
+                pure_timing = build_pure_timing_payload(result.metrics)
                 record.metrics = {
                     "process_seconds": time.perf_counter() - started,
                     "queue_wait_seconds": (

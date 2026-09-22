@@ -1,4 +1,4 @@
-"""Minimal platform helpers used by the local MGErase runtime."""
+"""Minimal platform helpers used by the local EraserDiT runtime."""
 
 from __future__ import annotations
 

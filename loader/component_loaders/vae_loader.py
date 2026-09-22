@@ -1,4 +1,4 @@
-"""Minimal LTX0.9.5 VAE loader."""
+"""Minimal video erase VAE loader."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from utils.hf_diffusers_utils import load_json_dict
 
 
 class VAELoader(ComponentLoader):
-    """Loader for the local LTX0.9.5 VAE."""
+    """Loader for the local video erase VAE."""
 
     component_names = ["vae"]
     expected_library = "diffusers"

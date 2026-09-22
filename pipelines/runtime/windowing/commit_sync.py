@@ -1,4 +1,4 @@
-"""Synchronize the writer's minimal LTX095 videoerase window commit patch."""
+"""Synchronize the writer's minimal videoerase window commit patch."""
 
 from __future__ import annotations
 
@@ -15,8 +15,8 @@ from distributed.parallel_state import (
     RuntimeGroup,
 )
 from pipelines.runtime.windowing.sp_dispatch import (
-    LTX095ActiveSPWindowContext as _ActiveCommitContext,
-    resolve_active_ltx095_window_commit_context,
+    ActiveSPWindowContext as _ActiveCommitContext,
+    resolve_active_window_commit_context,
 )
 from parallel.stage_policy import synchronize_stage_error
 
@@ -39,7 +39,7 @@ _DTYPE_TO_CODE = {
 _CODE_TO_DTYPE = {code: dtype for dtype, code in _DTYPE_TO_CODE.items()}
 
 
-class LTX095WindowCommitPeerError(RuntimeError):
+class WindowCommitPeerError(RuntimeError):
     """A peer failed before the next window commit data collective."""
 
     def __init__(self, peer_ranks: tuple[int, ...], *, phase: str) -> None:
@@ -48,18 +48,18 @@ class LTX095WindowCommitPeerError(RuntimeError):
         ranks = ", ".join(str(rank) for rank in peer_ranks)
         rank_label = "rank" if len(peer_ranks) == 1 else "ranks"
         super().__init__(
-            f"LTX095 window commit {phase} failed on peer {rank_label} {ranks}"
+            f"Window commit {phase} failed on peer {rank_label} {ranks}"
         )
 
 
-class LTX095WindowCommitFatalError(RuntimeError):
+class WindowCommitFatalError(RuntimeError):
     """Normalize a non-Exception failure before the executor stage boundary."""
 
     def __init__(self, *, phase: str, original: BaseException) -> None:
         self.phase = phase
         self.original_type = type(original).__name__
         super().__init__(
-            f"LTX095 window commit {phase} raised non-Exception "
+            f"Window commit {phase} raised non-Exception "
             f"{self.original_type}: {original}"
         )
 
@@ -168,7 +168,7 @@ def _build_writer_header_and_payload(
         device=device,
     )
     if header.numel() != _HEADER_SIZE:
-        raise AssertionError("LTX095 window commit header width changed")
+        raise AssertionError("Window commit header width changed")
     return header, payload
 
 
@@ -244,7 +244,7 @@ def _synchronize_local_error(
     if normalized_error is not None:
         raise normalized_error
     if failed_slots:
-        raise LTX095WindowCommitPeerError(
+        raise WindowCommitPeerError(
             tuple(group.spec.ranks[slot] for slot in failed_slots),
             phase=phase,
         )
@@ -258,8 +258,8 @@ def _normalize_stage_error(
     if error is None or isinstance(error, Exception):
         return error
     try:
-        raise LTX095WindowCommitFatalError(phase=phase, original=error) from error
-    except LTX095WindowCommitFatalError as normalized_error:
+        raise WindowCommitFatalError(phase=phase, original=error) from error
+    except WindowCommitFatalError as normalized_error:
         return normalized_error
 
 
@@ -289,7 +289,7 @@ def _prepare_commit_collective(
     ]
     | None
 ):
-    active = resolve_active_ltx095_window_commit_context(server_args)
+    active = resolve_active_window_commit_context(server_args)
     if active is None:
         return None
     coordinator = GroupCoordinator(active.group)
@@ -305,7 +305,7 @@ def _prepare_commit_collective(
     return active, coordinator, header, control_buffers
 
 
-def synchronize_ltx095_window_commit(
+def synchronize_window_commit(
     batch: Req,
     server_args: ServerArgs,
 ) -> Req:
@@ -328,7 +328,7 @@ def synchronize_ltx095_window_commit(
         active, coordinator, header, control_buffers = prepared_collective
         if batch.metrics is not None:
             batch.metrics.ensure_operation("commit_patch_broadcast")
-        if bool(batch.extra.get("ltx095_sp_writer_owned_runtime")):
+        if bool(batch.extra.get("sp_writer_owned_runtime")):
             if not active.is_writer:
                 batch.crop_video_modified = None
                 batch.crop_bbox = None
@@ -389,7 +389,7 @@ def synchronize_ltx095_window_commit(
         return batch
 
 
-def synchronize_ltx095_window_runtime_boundary(
+def synchronize_window_runtime_boundary(
     error: BaseException | None,
     server_args: ServerArgs,
 ) -> None:
@@ -402,12 +402,12 @@ def synchronize_ltx095_window_runtime_boundary(
     )
 
 
-def release_ltx095_window_commit_payload(
+def release_window_commit_payload(
     batch: Req,
     server_args: ServerArgs,
 ) -> None:
     """Drop active-P3 per-window payloads after existing commit ops consume them."""
-    if resolve_active_ltx095_window_commit_context(server_args) is None:
+    if resolve_active_window_commit_context(server_args) is None:
         return
     patch = getattr(batch, "crop_video_modified", None)
     if getattr(batch, "output", None) is patch:
@@ -418,10 +418,10 @@ def release_ltx095_window_commit_payload(
 
 
 __all__ = (
-    "LTX095WindowCommitFatalError",
-    "LTX095WindowCommitPeerError",
-    "release_ltx095_window_commit_payload",
-    "resolve_active_ltx095_window_commit_context",
-    "synchronize_ltx095_window_commit",
-    "synchronize_ltx095_window_runtime_boundary",
+    "WindowCommitFatalError",
+    "WindowCommitPeerError",
+    "release_window_commit_payload",
+    "resolve_active_window_commit_context",
+    "synchronize_window_commit",
+    "synchronize_window_runtime_boundary",
 )

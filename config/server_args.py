@@ -1,4 +1,4 @@
-"""Minimal server/runtime arguments for the MGErase runtime."""
+"""Minimal server/runtime arguments for the EraserDiT runtime."""
 
 from __future__ import annotations
 
@@ -68,9 +68,6 @@ class ServerArgs:
     attention_backend_report: dict[str, Any] | None = field(default=None, init=False, repr=False)
     transformer_quantization: str = "none"
     text_encoder_quantization: str = "none"
-    fp8_linear_backend: str = "auto"
-    fp8_linear_granularity: str = "per_row"
-    fp8_fast_accum: bool = False
     effective_transformer_quantization: str = field(default="none", init=False)
     transformer_quantization_report: dict[str, Any] | None = field(default=None, init=False, repr=False)
     effective_text_encoder_quantization: str = field(default="none", init=False)
@@ -86,71 +83,19 @@ class ServerArgs:
         self.transformer_quantization = str(
             self.transformer_quantization
         ).strip().lower()
-        if self.transformer_quantization not in {
-            "none", "fp8_w8a8", "fp8_w8a8_triton_selective", "int8_w8a8_native",
-            "int8_w8a8_viditq",
-        }:
+        if self.transformer_quantization not in {"none", "int8_w8a8_native"}:
             raise ValueError(
-                "transformer_quantization must be one of: none, fp8_w8a8, "
-                "fp8_w8a8_triton_selective, int8_w8a8_viditq, int8_w8a8_native"
+                "transformer_quantization must be one of: none, int8_w8a8_native"
             )
-        self.text_encoder_quantization = str(
-            self.text_encoder_quantization
-        ).strip().lower()
-        if self.text_encoder_quantization not in {"none", "int8_w8a8_viditq"}:
-            raise ValueError(
-                "text_encoder_quantization must be one of: none, int8_w8a8_viditq"
-            )
-        self.fp8_linear_backend = str(self.fp8_linear_backend).strip().lower()
-        if self.fp8_linear_backend not in {"auto", "native_scaled_mm"}:
-            raise ValueError(
-                "fp8_linear_backend must be one of: auto, native_scaled_mm"
-            )
-        self.fp8_linear_granularity = str(
-            self.fp8_linear_granularity
-        ).strip().lower()
-        if self.fp8_linear_granularity != "per_row":
-            raise ValueError("fp8_linear_granularity must be per_row")
-        if not isinstance(self.fp8_fast_accum, bool):
-            raise ValueError("fp8_fast_accum must be boolean")
+        self.text_encoder_quantization = str(self.text_encoder_quantization).strip().lower()
+        if self.text_encoder_quantization != "none":
+            raise ValueError("text_encoder_quantization must be none")
         if (
-            self.transformer_quantization in {
-                "fp8_w8a8", "fp8_w8a8_triton_selective", "int8_w8a8_native",
-                "int8_w8a8_viditq",
-            }
+            self.transformer_quantization == "int8_w8a8_native"
             and self.weight_dtype is not None
             and _precision_to_torch_dtype(self.weight_dtype) is not torch.bfloat16
         ):
-            raise ValueError(
-                f"{self.transformer_quantization} requires the Transformer load "
-                "dtype to be bf16"
-            )
-        if self.transformer_quantization == "fp8_w8a8_triton_selective":
-            if self.fp8_linear_backend != "native_scaled_mm":
-                raise ValueError(
-                    "fp8_w8a8_triton_selective requires native_scaled_mm"
-                )
-            if not self.fp8_fast_accum:
-                raise ValueError(
-                    "fp8_w8a8_triton_selective requires fast accumulation"
-                )
-            if self.enable_torch_compile:
-                raise ValueError(
-                    "fp8_w8a8_triton_selective does not support torch.compile"
-                )
-        if self.transformer_quantization == "int8_w8a8_viditq":
-            if self.enable_torch_compile:
-                raise ValueError("int8_w8a8_viditq does not support torch.compile")
-            if str(self.operator_fusion_backend).strip().lower() != "disabled":
-                raise ValueError(
-                    "int8_w8a8_viditq requires operator_fusion_backend=disabled"
-                )
-        if self.text_encoder_quantization == "int8_w8a8_viditq":
-            text_dtype = self.resolve_component_dtype("text_encoder")
-            if text_dtype is not None and text_dtype is not torch.bfloat16:
-                raise ValueError("int8_w8a8_viditq T5 requires text encoder load dtype bf16")
-            if self.enable_torch_compile:
-                raise ValueError("int8_w8a8_viditq T5 does not support torch.compile")
+            raise ValueError("int8_w8a8_native requires the Transformer load dtype to be bf16")
         if type(self.warmup_steps) is not int or self.warmup_steps < 1:
             raise ValueError(
                 "warmup_steps must be a positive non-bool int, got "

@@ -1,4 +1,4 @@
-"""Explicit large-component residency phases for the LTX095 videoerase runtime."""
+"""Explicit large-component residency phases for the EraserDiT videoerase runtime."""
 
 from __future__ import annotations
 

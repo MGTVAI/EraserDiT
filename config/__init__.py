@@ -1,6 +1,6 @@
-"""Configuration objects for the minimal MGErase runtime."""
+"""Configuration objects for the minimal EraserDiT runtime."""
 
-from config.ltx095 import LTX095EraseSamplingParams, LTX095PipelineConfig
+from config.eraserdit import EraserDiTEraseSamplingParams, EraserDiTPipelineConfig
 from config.sampling_params import SamplingParams
 from config.server_args import (
     ServerArgs,
@@ -9,8 +9,8 @@ from config.server_args import (
 )
 
 __all__ = [
-    "LTX095EraseSamplingParams",
-    "LTX095PipelineConfig",
+    "EraserDiTEraseSamplingParams",
+    "EraserDiTPipelineConfig",
     "SamplingParams",
     "ServerArgs",
     "get_global_server_args",

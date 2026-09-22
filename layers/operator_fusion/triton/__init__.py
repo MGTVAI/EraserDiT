@@ -1,4 +1,4 @@
-"""Triton implementations for MGErase fused operators."""
+"""Triton implementations for EraserDiT fused operators."""
 
 from .qk_rmsnorm_rope import triton_qk_rmsnorm_rope
 from .rmsnorm_adaln import triton_adaln_modulation

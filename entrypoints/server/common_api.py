@@ -1,4 +1,4 @@
-"""Model-discovery routes for the local MGErase service."""
+"""Model-discovery routes for the local EraserDiT service."""
 
 from __future__ import annotations
 

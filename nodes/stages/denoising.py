@@ -23,9 +23,6 @@ class CompileSignature:
     dtype: str
     attention_backend: str
     transformer_quantization: str
-    fp8_linear_backend: str
-    fp8_linear_granularity: str
-    fp8_fast_accum: bool
     sp_degree: int
     cfg_degree: int
     local_shape: tuple[int, ...]
@@ -167,9 +164,6 @@ class DenoisingStage(PipelineStage):
             dtype=str(args.weight_dtype),
             attention_backend=str(args.attention_backend),
             transformer_quantization=str(args.transformer_quantization),
-            fp8_linear_backend=str(args.fp8_linear_backend),
-            fp8_linear_granularity=str(args.fp8_linear_granularity),
-            fp8_fast_accum=bool(args.fp8_fast_accum),
             sp_degree=max(1, int(args.sp_degree or 1)),
             cfg_degree=max(1, int(args.cfg_parallel_degree or 1)),
             local_shape=tuple(int(value) for value in local_shape),

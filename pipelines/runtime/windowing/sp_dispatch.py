@@ -1,4 +1,4 @@
-"""Dispatch fixed-width LTX095 videoerase SP window commands from the writer rank."""
+"""Dispatch fixed-width video erase SP window commands from the writer rank."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Callable
 import torch
 
 from config.server_args import ServerArgs
-from models.dits.ltx095_parallel import LTX095SequenceParallelContract
+from config.window_parallel import SequenceParallelContract
 from distributed.group_coordinator import GroupCoordinator
 from distributed.parallel_state import (
     ParallelContext,
@@ -18,13 +18,13 @@ from distributed.parallel_state import (
 )
 
 _PROTOCOL_VERSION = 1
-LTX095_SP_WINDOW_HEADER_SIZE = 6
+SP_WINDOW_HEADER_SIZE = 6
 _MAX_FIELD_VALUE = 2**31 - 1
 _WRITER_EXCEPTION_REASON = 1
 _WRITER_FATAL_REASON = 2
 
 
-class LTX095SPWindowCommandCode(IntEnum):
+class SPWindowCommandCode(IntEnum):
     RUN = 1
     SKIP = 2
     END = 3
@@ -32,8 +32,8 @@ class LTX095SPWindowCommandCode(IntEnum):
 
 
 @dataclass(frozen=True)
-class LTX095SPWindowCommand:
-    code: LTX095SPWindowCommandCode
+class SPWindowCommand:
+    code: SPWindowCommandCode
     object_index: int
     window_index: int
     scene_index: int
@@ -41,8 +41,8 @@ class LTX095SPWindowCommand:
 
 
 @dataclass(frozen=True)
-class LTX095ActiveSPWindowContext:
-    contract: LTX095SequenceParallelContract
+class ActiveSPWindowContext:
+    contract: SequenceParallelContract
     parallel_context: ParallelContext
     world_data_group: RuntimeGroup
     world_control_group: RuntimeGroup
@@ -67,7 +67,7 @@ class LTX095ActiveSPWindowContext:
         return "positive" if self.cfg_group.group_rank == 0 else "negative"
 
 
-class LTX095SPWindowControlError(RuntimeError):
+class SPWindowControlError(RuntimeError):
     """Normalize a window-command control-plane failure with rank and phase."""
 
     def __init__(self, *, rank: int, phase: str, original: BaseException) -> None:
@@ -75,29 +75,29 @@ class LTX095SPWindowControlError(RuntimeError):
         self.phase = phase
         self.original_type = type(original).__name__
         super().__init__(
-            f"LTX095 SP window control failed on rank {rank} during phase {phase}: "
+            f"SP window control failed on rank {rank} during phase {phase}: "
             f"{self.original_type}: {original}"
         )
 
 
-def resolve_active_ltx095_window_commit_context(
+def resolve_active_window_commit_context(
     server_args: ServerArgs,
-) -> LTX095ActiveSPWindowContext | None:
-    """Resolve the frozen LTX SP/CFG mesh; never infer activity from world size."""
-    contract = getattr(server_args, "ltx095_sequence_parallel_contract", None)
+) -> ActiveSPWindowContext | None:
+    """Resolve the frozen SP/CFG mesh; never infer activity from world size."""
+    contract = getattr(server_args, "sequence_parallel_contract", None)
     if contract is None:
         return None
-    if not isinstance(contract, LTX095SequenceParallelContract):
+    if not isinstance(contract, SequenceParallelContract):
         raise TypeError(
-            "ltx095_sequence_parallel_contract must be a frozen "
-            "LTX095SequenceParallelContract"
+            "sequence_parallel_contract must be a frozen "
+            "SequenceParallelContract"
         )
     if not contract.active:
         return None
     context = getattr(server_args, "parallel_context", None)
     if not isinstance(context, ParallelContext) or not context.enabled:
         raise RuntimeError(
-            "active LTX095 sequence parallel requires an enabled ParallelContext"
+            "active sequence parallel requires an enabled ParallelContext"
         )
     plan = context.plan
     frozen_values = (
@@ -110,12 +110,12 @@ def resolve_active_ltx095_window_commit_context(
     for name, actual, expected in frozen_values:
         if actual != expected:
             raise RuntimeError(
-                f"parallel context {name} changed after LTX095 capability "
+                f"parallel context {name} changed after  capability "
                 f"freeze: expected {expected}, got {actual}"
             )
     if contract.distributed_compute_mode != "entry_only":
         raise RuntimeError(
-            "active LTX095 commit sync requires distributed_compute_mode='entry_only'"
+            "active commit sync requires distributed_compute_mode='entry_only'"
         )
 
     world_data_group = context.world_data_group()
@@ -147,14 +147,14 @@ def resolve_active_ltx095_window_commit_context(
     if cfg_group.world_size != contract.cfg_degree:
         raise RuntimeError("CFG group world_size must match frozen cfg_degree")
     if context.topology is None:
-        raise RuntimeError("active LTX095 mesh requires a frozen parallel topology")
+        raise RuntimeError("active mesh requires a frozen parallel topology")
     if sp_group.spec not in context.topology.sp_groups:
         raise RuntimeError("current SP group is not part of the frozen topology")
     if cfg_group.spec not in context.topology.cfg_groups:
         raise RuntimeError("current CFG group is not part of the frozen topology")
     if context.topology.sp_groups[0].ranks[0] != contract.writer_rank:
-        raise RuntimeError("LTX095 writer must own positive sequence shard zero")
-    return LTX095ActiveSPWindowContext(
+        raise RuntimeError(" writer must own positive sequence shard zero")
+    return ActiveSPWindowContext(
         contract=contract,
         parallel_context=context,
         world_data_group=world_data_group,
@@ -185,15 +185,15 @@ def _require_field(name: str, value: int, *, allow_end: bool = False) -> int:
     return value
 
 
-def _validate_command(command: LTX095SPWindowCommand) -> LTX095SPWindowCommand:
-    if not isinstance(command, LTX095SPWindowCommand):
-        raise TypeError("window command must be LTX095SPWindowCommand")
-    if not isinstance(command.code, LTX095SPWindowCommandCode):
-        raise TypeError("window command code must be LTX095SPWindowCommandCode")
+def _validate_command(command: SPWindowCommand) -> SPWindowCommand:
+    if not isinstance(command, SPWindowCommand):
+        raise TypeError("window command must be SPWindowCommand")
+    if not isinstance(command.code, SPWindowCommandCode):
+        raise TypeError("window command code must be SPWindowCommandCode")
 
     terminal = command.code in (
-        LTX095SPWindowCommandCode.END,
-        LTX095SPWindowCommandCode.ERROR,
+        SPWindowCommandCode.END,
+        SPWindowCommandCode.ERROR,
     )
     object_index = _require_field(
         "object_index", command.object_index, allow_end=terminal
@@ -209,13 +209,13 @@ def _validate_command(command: LTX095SPWindowCommand) -> LTX095SPWindowCommand:
     if terminal and (object_index, window_index, scene_index) != (-1, -1, -1):
         raise ValueError("END and ERROR command indexes must all be -1")
     if command.code in (
-        LTX095SPWindowCommandCode.RUN,
-        LTX095SPWindowCommandCode.END,
+        SPWindowCommandCode.RUN,
+        SPWindowCommandCode.END,
     ) and reason_code != 0:
         raise ValueError("RUN and END reason_code must be zero")
-    if command.code is LTX095SPWindowCommandCode.SKIP and reason_code == 0:
+    if command.code is SPWindowCommandCode.SKIP and reason_code == 0:
         raise ValueError("SKIP reason_code must be positive")
-    if command.code is LTX095SPWindowCommandCode.ERROR and reason_code not in (
+    if command.code is SPWindowCommandCode.ERROR and reason_code not in (
         _WRITER_EXCEPTION_REASON,
         _WRITER_FATAL_REASON,
     ):
@@ -223,8 +223,8 @@ def _validate_command(command: LTX095SPWindowCommand) -> LTX095SPWindowCommand:
     return command
 
 
-def encode_ltx095_sp_window_command(
-    command: LTX095SPWindowCommand,
+def encode_sp_window_command(
+    command: SPWindowCommand,
     *,
     device: torch.device,
 ) -> torch.Tensor:
@@ -241,29 +241,29 @@ def encode_ltx095_sp_window_command(
         dtype=torch.int64,
         device=device,
     )
-    if header.numel() != LTX095_SP_WINDOW_HEADER_SIZE:
-        raise AssertionError("LTX095 SP window header width changed")
+    if header.numel() != SP_WINDOW_HEADER_SIZE:
+        raise AssertionError("SP window header width changed")
     return header
 
 
-def decode_ltx095_sp_window_command(
+def decode_sp_window_command(
     header: torch.Tensor,
-) -> LTX095SPWindowCommand:
+) -> SPWindowCommand:
     if not isinstance(header, torch.Tensor):
         raise TypeError("window command header must be a tensor")
     if header.dtype is not torch.int64 or header.ndim != 1:
         raise TypeError("window command header must be a one-dimensional int64 tensor")
-    if header.numel() != LTX095_SP_WINDOW_HEADER_SIZE:
+    if header.numel() != SP_WINDOW_HEADER_SIZE:
         raise ValueError("window command header has an invalid fixed width")
     values = header.detach().to(device="cpu").tolist()
     if values[0] != _PROTOCOL_VERSION:
         raise ValueError("unsupported window command protocol version")
     try:
-        code = LTX095SPWindowCommandCode(values[1])
+        code = SPWindowCommandCode(values[1])
     except ValueError as error:
         raise ValueError("window command code is invalid") from error
     return _validate_command(
-        LTX095SPWindowCommand(
+        SPWindowCommand(
             code=code,
             object_index=values[2],
             window_index=values[3],
@@ -278,20 +278,20 @@ def _synchronize_runtime_boundary(
     server_args: ServerArgs,
 ) -> None:
     from pipelines.runtime.windowing.commit_sync import (
-        synchronize_ltx095_window_runtime_boundary,
+        synchronize_window_runtime_boundary,
     )
 
-    synchronize_ltx095_window_runtime_boundary(error, server_args)
+    synchronize_window_runtime_boundary(error, server_args)
 
 
-def _error_command(error: BaseException) -> LTX095SPWindowCommand:
+def _error_command(error: BaseException) -> SPWindowCommand:
     reason = (
         _WRITER_EXCEPTION_REASON
         if isinstance(error, Exception)
         else _WRITER_FATAL_REASON
     )
-    return LTX095SPWindowCommand(
-        code=LTX095SPWindowCommandCode.ERROR,
+    return SPWindowCommand(
+        code=SPWindowCommandCode.ERROR,
         object_index=-1,
         window_index=-1,
         scene_index=-1,
@@ -299,17 +299,17 @@ def _error_command(error: BaseException) -> LTX095SPWindowCommand:
     )
 
 
-def dispatch_ltx095_sp_window_command(
+def dispatch_sp_window_command(
     server_args: ServerArgs,
     *,
     runtime_mode: str,
-    prepare_writer_command: Callable[[], LTX095SPWindowCommand] | None,
+    prepare_writer_command: Callable[[], SPWindowCommand] | None,
     phase: str,
-) -> LTX095SPWindowCommand | None:
+) -> SPWindowCommand | None:
     """Broadcast exactly one fixed-width header for an active SP window command."""
     if runtime_mode != "windowed_streaming":
         return None
-    active = resolve_active_ltx095_window_commit_context(server_args)
+    active = resolve_active_window_commit_context(server_args)
     if active is None:
         return None
     if active.is_writer and not callable(prepare_writer_command):
@@ -321,19 +321,19 @@ def dispatch_ltx095_sp_window_command(
     if active.is_writer:
         try:
             command = prepare_writer_command()
-            header = encode_ltx095_sp_window_command(
+            header = encode_sp_window_command(
                 command,
                 device=active.control_device,
             )
         except BaseException as error:
             preparation_error = error
-            header = encode_ltx095_sp_window_command(
+            header = encode_sp_window_command(
                 _error_command(error),
                 device=active.control_device,
             )
     else:
         header = torch.zeros(
-            LTX095_SP_WINDOW_HEADER_SIZE,
+            SP_WINDOW_HEADER_SIZE,
             dtype=torch.int64,
             device=active.control_device,
         )
@@ -342,7 +342,7 @@ def dispatch_ltx095_sp_window_command(
         coordinator = GroupCoordinator(active.world_data_group)
         coordinator.broadcast(header, src=active.contract.writer_rank)
     except BaseException as error:
-        raise LTX095SPWindowControlError(
+        raise SPWindowControlError(
             rank=active.parallel_context.global_rank,
             phase=phase,
             original=error,
@@ -351,7 +351,7 @@ def dispatch_ltx095_sp_window_command(
     decode_error: BaseException | None = None
     command = None
     try:
-        command = decode_ltx095_sp_window_command(header)
+        command = decode_sp_window_command(header)
     except BaseException as error:
         decode_error = error
     if decode_error is not None:
@@ -359,9 +359,9 @@ def dispatch_ltx095_sp_window_command(
         raise decode_error
     assert command is not None
 
-    if command.code is LTX095SPWindowCommandCode.ERROR:
+    if command.code is SPWindowCommandCode.ERROR:
         _synchronize_runtime_boundary(preparation_error, server_args)
-        raise LTX095SPWindowControlError(
+        raise SPWindowControlError(
             rank=active.parallel_context.global_rank,
             phase=phase,
             original=RuntimeError(
@@ -372,13 +372,13 @@ def dispatch_ltx095_sp_window_command(
 
 
 __all__ = (
-    "LTX095ActiveSPWindowContext",
-    "LTX095SPWindowCommand",
-    "LTX095SPWindowCommandCode",
-    "LTX095SPWindowControlError",
-    "LTX095_SP_WINDOW_HEADER_SIZE",
-    "decode_ltx095_sp_window_command",
-    "dispatch_ltx095_sp_window_command",
-    "encode_ltx095_sp_window_command",
-    "resolve_active_ltx095_window_commit_context",
+    "ActiveSPWindowContext",
+    "SPWindowCommand",
+    "SPWindowCommandCode",
+    "SPWindowControlError",
+    "SP_WINDOW_HEADER_SIZE",
+    "decode_sp_window_command",
+    "dispatch_sp_window_command",
+    "encode_sp_window_command",
+    "resolve_active_window_commit_context",
 )

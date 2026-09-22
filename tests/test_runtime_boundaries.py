@@ -41,7 +41,6 @@ for name in ('config', 'distributed', 'parallel', 'models', 'memory', 'nodes', '
         for old, new in (
             ("utils.distributed_runtime", "parallel.runtime"),
             ("utils.video_io", "media.video_io"),
-            ("utils.ltx095_text", "models.text_encoders.ltx095_text"),
         ):
             self.assertIs(importlib.import_module(old), importlib.import_module(new))
         legacy = importlib.import_module("utils.distributed_runtime")
@@ -84,7 +83,7 @@ for name in ('config', 'distributed', 'parallel', 'models', 'memory', 'nodes', '
                 "width": 16, "height": 16, "codec_name": "h264",
                 "fps_fraction": "24000/1001", "pix_fmt": "yuv420p",
             })
-            legacy = importlib.import_module("utils.ltx095_origin_contract")
+            legacy = importlib.import_module("utils.window_contract")
             self.assertIs(legacy.VideoEncodingProfile, VideoEncodingProfile)
             writer = SequentialVideoWriter(path, encoding_profile=profile,
                                            thread_count=1, async_queue_depth=1)

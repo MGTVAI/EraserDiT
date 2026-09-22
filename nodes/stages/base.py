@@ -1,4 +1,4 @@
-"""Base stage types for the minimal MGErase runtime."""
+"""Base stage types for the minimal EraserDiT runtime."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ class StageVerificationError(Exception):
 
 
 class PipelineStage(ABC):
-    """A discrete stage in the minimal MGErase runtime pipeline."""
+    """A discrete stage in the minimal EraserDiT runtime pipeline."""
 
     def __init__(self) -> None:
         self.server_args = get_global_server_args()

@@ -1,4 +1,4 @@
-"""Latent and video value-range helpers for the local LTX0.9.5 erase runtime."""
+"""Latent and video value-range helpers for the local video erase erase runtime."""
 
 from __future__ import annotations
 

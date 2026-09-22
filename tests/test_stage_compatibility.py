@@ -58,14 +58,12 @@ for path in sorted(legacy_root.rglob('*.py')):
         from nodes import ComposedPipelineBase as exported
         from pipelines.base import ComposedPipelineBase
         from pipelines.eraserdit_erase_pipeline import EraserDiTErasePipeline
-        from pipelines.ltx_095_erase_pipeline import LTX095ErasePipeline
 
         old = importlib.import_module("nodes.composed_pipeline_base")
         new = importlib.import_module("pipelines.base")
         self.assertIs(old, new)
         self.assertIs(exported, ComposedPipelineBase)
         self.assertTrue(issubclass(EraserDiTErasePipeline, exported))
-        self.assertTrue(issubclass(LTX095ErasePipeline, exported))
 
 
 if __name__ == "__main__":

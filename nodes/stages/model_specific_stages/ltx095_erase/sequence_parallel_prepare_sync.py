@@ -1,6 +1,0 @@
-"""Compatibility alias for pipelines.stages.ltx095_erase.sequence_parallel_prepare_sync; no implementation lives here."""
-
-import importlib
-import sys
-
-sys.modules[__name__] = importlib.import_module("pipelines.stages.ltx095_erase.sequence_parallel_prepare_sync")

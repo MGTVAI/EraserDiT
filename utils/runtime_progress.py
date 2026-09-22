@@ -1,4 +1,4 @@
-"""Lightweight runtime progress helpers for the local MGErase pipeline."""
+"""Lightweight runtime progress helpers for the local EraserDiT pipeline."""
 
 from __future__ import annotations
 

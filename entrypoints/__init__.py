@@ -1,4 +1,4 @@
-"""Local entrypoints for the minimal MGErase runtime."""
+"""Local entrypoints for the minimal EraserDiT runtime."""
 
 from utils.logging_utils import globally_suppress_loggers
 

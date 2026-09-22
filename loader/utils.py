@@ -1,4 +1,4 @@
-"""Minimal loader utilities for the local MGErase runtime."""
+"""Minimal loader utilities for the local EraserDiT runtime."""
 
 from __future__ import annotations
 

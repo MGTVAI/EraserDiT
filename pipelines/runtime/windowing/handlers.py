@@ -14,7 +14,7 @@ import torch
 
 from nodes.schedule_batch import Req
 from pipelines.runtime.contracts import (
-    LTX095EraseRuntimeContext,
+    EraseRuntimeContext,
     ObjectRuntimeState,
 )
 from pipelines.runtime.events import (
@@ -36,10 +36,10 @@ from pipelines.runtime.windowing.cache_ops import (
     set_object_overlap_cache as runtime_set_object_overlap_cache,
 )
 from pipelines.runtime.windowing.commit_ops import (
-    commit_ltx095_window_to_object_output,
-    record_ltx095_skipped_object_window,
+    commit_window_to_object_output,
+    record_skipped_object_window,
 )
-from pipelines.runtime.drivers.windowed import finalize_ltx095_object_window_step
+from pipelines.runtime.drivers.windowed import finalize_object_window_step
 from media.video_io import (
     ArrayFrameCache,
     ChunkedFrameCache,
@@ -104,7 +104,7 @@ def _build_runtime_video(
             video = _ensure_5d_video(video_source)
             if video.shape[0] != 1:
                 raise ValueError(
-                    "Minimal LTX095 erase pipeline only supports batch size 1"
+                    "Video erase pipeline only supports batch size 1"
                 )
         else:
             raise ValueError(
@@ -148,7 +148,7 @@ def _build_runtime_mask(
 
 
 def _record_runtime_event(
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     event: str,
     task_state: ObjectRuntimeState | None = None,
     **payload: Any,
@@ -162,7 +162,7 @@ def _record_runtime_event(
 
 
 def _record_task_state_snapshot(
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     task_state: ObjectRuntimeState,
     phase: str,
     **payload: Any,
@@ -176,7 +176,7 @@ def _record_task_state_snapshot(
 
 
 def _update_runtime_window_state(
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     object_index: int,
     window_index: int,
     **payload: Any,
@@ -192,7 +192,7 @@ def _update_runtime_window_state(
 
 
 def _ensure_runtime_window_cache_loaded(
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     spec: WindowSpec,
 ) -> None:
     runtime_ensure_window_cache_loaded(
@@ -203,7 +203,7 @@ def _ensure_runtime_window_cache_loaded(
 
 
 def _evict_runtime_cache_before(
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     frame_index: int,
 ) -> None:
     runtime_evict_cache_before(
@@ -214,7 +214,7 @@ def _evict_runtime_cache_before(
 
 
 def _release_runtime_mask_frames(
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     release_end: int,
     source: str,
 ) -> None:
@@ -227,7 +227,7 @@ def _release_runtime_mask_frames(
 
 
 def _flush_runtime_windowed_frames(
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     flush_end: int,
 ) -> None:
     runtime_flush_windowed_frames(
@@ -240,7 +240,7 @@ def _flush_runtime_windowed_frames(
 
 
 def _register_runtime_task_chain_hooks(
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     object_states: list[ObjectRuntimeState],
 ) -> None:
     runtime_register_task_chain_hooks(
@@ -252,7 +252,7 @@ def _register_runtime_task_chain_hooks(
 
 
 def _materialize_runtime_object_window_mask(
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     object_state: ObjectRuntimeState,
     spec: WindowSpec,
     crop_bbox: tuple[int, int, int, int] | None = None,
@@ -275,14 +275,14 @@ def _create_runtime_empty_cache_like(
 
 
 def _commit_runtime_window_to_object_output(
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     object_state: ObjectRuntimeState,
     spec: WindowSpec,
     window_batch: Req,
 ) -> None:
     commit_started = time.perf_counter()
     try:
-        commit_ltx095_window_to_object_output(
+        commit_window_to_object_output(
             context=context,
             object_state=object_state,
             spec=spec,
@@ -300,14 +300,14 @@ def _commit_runtime_window_to_object_output(
 
 
 def _record_runtime_skipped_object_window(
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     object_state: ObjectRuntimeState,
     spec: WindowSpec,
     reason: str,
     prompt: Any,
     negative_prompt: Any,
 ) -> None:
-    record_ltx095_skipped_object_window(
+    record_skipped_object_window(
         context=context,
         object_state=object_state,
         spec=spec,
@@ -323,12 +323,12 @@ def _record_runtime_skipped_object_window(
 
 
 def _finalize_runtime_object_window_step(
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     object_states: list[ObjectRuntimeState],
     object_state: ObjectRuntimeState,
     spec: WindowSpec,
 ) -> None:
-    finalize_ltx095_object_window_step(
+    finalize_object_window_step(
         context=context,
         object_states=object_states,
         object_state=object_state,

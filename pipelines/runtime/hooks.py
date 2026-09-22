@@ -1,4 +1,4 @@
-"""Hook registry for the LTX095 videoerase runtime kernel."""
+"""Hook registry for the video erase runtime kernel."""
 
 from __future__ import annotations
 

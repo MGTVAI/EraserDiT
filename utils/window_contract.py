@@ -1,4 +1,4 @@
-"""Origin-observable contracts shared by the LTX0.9.5 erase runtime."""
+"""Origin-observable contracts shared by the windowed erase runtime."""
 
 from __future__ import annotations
 
@@ -8,15 +8,15 @@ from typing import Any
 from media.encoding import VideoEncodingProfile, _optional_string
 
 
-SUPPORTED_LTX095_SP_DEGREES = frozenset({1, 2, 4})
+SUPPORTED_WINDOW_SP_DEGREES = frozenset({1, 2, 4})
 
 
 def resolve_spatial_alignment(sp_degree: int) -> tuple[int, int]:
     """Return origin-compatible ``(align_w, align_h)`` for an SP topology."""
     if isinstance(sp_degree, bool) or not isinstance(sp_degree, int):
         raise TypeError("sp_degree must be an integer")
-    if sp_degree not in SUPPORTED_LTX095_SP_DEGREES:
-        raise ValueError(f"unsupported LTX095 sp_degree: {sp_degree}")
+    if sp_degree not in SUPPORTED_WINDOW_SP_DEGREES:
+        raise ValueError(f"unsupported WINDOW sp_degree: {sp_degree}")
     exponent = int(math.log2(sp_degree))
     align_w = 32 * (2 ** math.ceil(exponent / 2))
     align_h = 32 * (2 ** math.floor(exponent / 2))

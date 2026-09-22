@@ -15,11 +15,11 @@ DIAGNOSTIC_TIMING_ENV_VAR = "MGERASE_DIAGNOSTIC_TIMING"
 # Stage names whose metrics sum to "pure inference" (model work, excluding IO and
 # the window/commit machinery).  One entry per supported model family.
 PURE_INFERENCE_STAGE_NAMES = (
-    "LTX095EraseConditionEncodingStage",
-    "LTX095EraseLatentPreparationStage",
-    "LTX095EraseTimestepPreparationStage",
-    "LTX095EraseDenoisingStage",
-    "LTX095EraseDecodingStage",
+    "EraseConditionEncodingStage",
+    "EraseLatentPreparationStage",
+    "EraseTimestepPreparationStage",
+    "EraseDenoisingStage",
+    "EraseDecodingStage",
     "EraserDiTEraseTextEncodingStage",
     "EraserDiTEraseConditionEncodingStage",
     "EraserDiTEraseLatentPreparationStage",
@@ -66,7 +66,7 @@ def _step_stats(metrics: RequestMetrics | None) -> dict[str, Any]:
     }
 
 
-def build_ltx095_pure_timing_payload(
+def build_pure_timing_payload(
     metrics: RequestMetrics | None,
     *,
     extra: dict[str, Any] | None = None,

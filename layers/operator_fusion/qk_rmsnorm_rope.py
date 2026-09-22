@@ -11,8 +11,8 @@ from .config import QK_RMSNORM_ROPE_OP
 from .registry import OperatorFusionDecision
 from .runtime import record_operator_fusion_call
 
-_LTX095_WIDTH = 2048
-_LTX095_QK_NORM_EPS = 1e-5
+_EraserDiT_WIDTH = 2048
+_EraserDiT_QK_NORM_EPS = 1e-5
 
 
 def _capability_failure(
@@ -32,7 +32,7 @@ def _capability_failure(
         return "tensor_contract"
     if query.ndim != 3 or key.shape != query.shape:
         return "qk_shape"
-    if query.shape[-1] != _LTX095_WIDTH:
+    if query.shape[-1] != _EraserDiT_WIDTH:
         return "hidden_width"
     if query.dtype != torch.bfloat16 or key.dtype != torch.bfloat16:
         return "qk_dtype"
@@ -58,7 +58,7 @@ def _capability_failure(
     ):
         return "norm_weight_missing"
     for weight in (query_weight, key_weight):
-        if weight.shape != (_LTX095_WIDTH,):
+        if weight.shape != (_EraserDiT_WIDTH,):
             return "norm_weight_shape"
         if weight.dtype != torch.bfloat16:
             return "norm_weight_dtype"
@@ -72,7 +72,7 @@ def _capability_failure(
         return "norm_bias"
     query_eps = float(getattr(query_norm, "eps", float("nan")))
     key_eps = float(getattr(key_norm, "eps", float("nan")))
-    if query_eps != key_eps or query_eps != _LTX095_QK_NORM_EPS:
+    if query_eps != key_eps or query_eps != _EraserDiT_QK_NORM_EPS:
         return "norm_epsilon"
     return None
 
@@ -124,7 +124,7 @@ def apply_fused_qk_rmsnorm_rope(
         key_norm.weight,
         cos,
         sin,
-        epsilon=_LTX095_QK_NORM_EPS,
+        epsilon=_EraserDiT_QK_NORM_EPS,
     )
     record_operator_fusion_call(
         QK_RMSNORM_ROPE_OP,

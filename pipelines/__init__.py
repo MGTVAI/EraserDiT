@@ -1,12 +1,12 @@
 """Pipeline exports, loaded lazily so runtime helpers can be imported independently."""
 
-__all__ = ["LTX095ErasePipeline"]
+__all__ = ["EraserDiTErasePipeline"]
 
 
 def __getattr__(name: str):
-    if name == "LTX095ErasePipeline":
-        from pipelines.ltx_095_erase_pipeline import LTX095ErasePipeline
+    if name == "EraserDiTErasePipeline":
+        from pipelines.eraserdit_erase_pipeline import EraserDiTErasePipeline
 
-        globals()[name] = LTX095ErasePipeline
-        return LTX095ErasePipeline
+        globals()[name] = EraserDiTErasePipeline
+        return EraserDiTErasePipeline
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -60,7 +60,7 @@ def select_runtime_workdir(preferred: str | None = None) -> str:
             best_free = free
             best_path = path
     if best_path is None:
-        raise RuntimeError("Unable to select a runtime working directory for MGErase")
+        raise RuntimeError("Unable to select a runtime working directory for EraserDiT")
     return best_path
 
 
@@ -997,7 +997,7 @@ class ChunkedFrameCache:
 class TensorFrameCache:
     """Chunked CPU tensor cache whose leading dimension is the frame axis.
 
-    LTX095 streaming video frames use FCHW BF16 here.  Decoder uint8 input is
+    EraserDiT streaming video frames use FCHW BF16 here.  Decoder uint8 input is
     normalized exactly once by :meth:`append_uint8`; all other cache methods
     preserve the configured floating dtype.
     """

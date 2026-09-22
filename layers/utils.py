@@ -1,4 +1,4 @@
-"""Utility helpers for the minimal MGErase layer stack."""
+"""Utility helpers for the minimal EraserDiT layer stack."""
 
 from __future__ import annotations
 

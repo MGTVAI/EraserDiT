@@ -5,7 +5,6 @@ from unittest.mock import patch
 
 from config.parallel import AccelerationConfig, ParallelMode, ResolvedAccelerationPlan
 from config.service_contracts.eraserdit import ERASERDIT_SERVICE_CONTRACT
-from config.service_contracts.ltx095 import LTX095_SERVICE_CONTRACT
 from distributed.parallel_state import initialize_parallel_context
 from parallel import planner
 from pipelines.registry import PipelineRegistry
@@ -16,11 +15,44 @@ class AssemblyContractTests(unittest.TestCase):
     def test_model_contract_selection(self):
         for name, expected in (
             ("EraserDiTErasePipeline", ERASERDIT_SERVICE_CONTRACT),
-            ("LTX095ErasePipeline", LTX095_SERVICE_CONTRACT),
-            (None, LTX095_SERVICE_CONTRACT),
+            (None, ERASERDIT_SERVICE_CONTRACT),
         ):
             with self.subTest(pipeline=name):
                 self.assertIs(resolve_service_contract(name), expected)
+
+    def test_only_eraserdit_is_registered(self):
+        self.assertEqual(PipelineRegistry.names(), ["EraserDiTErasePipeline"])
+        with self.assertRaisesRegex(ValueError, "Unsupported pipeline"):
+            resolve_service_contract("LTX095ErasePipeline")
+
+    def test_default_protocol_uses_eraserdit_schema(self):
+        from entrypoints.server.protocol import LocalVideoCreateRequest
+        from config.service_contracts.eraserdit import EraserDiTLocalVideoCreateRequest
+        self.assertIs(LocalVideoCreateRequest, EraserDiTLocalVideoCreateRequest)
+
+    def test_scheduler_resolves_without_retired_model_aliases(self):
+        from models.registry import ModelRegistry
+        from models.schedulers.flow_match import FlowMatchEulerDiscreteScheduler
+        cls, name = ModelRegistry.resolve_model_cls("FlowMatchEulerDiscreteScheduler")
+        self.assertIs(cls, FlowMatchEulerDiscreteScheduler)
+        scheduler = cls(num_train_timesteps=1000)
+        self.assertEqual(scheduler.num_train_timesteps, 1000)
+
+    def test_removed_quantization_modes_are_rejected(self):
+        from config.server_args import ServerArgs
+        for mode in ("fp8_w8a8", "fp8_w8a8_triton_selective", "int8_w8a8_viditq"):
+            with self.subTest(mode=mode), self.assertRaises(ValueError):
+                ServerArgs(transformer_quantization=mode)
+        with self.assertRaises(ValueError):
+            ServerArgs(text_encoder_quantization="int8_w8a8_viditq")
+
+    def test_runtime_plans_complete_example_video(self):
+        from config.eraserdit import EraserDiTEraseSamplingParams
+        from pipelines.runtime.windowing.planner import build_window_specs
+        specs = build_window_specs(EraserDiTEraseSamplingParams(num_frames=145))
+        self.assertEqual(len(specs), 2)
+        self.assertEqual(specs[0].load_start, 0)
+        self.assertEqual(specs[-1].load_end, 145)
 
     def test_invalid_model_contract_selection(self):
         with self.assertRaisesRegex(ValueError, "Unsupported pipeline"):

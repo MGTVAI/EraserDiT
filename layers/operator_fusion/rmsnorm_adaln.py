@@ -11,8 +11,8 @@ from .config import RMSNORM_ADALN_OP
 from .registry import OperatorFusionDecision
 from .runtime import record_operator_fusion_call
 
-_LTX095_WIDTH = 2048
-_LTX095_NORM_EPS = 1e-6
+_EraserDiT_WIDTH = 2048
+_EraserDiT_NORM_EPS = 1e-6
 
 
 def _capability_failure(
@@ -28,9 +28,9 @@ def _capability_failure(
         return "hidden_shape"
     if normalized_hidden_states.shape[0] != 1:
         return "batch_size"
-    if normalized_hidden_states.shape[-1] != _LTX095_WIDTH:
+    if normalized_hidden_states.shape[-1] != _EraserDiT_WIDTH:
         return "hidden_width"
-    expected_modulation_shape = (1, 1, _LTX095_WIDTH)
+    expected_modulation_shape = (1, 1, _EraserDiT_WIDTH)
     if (
         scale.shape != expected_modulation_shape
         or shift.shape != expected_modulation_shape
@@ -54,7 +54,7 @@ def _capability_failure(
         or getattr(norm, "bias", None) is not None
     ):
         return "norm_affine"
-    if float(getattr(norm, "eps", float("nan"))) != _LTX095_NORM_EPS:
+    if float(getattr(norm, "eps", float("nan"))) != _EraserDiT_NORM_EPS:
         return "norm_epsilon"
     return None
 

@@ -1,4 +1,4 @@
-"""Deterministic transfer and reclamation of completed LTX095 videoerase windows."""
+"""Deterministic transfer and reclamation of completed videoerase windows."""
 
 from __future__ import annotations
 
@@ -24,13 +24,13 @@ class ReclaimHooks:
 
 
 @dataclass
-class PendingLTX095WindowReclaim:
+class PendingWindowReclaim:
     batch: Req | None
     window_key: tuple[int, int]
     transferred_cache_keys: tuple[str, ...]
 
 
-def transfer_completed_ltx095_window(batch: Req) -> PendingLTX095WindowReclaim:
+def transfer_completed_window(batch: Req) -> PendingWindowReclaim:
     if not isinstance(batch, Req):
         raise TypeError("batch must be a Req")
     window_key = (
@@ -53,23 +53,23 @@ def transfer_completed_ltx095_window(batch: Req) -> PendingLTX095WindowReclaim:
     preserved = {key: batch.extra[key] for key in transferred}
     batch.extra.clear()
     batch.extra.update(preserved)
-    return PendingLTX095WindowReclaim(
+    return PendingWindowReclaim(
         batch=batch,
         window_key=window_key,
         transferred_cache_keys=transferred,
     )
 
 
-def reclaim_completed_ltx095_window(
-    pending: PendingLTX095WindowReclaim,
+def reclaim_completed_window(
+    pending: PendingWindowReclaim,
     *,
     device: torch.device | str,
     snapshot: Callable[..., Any] | None = None,
     hooks: ReclaimHooks | None = None,
     on_drop: Callable[[], Any] | None = None,
 ) -> None:
-    if not isinstance(pending, PendingLTX095WindowReclaim):
-        raise TypeError("pending must be a PendingLTX095WindowReclaim")
+    if not isinstance(pending, PendingWindowReclaim):
+        raise TypeError("pending must be a PendingWindowReclaim")
     if pending.batch is None:
         return
     using_default_hooks = hooks is None
@@ -96,8 +96,8 @@ def reclaim_completed_ltx095_window(
 
 
 __all__ = (
-    "PendingLTX095WindowReclaim",
+    "PendingWindowReclaim",
     "ReclaimHooks",
-    "reclaim_completed_ltx095_window",
-    "transfer_completed_ltx095_window",
+    "reclaim_completed_window",
+    "transfer_completed_window",
 )

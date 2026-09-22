@@ -1,4 +1,4 @@
-"""Resident LTX095 videoerase pipeline session."""
+"""Resident EraserDiT videoerase pipeline session."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from copy import deepcopy
 
 import torch
 
-from config.ltx095 import LTX095EraseSamplingParams
+from config.eraserdit import EraserDiTEraseSamplingParams
 from config.server_args import ServerArgs, set_global_server_args
 from nodes.schedule_batch import Req
 from pipelines.registry import PipelineRegistry
@@ -26,7 +26,7 @@ from utils.inference_timing import diagnostic_timing_enabled
 
 def _build_request_generator(
     server_args: ServerArgs,
-    sampling_params: LTX095EraseSamplingParams,
+    sampling_params: EraserDiTEraseSamplingParams,
 ) -> torch.Generator | None:
     seed = getattr(sampling_params, "seed", None)
     if seed is None:
@@ -34,7 +34,7 @@ def _build_request_generator(
     return torch.Generator(device=server_args.device).manual_seed(int(seed))
 
 
-class LTX095EraseSession:
+class EraseSession:
     """Own one resident pipeline and execute isolated requests through it."""
 
     def __init__(self, server_args: ServerArgs) -> None:
@@ -76,12 +76,12 @@ class LTX095EraseSession:
 
     def build_request(
         self,
-        sampling_params: LTX095EraseSamplingParams,
+        sampling_params: EraserDiTEraseSamplingParams,
         *,
         request_extra: dict[str, object] | None = None,
     ) -> Req:
         if self._closed:
-            raise RuntimeError("LTX095 erase session is closed")
+            raise RuntimeError("EraserDiT erase session is closed")
         req = Req(
             sampling_params=sampling_params,
             generator=_build_request_generator(self.server_args, sampling_params),
@@ -108,7 +108,7 @@ class LTX095EraseSession:
 
     def run(
         self,
-        sampling_params: LTX095EraseSamplingParams,
+        sampling_params: EraserDiTEraseSamplingParams,
         *,
         warmup_steps: int | None = None,
         request_extra: dict[str, object] | None = None,
@@ -170,15 +170,11 @@ class LTX095EraseSession:
         self._closed = True
         return self.pipeline.close(terminal=True)
 
-    def __enter__(self) -> "LTX095EraseSession":
+    def __enter__(self) -> "EraseSession":
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         self.close()
 
 
-# The session is model-agnostic: it resolves its pipeline class from
-# ``server_args.pipeline_class_name``.  The historic name is kept as an alias.
-EraseSession = LTX095EraseSession
-
-__all__ = ("LTX095EraseSession", "EraseSession")
+__all__ = ("EraseSession",)

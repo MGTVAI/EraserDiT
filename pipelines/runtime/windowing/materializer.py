@@ -1,4 +1,4 @@
-"""Window request materialization helpers for LTX095 pipelines.runtime."""
+"""Window request materialization helpers for pipelines.runtime."""
 
 from __future__ import annotations
 
@@ -9,16 +9,16 @@ from typing import Any, Callable
 import numpy as np
 import torch
 
-from config.ltx095 import LTX095EraseSamplingParams
+from config.eraserdit import EraserDiTEraseSamplingParams
 from nodes.schedule_batch import Req
 from pipelines.runtime.tracks import _resolve_object_value
-from pipelines.runtime.io.masks import materialize_ltx095_window_mask
+from pipelines.runtime.io.masks import materialize_window_mask
 from pipelines.runtime.contracts import (
-    LTX095EraseRuntimeContext,
+    EraseRuntimeContext,
     ObjectRuntimeState,
     _is_windowed_runtime_mode,
 )
-from pipelines.runtime.windowing.planner import infer_ltx095_window_bbox
+from pipelines.runtime.windowing.planner import infer_window_bbox
 from pipelines.runtime.windowing.factory import build_window_generator
 from media.video_io import (
     ArrayFrameCache,
@@ -32,7 +32,7 @@ FrameCache = ArrayFrameCache | ChunkedFrameCache | TensorFrameCache
 
 _SP_PEER_EXTRA_KEYS = (
     "memory_phase_controller",
-    "ltx095_sp_writer_owned_runtime",
+    "sp_writer_owned_runtime",
     "runtime_mode_requested",
     "runtime_mode_effective",
     "runtime_distributed_metadata",
@@ -54,10 +54,10 @@ def _select_sequence_item(value: Any, index: int) -> Any:
     return value
 
 
-def build_ltx095_sp_peer_window_batch(
+def build_sp_peer_window_batch(
     *,
     batch: Req,
-    params: LTX095EraseSamplingParams,
+    params: EraserDiTEraseSamplingParams,
     object_index: int,
     window_index: int,
     scene_index: int,
@@ -111,15 +111,15 @@ def build_ltx095_sp_peer_window_batch(
     return peer_batch
 
 
-def materialize_ltx095_window_batch(
+def materialize_window_batch(
     *,
     batch: Req,
-    context: LTX095EraseRuntimeContext,
-    params: LTX095EraseSamplingParams,
+    context: EraseRuntimeContext,
+    params: EraserDiTEraseSamplingParams,
     spec: WindowSpec,
     object_index: int,
     bbox_frames: torch.Tensor | None,
-    ensure_window_cache_loaded_fn: Callable[[LTX095EraseRuntimeContext, WindowSpec], None],
+    ensure_window_cache_loaded_fn: Callable[[EraseRuntimeContext, WindowSpec], None],
     record_runtime_event_fn: Callable[..., dict[str, Any]],
     object_state: ObjectRuntimeState | None = None,
     video_cache: FrameCache | None = None,
@@ -191,7 +191,7 @@ def materialize_ltx095_window_batch(
                 frames_uint8_to_tensor(window_frames).permute(1, 0, 2, 3).unsqueeze(0)
             )
         if window_mask is None:
-            window_mask = materialize_ltx095_window_mask(
+            window_mask = materialize_window_mask(
                 context=context,
                 spec=spec,
                 ensure_window_cache_loaded_fn=ensure_window_cache_loaded_fn,
@@ -200,7 +200,7 @@ def materialize_ltx095_window_batch(
         assert context.working_video is not None
         window_video = context.working_video[:, :, spec.load_start : spec.load_end].clone()
         if window_mask is None:
-            window_mask = materialize_ltx095_window_mask(
+            window_mask = materialize_window_mask(
                 context=context,
                 spec=spec,
             )
@@ -210,7 +210,7 @@ def materialize_ltx095_window_batch(
             window_mask[:, :, : spec.overlap_left] = 0
         if spec.active_end_offset < window_mask.shape[2]:
             window_mask[:, :, spec.active_end_offset :] = 0
-        window_bbox = infer_ltx095_window_bbox(
+        window_bbox = infer_window_bbox(
             bbox_frames=bbox_frames,
             spec=spec,
             window_mask=window_mask,
@@ -301,9 +301,9 @@ def materialize_ltx095_window_batch(
     return window_batch
 
 
-def cache_ltx095_window_text_embeddings(
+def cache_window_text_embeddings(
     *,
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     object_index: int,
     scene_index: int,
     prompt: str | None,

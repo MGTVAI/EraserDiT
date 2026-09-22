@@ -1,4 +1,4 @@
-"""Minimal logging helpers for the MGErase runtime."""
+"""Minimal logging helpers for the EraserDiT runtime."""
 
 from __future__ import annotations
 

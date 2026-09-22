@@ -1,4 +1,4 @@
-"""Minimal LTX0.9.5 transformer loader."""
+"""Minimal video erase transformer loader."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from utils.hf_diffusers_utils import load_json_dict
 
 
 class TransformerLoader(ComponentLoader):
-    """Loader for the local LTX0.9.5 transformer."""
+    """Loader for the local video erase transformer."""
 
     component_names = ["transformer"]
     expected_library = "diffusers"

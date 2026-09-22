@@ -1,4 +1,4 @@
-"""Task scheduler for the LTX095 windowed videoerase runtime."""
+"""Task scheduler for the windowed videoerase runtime."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from pipelines.runtime.contracts import (
-    LTX095EraseRuntimeContext,
+    EraseRuntimeContext,
     ObjectRuntimeState,
 )
 from utils.windowing import WindowSpec
@@ -73,7 +73,7 @@ class RuntimeTaskScheduler:
 
     def compute_tail_flush_end(
         self,
-        context: LTX095EraseRuntimeContext,
+        context: EraseRuntimeContext,
     ) -> int:
         if not context.object_states:
             return int(context.next_write_index)

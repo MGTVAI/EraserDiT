@@ -1,4 +1,4 @@
-"""Runtime contracts and mode helpers for the LTX095 videoerase pipeline."""
+"""Runtime contracts and mode helpers for the video erase pipeline."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 import torch
 
-from config.ltx095 import LTX095EraseSamplingParams
+from config.eraserdit import EraserDiTEraseSamplingParams
 from nodes.schedule_batch import Req
 from pipelines.runtime.hooks import RuntimeHookRegistry
 from media.encoding import VideoEncodingProfile
@@ -70,7 +70,7 @@ def _is_windowed_runtime_mode(mode: str | None) -> bool:
 
 
 def _resolve_runtime_mode(
-    params: LTX095EraseSamplingParams,
+    params: EraserDiTEraseSamplingParams,
     height: int,
     width: int,
 ) -> RuntimeModeSelection:
@@ -257,7 +257,7 @@ class ObjectRuntimeState(RuntimeTaskState):
 
 
 @dataclass
-class LTX095EraseRuntimeContext:
+class EraseRuntimeContext:
     original_video: torch.Tensor | None
     working_video: torch.Tensor | None
     final_video: torch.Tensor | None

@@ -43,15 +43,15 @@ from media.video_io import (
     read_video_array,
     read_video_metadata,
 )
-from pipelines.runtime.context import prepare_ltx095_runtime_context
+from pipelines.runtime.context import prepare_runtime_context
 from pipelines.runtime.contracts import (
-    LTX095EraseRuntimeContext,
+    EraseRuntimeContext,
     _is_windowed_runtime_mode,
 )
-from pipelines.runtime.drivers.windowed import run_ltx095_windowed_runtime
+from pipelines.runtime.drivers.windowed import run_windowed_runtime
 from pipelines.runtime.io.output import (
-    close_ltx095_runtime_resources,
-    finalize_ltx095_output,
+    close_runtime_resources,
+    finalize_output,
 )
 from pipelines.runtime.windowing.cache_ops import (
     append_passthrough_gap as runtime_append_passthrough_gap,
@@ -60,8 +60,8 @@ from pipelines.runtime.windowing.cache_ops import (
     set_object_overlap_cache as runtime_set_object_overlap_cache,
 )
 from pipelines.runtime.windowing.commit_ops import (
-    commit_ltx095_window_to_object_output,
-    record_ltx095_skipped_object_window,
+    commit_window_to_object_output,
+    record_skipped_object_window,
 )
 from pipelines.runtime.windowing.handlers import (
     _build_runtime_mask,
@@ -247,9 +247,9 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
 
     def _prepare_global_context(
         self, batch: Req, server_args: ServerArgs
-    ) -> LTX095EraseRuntimeContext:
+    ) -> EraseRuntimeContext:
         params = _as_eraserdit_params(batch)
-        return prepare_ltx095_runtime_context(
+        return prepare_runtime_context(
             batch=batch,
             params=params,
             server_args=server_args,
@@ -272,14 +272,14 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
 
     def _commit_window_to_object_output(
         self,
-        context: LTX095EraseRuntimeContext,
+        context: EraseRuntimeContext,
         object_state: Any,
         spec: Any,
         window_batch: Req,
     ) -> None:
         started = time.perf_counter()
         try:
-            commit_ltx095_window_to_object_output(
+            commit_window_to_object_output(
                 context=context,
                 object_state=object_state,
                 spec=spec,
@@ -298,7 +298,7 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
     def _run_windowed_object_chain(
         self,
         batch: Req,
-        context: LTX095EraseRuntimeContext,
+        context: EraseRuntimeContext,
         params: EraserDiTEraseSamplingParams,
         server_args: ServerArgs,
     ) -> Req:
@@ -350,7 +350,7 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
             flush_windowed_frames=_flush_runtime_windowed_frames,
             log_runtime_progress=self._log_runtime_progress,
         )
-        return run_ltx095_windowed_runtime(
+        return run_windowed_runtime(
             executor=self.executor,
             stages=self.stages,
             batch=batch,
@@ -363,7 +363,7 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
 
     def _materialize_object_window_mask(
         self,
-        context: LTX095EraseRuntimeContext,
+        context: EraseRuntimeContext,
         object_state: Any,
         spec: Any,
         crop_bbox: tuple[int, int, int, int] | None = None,
@@ -382,7 +382,7 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
 
     def _log_runtime_progress(
         self,
-        context: LTX095EraseRuntimeContext,
+        context: EraseRuntimeContext,
         completed_windows: int,
         total_windows: int,
         current_object_index: int,
@@ -414,10 +414,10 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
             )
 
     def _maybe_save_output(
-        self, batch: Req, context: LTX095EraseRuntimeContext
+        self, batch: Req, context: EraseRuntimeContext
     ) -> None:
         params = _as_eraserdit_params(batch)
-        finalize_ltx095_output(
+        finalize_output(
             batch=batch,
             context=context,
             params=params,
@@ -494,7 +494,7 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
             return result
         finally:
             try:
-                close_ltx095_runtime_resources(context)
+                close_runtime_resources(context)
             finally:
                 batch.extra["memory_runtime"] = self._memory_adapter.snapshot()
                 batch.extra[TASK_STATE_KEY] = None

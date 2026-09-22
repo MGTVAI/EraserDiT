@@ -1,4 +1,4 @@
-"""Minimal LTX095 text encoder and tokenizer loader."""
+"""Minimal EraserDiT text encoder and tokenizer loader."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from loader.component_loaders.component_loader import ComponentLoader
 class TextEncoderLoader(ComponentLoader):
     """Loader for tokenizer and text encoder components.
 
-    Supports LTX095 ``T5Tokenizer`` + ``T5EncoderModel`` components.
+    Supports EraserDiT ``T5Tokenizer`` + ``T5EncoderModel`` components.
     """
 
     component_names = ["tokenizer", "text_encoder"]

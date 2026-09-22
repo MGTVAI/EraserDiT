@@ -1,4 +1,4 @@
-"""Rank-local model memory registration for the LTX095 pipeline."""
+"""Rank-local model memory registration for the EraserDiT pipeline."""
 
 from __future__ import annotations
 

@@ -1,14 +1,14 @@
-"""Output finalization and resource closing helpers for LTX095 pipelines.runtime."""
+"""Output finalization and resource closing helpers for pipelines.runtime."""
 
 from __future__ import annotations
 
 import time
 
-from config.ltx095 import LTX095EraseSamplingParams
+from config.eraserdit import EraserDiTEraseSamplingParams
 from nodes.schedule_batch import Req
 from pipelines.runtime.metadata import write_runtime_history_batch_extra
 from pipelines.runtime.contracts import (
-    LTX095EraseRuntimeContext,
+    EraseRuntimeContext,
     _is_windowed_runtime_mode,
 )
 from nodes.control import service_checkpoint
@@ -21,8 +21,8 @@ from media.video_io import (
 def _create_output_writer(
     *,
     output_file_path: str,
-    context: LTX095EraseRuntimeContext,
-    params: LTX095EraseSamplingParams,
+    context: EraseRuntimeContext,
+    params: EraserDiTEraseSamplingParams,
 ) -> SequentialVideoWriter:
     # Resolve through the same knob the streaming writer uses so both runtime
     # modes emit with identical encoder settings.
@@ -50,11 +50,11 @@ def _create_output_writer(
     )
 
 
-def finalize_ltx095_output(
+def finalize_output(
     *,
     batch: Req,
-    context: LTX095EraseRuntimeContext,
-    params: LTX095EraseSamplingParams,
+    context: EraseRuntimeContext,
+    params: EraserDiTEraseSamplingParams,
     flush_windowed_frames_fn,
     release_mask_frames_fn,
 ) -> None:
@@ -173,8 +173,8 @@ def finalize_ltx095_output(
     )
 
 
-def close_ltx095_runtime_resources(
-    context: LTX095EraseRuntimeContext,
+def close_runtime_resources(
+    context: EraseRuntimeContext,
 ) -> None:
     if context.sequential_video_reader is not None:
         context.sequential_video_reader.close()

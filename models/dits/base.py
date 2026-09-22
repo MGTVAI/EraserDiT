@@ -1,4 +1,4 @@
-"""Minimal DiT base classes for the local MGErase runtime."""
+"""Minimal DiT base classes for the local EraserDiT runtime."""
 
 from __future__ import annotations
 

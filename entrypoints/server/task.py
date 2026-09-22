@@ -1,4 +1,4 @@
-"""Task lifecycle contracts for the MGErase service."""
+"""Task lifecycle contracts for the EraserDiT service."""
 
 from __future__ import annotations
 

@@ -1,17 +1,17 @@
-"""Runtime event and task snapshot helpers for LTX095 pipelines.runtime."""
+"""Runtime event and task snapshot helpers for pipelines.runtime."""
 
 from __future__ import annotations
 
 from typing import Any
 
 from pipelines.runtime.contracts import (
-    LTX095EraseRuntimeContext,
+    EraseRuntimeContext,
     RuntimeTaskState,
 )
 
 
 def record_runtime_event(
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     event: str,
     task_state: RuntimeTaskState | None = None,
     **payload: Any,
@@ -30,7 +30,7 @@ def record_runtime_event(
 
 
 def record_task_state_snapshot(
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     task_state: RuntimeTaskState,
     phase: str,
     **payload: Any,
@@ -75,7 +75,7 @@ def record_task_state_snapshot(
 
 
 def update_window_state(
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     object_index: int,
     window_index: int,
     *,

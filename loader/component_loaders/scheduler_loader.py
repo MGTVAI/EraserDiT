@@ -1,4 +1,4 @@
-"""Minimal LTX0.9.5 scheduler loader."""
+"""Minimal video erase scheduler loader."""
 
 from __future__ import annotations
 

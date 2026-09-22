@@ -94,7 +94,7 @@ class ComponentOffloadTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ServerArgs(
                 resource_policy='component_offload',
-                pipeline_class_name='LTX095ErasePipeline',
+                pipeline_class_name='UnsupportedPipeline',
             ).resolve_resource_policy()
 
     @unittest.skipUnless(torch.cuda.is_available(), 'CUDA unavailable')

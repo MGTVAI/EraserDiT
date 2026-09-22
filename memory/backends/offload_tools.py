@@ -1,6 +1,6 @@
 """Offload tools for HtoD / DtoH module weight transfer with pin_memory support.
 
-Adapted from MGErase_origin utils_inference/memory/module_offload/offload_tools.py.
+Adapted from EraserDiT_origin utils_inference/memory/module_offload/offload_tools.py.
 External dependencies (test_time decorator, GlobalValues) removed.
 """
 

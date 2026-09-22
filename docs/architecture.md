@@ -64,3 +64,7 @@ CLI / HTTP worker → EraseSession → pipeline 装配
 
 - [EraserDiT](https://github.com/JieLiu95/EraserDiT)
 - [SGLang](https://github.com/sgl-project/sglang)
+
+当前仅注册 `EraserDiTErasePipeline`，CLI 与 HTTP 服务默认使用 EraserDiT。
+共享窗口运行时、会话、FlowMatch 调度器和缓存控制器独立于旧模型路径；
+TeaCache 的模型标识和校准策略由 EraserDiT 适配层显式提供。

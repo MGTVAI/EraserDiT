@@ -1,6 +1,5 @@
-"""Full and windowed videoerase runtime drivers."""
+"""Windowed video erase runtime driver."""
 
-from pipelines.runtime.drivers.full import run_ltx095_full_runtime
-from pipelines.runtime.drivers.windowed import run_ltx095_windowed_runtime
+from .windowed import run_windowed_runtime
 
-__all__ = ("run_ltx095_full_runtime", "run_ltx095_windowed_runtime")
+__all__ = ("run_windowed_runtime",)

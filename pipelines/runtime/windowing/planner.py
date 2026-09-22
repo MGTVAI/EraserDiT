@@ -1,19 +1,19 @@
-"""Window planning helpers for LTX095 pipelines.runtime."""
+"""Window planning helpers for pipelines.runtime."""
 
 from __future__ import annotations
 
 import torch
 
-from config.ltx095 import LTX095EraseSamplingParams
+from config.eraserdit import EraserDiTEraseSamplingParams
 from utils.bbox import get_max_bbox
-from utils.windowing import WindowSpec, build_window_specs
+from utils.windowing import WindowSpec, build_window_specs as plan_windows
 
 
-def build_ltx095_window_specs(
-    params: LTX095EraseSamplingParams,
+def build_window_specs(
+    params: EraserDiTEraseSamplingParams,
     scenes: list[tuple[int, int]] | None = None,
 ) -> list[WindowSpec]:
-    return build_window_specs(
+    return plan_windows(
         num_frames=int(params.num_frames or 0),
         infer_len=int(params.infer_len),
         overlap=int(params.overlap),
@@ -23,7 +23,7 @@ def build_ltx095_window_specs(
     )
 
 
-def infer_ltx095_window_bbox(
+def infer_window_bbox(
     bbox_frames: torch.Tensor | None,
     spec: WindowSpec,
     window_mask: torch.Tensor | None,

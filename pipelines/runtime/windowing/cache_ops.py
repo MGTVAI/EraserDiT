@@ -1,4 +1,4 @@
-"""Cache and forwarding helpers for the LTX095 windowed videoerase runtime."""
+"""Cache and forwarding helpers for the windowed videoerase runtime."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import numpy as np
 import torch
 
 from pipelines.runtime.contracts import (
-    LTX095EraseRuntimeContext,
+    EraseRuntimeContext,
     ObjectRuntimeState,
 )
 from media.video_io import ArrayFrameCache, ChunkedFrameCache, TensorFrameCache
@@ -141,7 +141,7 @@ def set_object_overlap_cache(
 
 def forward_task_channel_range(
     *,
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     source_state: ObjectRuntimeState,
     target_state: ObjectRuntimeState,
     start_index: int,
@@ -222,7 +222,7 @@ def forward_task_channel_range(
 
 def register_runtime_task_chain_hooks(
     *,
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     object_states: list[ObjectRuntimeState],
     record_runtime_event: Callable[..., dict[str, Any]],
     record_task_state_snapshot: Callable[..., dict[str, Any]],

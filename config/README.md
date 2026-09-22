@@ -4,7 +4,7 @@
 | --- | --- |
 | `server_args.py` | 模型加载、设备、精度、注意力、编译和资源策略 |
 | `sampling_params.py` | 通用采样参数 |
-| `eraserdit.py` / `ltx095.py` | 模型配置与采样默认值 |
+| `eraserdit.py` | 模型配置与采样默认值 |
 | `service_args.py` | HTTP 服务、队列、输入路径和结果存储 |
 | `service_contract.py` / `service_contracts/` | 模型请求 schema、采样参数构造与 capability |
 | `parallel.py` | 并行配置和计划类型 |

@@ -1,4 +1,4 @@
-"""Runtime context bootstrap for the LTX095 videoerase pipeline."""
+"""Runtime context bootstrap for the video erase pipeline."""
 
 from __future__ import annotations
 
@@ -11,20 +11,19 @@ from typing import Any, Callable
 import numpy as np
 import torch
 
-from config.ltx095 import LTX095EraseSamplingParams
+from config.eraserdit import EraserDiTEraseSamplingParams
 from config.server_args import ServerArgs
-from parallel.runtime import resolve_ltx095_native_vae_parallel_status
 from nodes.schedule_batch import Req
 from distributed.group_coordinator import GroupCoordinator
 from pipelines.runtime.windowing.sp_dispatch import (
-    LTX095ActiveSPWindowContext,
-    LTX095SPWindowControlError,
-    resolve_active_ltx095_window_commit_context,
+    ActiveSPWindowContext,
+    SPWindowControlError,
+    resolve_active_window_commit_context,
 )
 from pipelines.runtime.scheduler import RuntimeTaskScheduler
 from pipelines.runtime.tracks import _load_bbox_tracks
 from pipelines.runtime.contracts import (
-    LTX095EraseRuntimeContext,
+    EraseRuntimeContext,
     WindowedPreloadRuntimeState,
     WindowedStreamingRuntimeState,
     _resolve_runtime_mode,
@@ -134,10 +133,10 @@ def _synchronize_sp_metadata_error(
     server_args: ServerArgs,
 ) -> None:
     from pipelines.runtime.windowing.commit_sync import (
-        synchronize_ltx095_window_runtime_boundary,
+        synchronize_window_runtime_boundary,
     )
 
-    synchronize_ltx095_window_runtime_boundary(error, server_args)
+    synchronize_window_runtime_boundary(error, server_args)
 
 
 def _apply_baseline_output_contract(
@@ -173,7 +172,7 @@ def _apply_baseline_output_contract(
 
 def _read_and_broadcast_sp_video_metadata(
     *,
-    active: LTX095ActiveSPWindowContext,
+    active: ActiveSPWindowContext,
     video_path: str,
     fallback_fps: float,
     server_args: ServerArgs,
@@ -216,7 +215,7 @@ def _read_and_broadcast_sp_video_metadata(
             src=active.contract.writer_rank,
         )
     except BaseException as error:
-        raise LTX095SPWindowControlError(
+        raise SPWindowControlError(
             rank=active.parallel_context.global_rank,
             phase="video metadata broadcast",
             original=error,
@@ -233,7 +232,7 @@ def _read_and_broadcast_sp_video_metadata(
         raise decode_error
     if decoded is None:
         _synchronize_sp_metadata_error(local_error, server_args)
-        raise LTX095SPWindowControlError(
+        raise SPWindowControlError(
             rank=active.parallel_context.global_rank,
             phase="video metadata preparation",
             original=RuntimeError("writer failed to prepare video metadata"),
@@ -266,10 +265,10 @@ def _resolve_ffmpeg_thread_count(batch: Req) -> object:
     return environment_value
 
 
-def prepare_ltx095_runtime_context(
+def prepare_runtime_context(
     *,
     batch: Req,
-    params: LTX095EraseSamplingParams,
+    params: EraserDiTEraseSamplingParams,
     server_args: ServerArgs,
     resource_policy: Any,
     build_runtime_video: Callable[
@@ -281,7 +280,7 @@ def prepare_ltx095_runtime_context(
     read_mask_array: Callable[[str], tuple[np.ndarray, Any] | np.ndarray],
     window_store_builder: Callable[[str], WindowedVideoStore],
     memory_adapter: Any | None = None,
-) -> LTX095EraseRuntimeContext:
+) -> EraseRuntimeContext:
     service_checkpoint(batch, server_args, phase="runtime_context_start")
     distributed_context = getattr(server_args, "distributed_context", None)
     distributed_metadata = (
@@ -293,33 +292,21 @@ def prepare_ltx095_runtime_context(
         if official_parallel_context is not None
         else {}
     )
-    (
-        native_vae_parallel_enabled,
-        native_vae_parallel_degree,
-        native_vae_parallel_mode,
-    ) = resolve_ltx095_native_vae_parallel_status(server_args)
-    official_parallel_metadata.update(
-        {
-            "ltx095_native_vae_parallel_enabled": native_vae_parallel_enabled,
-            "ltx095_native_vae_parallel_degree": native_vae_parallel_degree,
-            "ltx095_native_vae_parallel_mode": native_vae_parallel_mode,
-        }
-    )
     resource_policy_dict = resource_policy.as_dict()
 
     active_sp_context = None
     if str(params.runtime_mode or "").strip().lower() == "windowed_streaming":
-        active_sp_context = resolve_active_ltx095_window_commit_context(server_args)
+        active_sp_context = resolve_active_window_commit_context(server_args)
     sp_writer_owned_runtime = active_sp_context is not None
     if active_sp_context is not None:
         distributed_writer = bool(distributed_metadata.get("is_writer_rank", True))
         if distributed_writer != active_sp_context.is_writer:
             raise RuntimeError(
-                "distributed writer rank does not match frozen LTX095 SP writer"
+                "distributed writer rank does not match frozen SP writer"
             )
         distributed_metadata["is_writer_rank"] = active_sp_context.is_writer
-        distributed_metadata["ltx095_sp_writer_owned_runtime"] = True
-    batch.extra["ltx095_sp_writer_owned_runtime"] = sp_writer_owned_runtime
+        distributed_metadata["sp_writer_owned_runtime"] = True
+    batch.extra["sp_writer_owned_runtime"] = sp_writer_owned_runtime
 
     batch.extra["runtime_distributed_metadata"] = dict(distributed_metadata)
     batch.extra["runtime_official_parallel_metadata"] = dict(official_parallel_metadata)
@@ -596,7 +583,7 @@ def prepare_ltx095_runtime_context(
         if memory_adapter is not None
         else None
     )
-    context = LTX095EraseRuntimeContext(
+    context = EraseRuntimeContext(
         request_batch=batch,
         original_video=original_video.clone() if original_video is not None else None,
         working_video=working_video,

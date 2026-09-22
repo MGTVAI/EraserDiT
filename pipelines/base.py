@@ -1,4 +1,4 @@
-"""Base class for composed pipelines in the minimal MGErase runtime."""
+"""Base class for composed pipelines in the minimal EraserDiT runtime."""
 
 from __future__ import annotations
 

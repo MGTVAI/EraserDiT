@@ -1,26 +1,20 @@
-"""Request/window-scoped TeaCache controller for LTX095."""
+"""Request/window-scoped TeaCache controller for video erase."""
 
 from __future__ import annotations
 
 import math
 import time
-from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from typing import Any, TYPE_CHECKING, Callable
 
 import torch
 
 from config.teacache import (
-    LTX095_TEACACHE_MODEL_IDENTITY,
     TeaCacheCoefficientSelection,
     TeaCacheParams,
-    resolve_ltx095_teacache_params,
-    select_ltx095_teacache_coefficients,
 )
 from config.transformer_cache import (
     TransformerCacheMode,
-    resolve_transformer_cache_mode,
-    validate_transformer_cache_request,
 )
 from cache.base import CacheBranch, CacheExecutionContext
 from cache.consensus import CacheConsensusStats, CacheDecisionConsensus
@@ -94,8 +88,8 @@ class TeaCacheController:
         coordinator: GroupCoordinator | None,
         sp_group_identity: str,
         cfg_group_identity: str,
-        model_identity: str = LTX095_TEACACHE_MODEL_IDENTITY,
-        coefficient_selector: Callable[[int], TeaCacheCoefficientSelection] | None = None,
+        model_identity: str,
+        coefficient_selector: Callable[[int], TeaCacheCoefficientSelection],
     ) -> None:
         if not params.enabled:
             raise ValueError("disabled TeaCache must not construct a controller")
@@ -125,9 +119,9 @@ class TeaCacheController:
         self._final_stats: dict[str, Any] | None = None
         self._abort_reason: str | None = None
 
-    def adapter(self, branch: CacheBranch) -> "LTX095TeaCacheBranchAdapter":
+    def adapter(self, branch: CacheBranch) -> "TeaCacheBranchAdapter":
         self._require_open()
-        return LTX095TeaCacheBranchAdapter(self, branch)
+        return TeaCacheBranchAdapter(self, branch)
 
     def check(
         self,
@@ -401,13 +395,7 @@ class TeaCacheController:
 
     def _selection_for(self, global_sequence_length: int):
         if self._selection is None:
-            self._selection = (
-                self._coefficient_selector(global_sequence_length)
-                if self._coefficient_selector is not None
-                else select_ltx095_teacache_coefficients(
-                    global_sequence_length, policy=self.params.coefficient_policy,
-                )
-            )
+            self._selection = self._coefficient_selector(global_sequence_length)
         elif (
             self._selection.requested_global_sequence_length
             != global_sequence_length
@@ -456,7 +444,7 @@ class TeaCacheController:
             raise RuntimeError("TeaCache window is already closed")
 
 
-class LTX095TeaCacheBranchAdapter:
+class TeaCacheBranchAdapter:
     def __init__(self, controller: TeaCacheController, branch: CacheBranch) -> None:
         self._controller = controller
         self.branch = branch
@@ -539,88 +527,6 @@ class LTX095TeaCacheBranchAdapter:
         )
 
 
-def build_ltx095_teacache_controller(
-    *,
-    batch: Any,
-    total_steps: int,
-    sp_degree: int = 1,
-    sp_rank: int = 0,
-    cfg_degree: int = 1,
-    cfg_rank: int = 0,
-    coordinator: GroupCoordinator | None = None,
-    sp_group_identity: str | None = None,
-    cfg_group_identity: str | None = None,
-) -> TeaCacheController | None:
-    mode = resolve_transformer_cache_mode(
-        getattr(batch, "transformer_cache_mode", "off")
-    )
-    validate_transformer_cache_request(
-        mode=mode,
-        enable_torch_compile=False,
-    )
-    if mode is TransformerCacheMode.OFF:
-        return None
-    params = resolve_ltx095_teacache_params(
-        mode=mode,
-        threshold=getattr(batch, "teacache_threshold", 0.03),
-        max_consecutive_skip=getattr(
-            batch, "max_teacache_consecutive_skip", 1
-        ),
-        calibrate=getattr(batch, "do_teacache_calibrate", False),
-        coefficient_policy=getattr(
-            batch,
-            "teacache_coefficient_policy",
-            "ltx095_checkpoint_206k",
-        ),
-    )
-    extra = getattr(batch, "extra", {})
-    request_id = str(
-        getattr(batch, "request_id", None)
-        or getattr(batch, "rid", None)
-        or extra.get("request_id")
-        or "anonymous"
-    )
-    if sp_group_identity is None:
-        sp_group_identity = _coordinator_identity(coordinator, fallback="sp:local")
-    if cfg_group_identity is None:
-        cfg_group_identity = (
-            "cfg:sequential" if cfg_degree == 1 else f"cfg:{cfg_degree}:{cfg_rank}"
-        )
-    return TeaCacheController(
-        params,
-        request_id=request_id,
-        object_index=int(extra.get("object_index", 0)),
-        window_index=int(extra.get("window_index", 0)),
-        total_steps=total_steps,
-        sp_degree=sp_degree,
-        sp_rank=sp_rank,
-        cfg_degree=cfg_degree,
-        cfg_rank=cfg_rank,
-        coordinator=coordinator,
-        sp_group_identity=sp_group_identity,
-        cfg_group_identity=cfg_group_identity,
-    )
-
-
-@contextmanager
-def ltx095_teacache_window_scope(
-    batch: Any,
-    controller: TeaCacheController | None,
-):
-    if controller is None:
-        yield None
-        return
-    try:
-        yield controller
-    except BaseException as error:
-        batch.extra["transformer_cache"] = controller.abort_window(
-            f"{type(error).__name__}: {error}"
-        )
-        raise
-    else:
-        batch.extra["transformer_cache"] = controller.finish_window()
-
-
 def _evaluate_polynomial(coefficients: tuple[float, ...], value: float) -> float:
     result = 0.0
     for coefficient in coefficients:
@@ -632,21 +538,9 @@ def _ratio(numerator: int, denominator: int) -> float:
     return numerator / denominator if denominator else 0.0
 
 
-def _coordinator_identity(
-    coordinator: GroupCoordinator | None,
-    *,
-    fallback: str,
-) -> str:
-    if coordinator is None:
-        return fallback
-    spec = getattr(getattr(coordinator, "group", None), "spec", None)
-    return f"{getattr(spec, 'name', 'group')}:{getattr(spec, 'ranks', ())}"
-
 
 __all__ = (
-    "LTX095TeaCacheBranchAdapter",
+    "TeaCacheBranchAdapter",
     "TeaCacheController",
     "TeaCacheDecision",
-    "build_ltx095_teacache_controller",
-    "ltx095_teacache_window_scope",
 )

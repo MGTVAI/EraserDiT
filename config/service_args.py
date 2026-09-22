@@ -1,4 +1,4 @@
-"""HTTP service configuration for the local MGErase runtime."""
+"""HTTP service configuration for the local EraserDiT runtime."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Synchronous executor for the minimal MGErase runtime."""
+"""Synchronous executor for the minimal EraserDiT runtime."""
 
 from __future__ import annotations
 

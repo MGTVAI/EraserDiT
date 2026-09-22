@@ -1,4 +1,4 @@
-"""Window commit and skip kernel helpers for LTX095 pipelines.runtime."""
+"""Window commit and skip kernel helpers for pipelines.runtime."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ import numpy as np
 import torch
 
 from nodes.schedule_batch import Req
-from pipelines.runtime.io.masks import consume_ltx095_window_mask
+from pipelines.runtime.io.masks import consume_window_mask
 from pipelines.runtime.contracts import (
-    LTX095EraseRuntimeContext,
+    EraseRuntimeContext,
     ObjectRuntimeState,
     _is_windowed_runtime_mode,
 )
@@ -178,7 +178,7 @@ def append_frames_tensor_to_cache(
         output_cache.append(frames_tensor_to_uint8(frames[start : start + chunk_size]))
 
 
-def blend_ltx095_temporal_overlap(
+def blend_temporal_overlap(
     before: torch.Tensor,
     after: torch.Tensor,
     mode: str = "before",
@@ -225,9 +225,9 @@ def blend_ltx095_temporal_overlap(
     return weights * before + (1.0 - weights) * after
 
 
-def commit_ltx095_window_to_object_output(
+def commit_window_to_object_output(
     *,
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     object_state: ObjectRuntimeState,
     spec: WindowSpec,
     window_batch: Req,
@@ -452,7 +452,7 @@ def commit_ltx095_window_to_object_output(
             overlap_frames.clone() if bf16_object_chain else overlap_frames.copy()
         )
     set_object_overlap_cache_fn(object_state, stable_end, overlap_frames)
-    consume_ltx095_window_mask(
+    consume_window_mask(
         context=context,
         spec=spec,
         crop_bbox=crop_bbox,
@@ -526,9 +526,9 @@ def commit_ltx095_window_to_object_output(
     )
 
 
-def record_ltx095_skipped_object_window(
+def record_skipped_object_window(
     *,
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     object_state: ObjectRuntimeState,
     spec: WindowSpec,
     reason: str,
@@ -660,9 +660,9 @@ def record_ltx095_skipped_object_window(
     )
 
 
-def commit_ltx095_window(
+def commit_window(
     *,
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     spec: WindowSpec,
     window_batch: Req,
     object_index: int,
@@ -702,7 +702,7 @@ def commit_ltx095_window(
         after_overlap_4d = before_overlap_4d.clone()
         overlap_patch_4d = crop_patch_4d[: spec.overlap_left]
         splice_video_inplace(after_overlap_4d, overlap_patch_4d, (x, y))
-        fused_overlap_4d = blend_ltx095_temporal_overlap(
+        fused_overlap_4d = blend_temporal_overlap(
             before=before_overlap_4d,
             after=after_overlap_4d,
             mode=overlap_fuse_mode,
@@ -753,7 +753,7 @@ def commit_ltx095_window(
                 dtype=context.final_video.dtype,
             )
         )
-    consume_ltx095_window_mask(
+    consume_window_mask(
         context=context,
         spec=spec,
         crop_bbox=crop_bbox,
@@ -788,9 +788,9 @@ def commit_ltx095_window(
     )
 
 
-def record_ltx095_skipped_window(
+def record_skipped_window(
     *,
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     spec: WindowSpec,
     object_index: int,
     reason: str,

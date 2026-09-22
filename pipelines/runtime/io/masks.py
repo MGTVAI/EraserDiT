@@ -1,4 +1,4 @@
-"""Mask ingress and lifecycle helpers for LTX095 videoerase runtime paths."""
+"""Mask ingress and lifecycle helpers for videoerase runtime paths."""
 
 from __future__ import annotations
 
@@ -6,17 +6,17 @@ from typing import Callable
 
 import torch
 
-from pipelines.runtime.contracts import LTX095EraseRuntimeContext
+from pipelines.runtime.contracts import EraseRuntimeContext
 from pipelines.runtime.contracts import _is_windowed_runtime_mode
 from media.video_io import mask_uint8_to_tensor
 from utils.windowing import WindowSpec
 
 
-def materialize_ltx095_window_mask(
+def materialize_window_mask(
     *,
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     spec: WindowSpec,
-    ensure_window_cache_loaded_fn: Callable[[LTX095EraseRuntimeContext, WindowSpec], None]
+    ensure_window_cache_loaded_fn: Callable[[EraseRuntimeContext, WindowSpec], None]
     | None = None,
     crop_bbox: tuple[int, int, int, int] | None = None,
 ) -> torch.Tensor:
@@ -58,9 +58,9 @@ def materialize_ltx095_window_mask(
     return window_mask
 
 
-def consume_ltx095_window_mask(
+def consume_window_mask(
     *,
-    context: LTX095EraseRuntimeContext,
+    context: EraseRuntimeContext,
     spec: WindowSpec,
     crop_bbox: tuple[int, int, int, int],
 ) -> None:

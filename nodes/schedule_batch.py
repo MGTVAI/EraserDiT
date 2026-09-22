@@ -1,4 +1,4 @@
-"""Batch/request objects shared across the minimal MGErase runtime."""
+"""Batch/request objects shared across the minimal EraserDiT runtime."""
 
 from __future__ import annotations
 

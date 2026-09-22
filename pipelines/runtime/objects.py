@@ -1,31 +1,31 @@
-"""Object runtime state builder helpers for LTX095 pipelines.runtime."""
+"""Object runtime state builder helpers for pipelines.runtime."""
 
 from __future__ import annotations
 
 from typing import Any, Callable
 
-from config.ltx095 import LTX095EraseSamplingParams
+from config.eraserdit import EraserDiTEraseSamplingParams
 from pipelines.runtime.tracks import (
     _resolve_object_scenes,
     _resolve_object_value,
 )
 from pipelines.runtime.contracts import (
-    LTX095EraseRuntimeContext,
+    EraseRuntimeContext,
     ObjectRuntimeState,
 )
-from pipelines.runtime.windowing.planner import build_ltx095_window_specs
+from pipelines.runtime.windowing.planner import build_window_specs
 from media.video_io import ArrayFrameCache, ChunkedFrameCache, TensorFrameCache
 
 FrameCache = ArrayFrameCache | ChunkedFrameCache | TensorFrameCache
 
 
-def build_ltx095_object_runtime_states(
+def build_object_runtime_states(
     *,
-    context: LTX095EraseRuntimeContext,
-    params: LTX095EraseSamplingParams,
+    context: EraseRuntimeContext,
+    params: EraserDiTEraseSamplingParams,
     create_empty_cache_like_fn: Callable[[FrameCache, int], FrameCache],
     register_runtime_task_chain_hooks_fn: Callable[
-        [LTX095EraseRuntimeContext, list[ObjectRuntimeState]], None
+        [EraseRuntimeContext, list[ObjectRuntimeState]], None
     ],
     record_runtime_event_fn: Callable[..., dict[str, Any]],
     record_task_state_snapshot_fn: Callable[..., dict[str, Any]],
@@ -48,7 +48,7 @@ def build_ltx095_object_runtime_states(
             object_index=object_index,
             object_count=object_count,
         )
-        window_specs = build_ltx095_window_specs(params, scenes=object_scenes)
+        window_specs = build_window_specs(params, scenes=object_scenes)
         shared_window_specs.append(window_specs)
         total_windows += len(window_specs)
         scene_sources.append(object_scenes)

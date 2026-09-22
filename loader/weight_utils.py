@@ -1,4 +1,4 @@
-"""Minimal weight-loading helpers for the local MGErase runtime."""
+"""Minimal weight-loading helpers for the local EraserDiT runtime."""
 
 from __future__ import annotations
 

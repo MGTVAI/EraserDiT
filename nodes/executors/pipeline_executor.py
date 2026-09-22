@@ -1,4 +1,4 @@
-"""Executor base classes for the minimal MGErase runtime."""
+"""Executor base classes for the minimal EraserDiT runtime."""
 
 from __future__ import annotations
 

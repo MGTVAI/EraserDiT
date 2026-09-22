@@ -6,7 +6,7 @@ Three responsibility boundaries:
 * ``backends/``  – the actual move/offload machinery (extents, offload tools, storage).
 * ``policies/``  – residency and stage-coordination policies.
 
-Adapted from MGErase_origin ``utils_inference/memory/`` and ``runtime/resource/``.
+Adapted from EraserDiT_origin ``utils_inference/memory/`` and ``runtime/resource/``.
 """
 
 from memory.adapters.model_memory_adapter import (  # noqa: F401
