@@ -73,7 +73,7 @@ CUDA_VISIBLE_DEVICES=7 HF_HUB_OFFLINE=1 uv run --no-project python -m entrypoint
 ## 启动服务
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 HF_HUB_OFFLINE=1 uv run --no-project python -m entrypoints.server.serve \
+CUDA_VISIBLE_DEVICES=7 HF_HUB_OFFLINE=1 uv run --no-project python -m entrypoints.server.serve \
   --pipeline-name EraserDiTErasePipeline --model-path data/model \
   --task-root outputs/service --input-allowed-root "$PWD/data" \
   --host 127.0.0.1 --port 30000
@@ -90,16 +90,18 @@ CUDA_VISIBLE_DEVICES=0 HF_HUB_OFFLINE=1 uv run --no-project python -m entrypoint
 | [命令行推理](docs/cli.md) | 单视频、批量任务、参数与多卡入口 |
 | [服务 API](docs/service_api.md) | 服务配置、请求、任务和结果 |
 | [性能配置](docs/performance.md) | 注意力、编译、卸载、缓存、并行与量化 |
-| [测量与验证](docs/validation.md) | 输出质量、性能测量和异常恢复 |
-| [回归测试](tests/README.md) | CPU / GPU 测试范围与运行方式 |
-| [代码架构](docs/architecture.md) | 模块职责、依赖方向与执行流程 |
 | [配置说明](config/README.md) | 模型、服务与运行配置 |
 
 ## 参考仓库
 
 - [EraserDiT](https://github.com/JieLiu95/EraserDiT)：模型与视频擦除算法。
 - [SGLang](https://github.com/sgl-project/sglang)：推理框架与多模态服务设计参考。
-- [Hugging Face 模型](https://huggingface.co/jieeliu/EraserDiT) · [论文](https://arxiv.org/abs/2506.12853) · [演示](https://jieliu95.github.io/EraserDiT_demo/)
+
+## 核心开发人员（按贡献度排名）
+
+ZhiHeng66 - https://github.com/ZhiHeng66
+balbalabal - https://github.com/balbalabal
+Alwaysssssss - https://github.com/Alwaysssssss
 
 ## 📜 Citation
 
