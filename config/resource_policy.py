@@ -64,7 +64,7 @@ def resolve_runtime_resource_policy(server_args) -> RuntimeResourcePolicy:
     pin_memory = requested_pin_memory
     dynamic_offload = requested_dynamic_offload
     max_weight_usage = int(
-        getattr(server_args, "max_weight_usage", 5 * 1024**3)
+        getattr(server_args, "max_weight_usage", 2 * 1024**3)
     )
     if max_weight_usage <= 0:
         raise ValueError("max_weight_usage must be positive")

@@ -62,7 +62,7 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["fullgpu", "fullgpu_pin_memory", "dynamic_offload", "component_offload"],
     )
     parser.add_argument("--runtime-mode", default=None)
-    parser.add_argument("--max-weight-usage", type=int, default=5 * 1024**3,
+    parser.add_argument("--max-weight-usage", type=int, default=2 * 1024**3,
                         help="dynamic offload managed-weight budget in bytes (excludes activations)")
     parser.add_argument("--pin-memory", action=argparse.BooleanOptionalAction, default=False,
                         help="pin small unwrapped weights; dynamic extents always use pinned mirrors")

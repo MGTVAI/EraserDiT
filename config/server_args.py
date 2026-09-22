@@ -38,7 +38,7 @@ class ServerArgs:
     resource_policy: str = "fullgpu"
     dynamic_offload: bool = False
     pin_memory: bool = False
-    max_weight_usage: int = 5 * 1024**3
+    max_weight_usage: int = 2 * 1024**3
     vae_cpu_offload: bool = False
     dit_cpu_offload: bool = False
     text_encoder_cpu_offload: bool = False

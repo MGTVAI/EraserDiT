@@ -47,7 +47,7 @@ class FlexibleMemoryState:
     def add_device_state(
         device: torch.device = None,
         *,
-        max_weight_usage: int = 5 * 1024**3,
+        max_weight_usage: int = 2 * 1024**3,
     ):
         device_idx = FlexibleMemoryState.get_device_idx(device=device)
 

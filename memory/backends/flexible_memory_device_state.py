@@ -29,7 +29,7 @@ class FlexibleMemoryDeviceState:
         device: torch.device,
         async_worker: int = 8,
         compute_with_default_stream=True,
-        max_weight_usage: int = 5 * 1024**3,
+        max_weight_usage: int = 2 * 1024**3,
         initialize_cuda: bool = True,
     ):
         self.device = device

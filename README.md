@@ -42,9 +42,11 @@ uv pip check --python .venv/bin/python
 从 [Hugging Face](https://huggingface.co/jieeliu/EraserDiT) 下载完整模型到 `data/model/`：
 
 ```bash
-HF_HUB_OFFLINE=0 uv run --no-project hf download jieeliu/EraserDiT \
+HF_ENDPOINT=https://hf-mirror.com HF_HUB_DISABLE_XET=1 \
+uv run --no-project hf download jieeliu/EraserDiT \
   --revision 904fb412da76235085dbbccaefdbde4979fa3d29 \
-  --local-dir data/model
+  --local-dir data/model \
+  --exclude ".DS_Store"
 ```
 
 模型约 30 GB，另需为依赖、临时帧缓存和输出预留空间。下载中断后可重新执行同一命令。
@@ -55,12 +57,13 @@ HF_HUB_OFFLINE=0 uv run --no-project hf download jieeliu/EraserDiT \
 
 ```bash
 mkdir -p outputs
-CUDA_VISIBLE_DEVICES=0 HF_HUB_OFFLINE=1 uv run --no-project python -m entrypoints.cli.erase_eraserdit \
+CUDA_VISIBLE_DEVICES=7 HF_HUB_OFFLINE=1 uv run --no-project python -m entrypoints.cli.erase_eraserdit \
   --model-path data/model \
   --video-input data/113000356.mp4 --mask-input data/113000356_mask.mp4 \
   --output-path outputs/result.mp4 \
   --prompt "There is a rooftop terrace overlooking the city at sunset." \
-  --attention-backend sdpa
+  --attention-backend sdpa \
+  --resource-policy dynamic_offload
 ```
 
 替换视频和掩码即可处理自己的素材；掩码标出待擦除区域，prompt 描述擦除后的背景。

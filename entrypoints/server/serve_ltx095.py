@@ -88,7 +88,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dynamic_offload", action=argparse.BooleanOptionalAction, default=True
     )
-    parser.add_argument("--max_weight_usage", type=int, default=5 * 1024**3)
+    parser.add_argument("--max_weight_usage", type=int, default=2 * 1024**3)
     parser.add_argument(
         "--runtime-mode",
         default="windowed_streaming",

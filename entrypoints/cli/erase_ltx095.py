@@ -151,7 +151,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max_weight_usage",
         type=int,
-        default=5 * 1024**3,
+        default=2 * 1024**3,
         help="Maximum per-rank CUDA bytes used by dynamically loaded weights.",
     )
     parser.add_argument(
