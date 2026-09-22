@@ -111,6 +111,7 @@ docker run --rm --gpus all \
 | 找不到 `ffmpeg` / `ffprobe` | 安装系统 FFmpeg 并确认命令在 `PATH` 中 |
 | 模型文件缺失 | 关闭离线模式，重新执行完整模型下载命令 |
 | 显存不足 | 使用较小素材验证，或启用[权重卸载](performance.md#offload)；卸载不能消除激活显存 |
+| 任务开始后 CPU 忙、GPU 空闲，停在掩码读取 | 入口默认设置 `NUMPY_MADVISE_HUGEPAGE=0`，避免共享主机上大数组分配触发透明大页整理停顿；直接调用 Python API 时，在导入 NumPy/Torch 前设置此环境变量。显式设置为 `1` 可恢复 NumPy 默认行为 |
 | 本机 HTTP 请求受代理影响 | 设置 `NO_PROXY=127.0.0.1,localhost` |
 
 服务调用见[服务 API](service_api.md)，批量和多卡运行见[CLI](cli.md)。

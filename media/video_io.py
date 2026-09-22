@@ -296,7 +296,12 @@ def binarize_mask_array(
     if max_value <= 0.0:
         return np.zeros_like(mask)
     threshold = max_value * float(threshold_ratio)
-    return np.where(mask <= threshold, 0, 255).astype(mask.dtype, copy=False)
+    # Python integer branches create an int64 temporary (2.4 GB for 145
+    # 1080p frames). Keep the binary values in bytes before restoring the
+    # caller's dtype, including the original integer conversion semantics.
+    return np.where(mask <= threshold, np.uint8(0), np.uint8(255)).astype(
+        mask.dtype, copy=False
+    )
 
 
 def read_mask_rgb_array(

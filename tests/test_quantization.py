@@ -1,13 +1,22 @@
 import os
+import sys
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 import torch
 from torch import nn
-from models.dits.eraserdit_quantization import selected_names, validate_quantization
+from models.dits.eraserdit_quantization import selected_names, validate_quantization, runtime_report
 
 
 class QuantizationPolicyTests(unittest.TestCase):
+    def test_unquantized_report_does_not_require_int8_backend(self):
+        with patch.dict(sys.modules, {
+            'layers.quantization.eraserdit_int8': None,
+            'triton': None,
+        }):
+            self.assertEqual(runtime_report(nn.Linear(2, 2)),
+                             dict(mode='none', runtime_call_count=0))
+
     def test_scopes_exclude_io_and_conditioning(self):
         model = SimpleNamespace(transformer_blocks=[None]*28)
         names = selected_names(model,'blocks')

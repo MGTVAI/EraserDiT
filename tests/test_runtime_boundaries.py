@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 import importlib
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -16,7 +17,10 @@ import torch
 from config.server_args import ServerArgs
 from config.resource_policy import resolve_runtime_resource_policy
 from media.encoding import VideoEncodingProfile
-from media.video_io import SequentialVideoReader, SequentialVideoWriter, read_video_metadata
+from media.video_io import (
+    SequentialVideoReader, SequentialVideoWriter, read_video_metadata,
+    binarize_mask_array,
+)
 from memory.tensor_ops import maybe_pin_tensor, module_device, move_module_to_device
 from parallel import runtime
 from utils import logging_utils
@@ -26,6 +30,36 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RuntimeBoundaryTests(unittest.TestCase):
+    def test_entrypoint_numpy_hugepages_default_and_override(self):
+        for override, expected in ((None, "0"), ("1", "1")):
+            env = dict(os.environ)
+            env.pop("NUMPY_MADVISE_HUGEPAGE", None)
+            if override is not None:
+                env["NUMPY_MADVISE_HUGEPAGE"] = override
+            result = subprocess.run(
+                [sys.executable, "-c",
+                 "import entrypoints; import numpy as np; "
+                 "print(int(np._core.multiarray._get_madvise_hugepage()))"],
+                cwd=ROOT, env=env, capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), expected)
+
+    def test_mask_binarization_preserves_threshold_and_dtype(self):
+        for dtype in (np.uint8, np.int8, np.uint16, np.float32, np.float64):
+            for rgb in (False, True):
+                mask = np.array([0, 29, 30, 31, 60, 100], dtype=dtype).reshape(1, 2, 3)
+                if rgb:
+                    mask = np.stack((mask, np.zeros_like(mask)), axis=-1)
+                source = mask.max(axis=-1) if rgb else mask
+                expected = np.where(source <= 30.0, 0, 255).astype(dtype)
+                actual = binarize_mask_array(mask)
+                np.testing.assert_array_equal(actual, expected)
+                self.assertEqual(actual.dtype, dtype)
+        for mask in (np.zeros((2, 3, 4), dtype=np.uint8),
+                     np.empty((0, 3, 4), dtype=np.uint8)):
+            np.testing.assert_array_equal(binarize_mask_array(mask), mask)
+
     def test_logging_and_media_import_without_inference_runtime(self):
         result = subprocess.run([sys.executable, "-c", """
 import sys

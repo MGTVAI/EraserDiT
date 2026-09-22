@@ -74,10 +74,10 @@ def quantize_transformer(model, scope='blocks'):
 
 
 def runtime_report(model):
-    from layers.quantization.eraserdit_int8 import NativeInt8Linear
     base = getattr(model,'_eraserdit_int8_report',None)
     if base is None:
         return dict(mode='none',runtime_call_count=0)
+    from layers.quantization.eraserdit_int8 import NativeInt8Linear
     modules = [m for m in model.modules() if isinstance(m,NativeInt8Linear)]
     return dict(base,runtime_call_count=sum(m.calls for m in modules),
                 executed_module_count=sum(m.calls>0 for m in modules), fallback_count=0)

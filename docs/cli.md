@@ -25,6 +25,19 @@ CUDA_VISIBLE_DEVICES=0 uv run --no-project python -m entrypoints.cli.erase_erase
 GPU 编号相对于 `CUDA_VISIBLE_DEVICES`；例如物理卡 2、3 对应 `cuda:0`、`cuda:1`。
 原尺寸 1080×1920、121 帧窗口曾测得约 60 GiB 空闲显存需求，不能作为所有配置的固定门槛。
 
+48 GB 单卡处理此示例时，可使用 `--resource-policy fullgpu --vae-tiling`
+降低 VAE 激活显存；`dynamic_offload` 只卸载权重，不能避免整块 VAE 编码的显存不足。
+当前分块模式要求 `fullgpu`，保留原始分辨率和帧数，但与整块 VAE 的数值不完全相同。
+
+```bash
+CUDA_VISIBLE_DEVICES=7 HF_HUB_OFFLINE=1 uv run --no-project python -m entrypoints.cli.erase_eraserdit \
+  --model-path data/model \
+  --video-input data/113000356.mp4 --mask-input data/113000356_mask.mp4 \
+  --output-path outputs/result.mp4 \
+  --prompt "There is a rooftop terrace overlooking the city at sunset." \
+  --attention-backend sdpa --resource-policy fullgpu --vae-tiling
+```
+
 查看完整参数：
 
 ```bash
