@@ -114,13 +114,13 @@ class EraserDiTEraseSamplingParams(SamplingParams):
     transformer_cache_force_compute: bool = False
     cache_text_projections: bool | None = None
     cache_residual_predictor: str = "none"
-    teacache_threshold: float = 0.005
+    teacache_threshold: float = 0.3
     max_teacache_consecutive_skip: int = 1
     teacache_warmup_steps: int = 4
     cache_dit_front_blocks: int = 1
     cache_dit_back_blocks: int = 0
     cache_dit_warmup_steps: int = 4
-    cache_dit_residual_diff_threshold: float = 0.03
+    cache_dit_residual_diff_threshold: float = 0.3
     cache_dit_max_consecutive_cached_steps: int = 1
     cache_end_guard_steps: int = 1
 

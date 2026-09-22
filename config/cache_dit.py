@@ -14,7 +14,7 @@ class CacheDitParams:
     front_blocks: int = 1
     back_blocks: int = 0
     warmup_steps: int = 4
-    residual_diff_threshold: float = 0.24
+    residual_diff_threshold: float = 0.3
     max_consecutive_cached_steps: int = 3
     end_guard_steps: int = 1
 

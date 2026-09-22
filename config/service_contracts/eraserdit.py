@@ -41,13 +41,13 @@ class EraserDiTVideoRequest(BaseModel):
     transformer_cache_force_compute: bool = False
     cache_text_projections: bool | None = None
     cache_residual_predictor: Literal["none", "linear"] = "none"
-    teacache_threshold: float = Field(default=0.005, gt=0, allow_inf_nan=False)
+    teacache_threshold: float = Field(default=0.3, gt=0, allow_inf_nan=False)
     max_teacache_consecutive_skip: int = Field(default=1, ge=1)
     teacache_warmup_steps: int = Field(default=4, ge=0)
     cache_dit_front_blocks: int = Field(default=1, ge=1)
     cache_dit_back_blocks: int = Field(default=0, ge=0)
     cache_dit_warmup_steps: int = Field(default=4, ge=0)
-    cache_dit_residual_diff_threshold: float = Field(default=0.03, gt=0, lt=1, allow_inf_nan=False)
+    cache_dit_residual_diff_threshold: float = Field(default=0.3, gt=0, lt=1, allow_inf_nan=False)
     cache_dit_max_consecutive_cached_steps: int = Field(default=1, ge=1)
     cache_end_guard_steps: int = Field(default=1, ge=1)
 

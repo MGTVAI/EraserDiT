@@ -23,7 +23,7 @@ class TeaCacheCoefficientSelection:
 class TeaCacheParams:
     supported_coefficient_policies: ClassVar[tuple[str, ...]] = ()
     enabled: bool
-    threshold: float = 0.005
+    threshold: float = 0.3
     max_consecutive_skip: int = 1
     min_skip_step: int = 2
     end_guard_steps: int = 1

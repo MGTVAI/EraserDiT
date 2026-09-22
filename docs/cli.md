@@ -88,9 +88,10 @@ CUDA_VISIBLE_DEVICES=0 uv run --no-project python -m entrypoints.cli.erase_erase
 | `--guidance-scale` | `3.0` |
 | `--infer-len` / `--overlap` | `121` / `9`，窗口长度与重叠帧数 |
 | `--dtype` | `bf16` |
-| `--resource-policy` | `fullgpu`；也可选整组件或动态卸载 |
+| `--resource-policy` | `dynamic_offload`，默认预算 2 GiB；可显式选择 `fullgpu` 或整组件卸载 |
 | `--attention-backend` | `sdpa`；可选项以 `--help` 为准 |
 | `--transformer-cache-mode` | `off`；可选 `teacache` / `cache_dit` |
+| `--teacache-threshold` / `--cache-dit-residual-diff-threshold` | 均为 `0.3`，仅对应缓存模式启用时生效 |
 | `--cache-text-projections` / `--no-cache-text-projections` | 默认 auto：残差缓存开启时复用文本投影，off 时不启用 |
 | `--transformer-quantization` | `none`；实验选项 `int8_w8a8_native` |
 
