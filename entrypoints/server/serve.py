@@ -2,7 +2,7 @@
 
 The pipeline is selected by ``--pipeline-name``; its service contract supplies
 the request schema, sampling-parameter builder and capability id, so serving a
-new model needs no change here (``vibe/plan.md`` M2).
+new model needs no change here.
 """
 
 from __future__ import annotations
@@ -21,11 +21,11 @@ from entrypoints.http_server import create_http_server_app
 from entrypoints.server.storage import create_result_storage
 from pipelines.registry import DEFAULT_PIPELINE, PipelineRegistry
 from entrypoints.server.artifacts import TaskArtifactManager
-from config.service_contract import resolve_service_contract
+from pipelines.service_contract import resolve_service_contract
 from entrypoints.server.scheduler import ServiceScheduler
 from entrypoints.server.task_store import TaskStore
 from entrypoints.server.worker import ResidentWorkerGroup
-from utils.distributed_runtime import (
+from parallel.runtime import (
     destroy_runtime_distributed,
     initialize_runtime_distributed,
 )
@@ -158,7 +158,7 @@ def _effective_acceleration(
 ) -> dict[str, object]:
     """Report the settings that actually took effect, including auto fallbacks.
 
-    ``vibe/plan.md`` M2: the startup config only shows what was requested; the
+    The startup config only shows what was requested; the
     attention preflight and the fusion decision resolve later, so the service
     reports both.
     """

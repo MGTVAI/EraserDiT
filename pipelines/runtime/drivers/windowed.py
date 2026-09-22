@@ -49,14 +49,14 @@ from pipelines.runtime.windowing.reclaim import (
     transfer_completed_ltx095_window,
 )
 from memory.policies.memory_phase_controller import MemoryPhase
-from entrypoints.server.control import service_checkpoint
+from nodes.control import service_checkpoint
 from utils.inference_timing import record_diagnostic_stage
-from utils.erase_preprocess import resolve_single_window_crop_bbox
+from utils.bbox import resolve_single_window_crop_bbox
 from utils.ltx095_origin_contract import (
     resolve_runtime_sp_degree,
     resolve_spatial_alignment,
 )
-from utils.video_io import TensorFrameCache, frames_uint8_to_tensor
+from media.video_io import TensorFrameCache, frames_uint8_to_tensor
 from utils.windowing import WindowSpec
 
 

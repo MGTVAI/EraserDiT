@@ -1,10 +1,9 @@
+# 项目约定
 
-# 输出的文档保持简洁
-
-- 参考原始代码：worktree `/mnt/shanhai-ai/shanhai-workspace/zhouhao6/EraserDiT-ref`（detached 在 9944867），只读。
-- 运行基线：worktree `/mnt/shanhai-ai/shanhai-workspace/zhouhao6/EraserDiT-baseline`（分支 `baseline-run`），承载基线冻结的三处外挂改动（固定随机源、常驻 pipeline、确定性口径；后者用 `ERASERDIT_DETERMINISTIC=0` 关闭，对照工具为同目录 `compare_outputs.py`）。
-- 跑基线前设 `HF_HUB_OFFLINE=1`，否则加载会卡在直连 huggingface.co 上。
-
-
-## 运行
-- 当代码开始运行时，定时检查代码是否运行完成，不要一直消耗token
+- 文档保持简洁，描述当前功能和使用方式。
+- Python 3.10 与依赖使用 uv 管理；安装和模型下载见 `docs/setup.md`。
+- 从仓库根目录使用 `uv run --no-project python` 运行入口和测试。
+- 模型放在 `data/model/`；示例视频为 `data/113000356.mp4`，掩码为 `data/113000356_mask.mp4`。
+- 完整权重下载后可设 `HF_HUB_OFFLINE=1`。
+- 模块职责见 `docs/architecture.md`，验证方式见 `tests/README.md` 和 `docs/validation.md`。
+- 运行长任务时定期检查完成状态。

@@ -11,7 +11,7 @@ from distributed.parallel_groups import (
     ParallelTopology,
     build_parallel_topology,
 )
-from parallel.planner import ResolvedAccelerationPlan
+from config.parallel import ResolvedAccelerationPlan
 
 
 @dataclass

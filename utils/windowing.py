@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import torch
 
 from utils.bbox import align_value
-from utils.video_io import align_video, repeat_video_frames
+from media.video_io import align_video, repeat_video_frames
 
 
 @dataclass(frozen=True)

@@ -25,7 +25,7 @@ from utils.inference_timing import (
     build_ltx095_pure_timing_payload,
     maybe_write_pure_timing_payload,
 )
-from utils.distributed_runtime import (
+from parallel.runtime import (
     destroy_runtime_distributed,
     initialize_runtime_distributed,
     resolve_ltx095_native_vae_parallel_status,

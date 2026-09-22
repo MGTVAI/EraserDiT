@@ -1,18 +1,6 @@
-"""Stage adapter for the videoerase window commit protocol."""
+"""Compatibility alias for pipelines.stages.ltx095_erase.window_commit_sync; no implementation lives here."""
 
-from __future__ import annotations
+import importlib
+import sys
 
-from config.server_args import ServerArgs
-from nodes.schedule_batch import Req
-from nodes.stages.base import PipelineStage
-from pipelines.runtime.windowing.commit_sync import (
-    synchronize_ltx095_window_commit,
-)
-
-
-class LTX095EraseWindowCommitSyncStage(PipelineStage):
-    def forward(self, batch: Req, server_args: ServerArgs) -> Req:
-        return synchronize_ltx095_window_commit(batch, server_args)
-
-
-__all__ = ("LTX095EraseWindowCommitSyncStage",)
+sys.modules[__name__] = importlib.import_module("pipelines.stages.ltx095_erase.window_commit_sync")

@@ -11,7 +11,7 @@ wrong and are deliberately preserved:
   0/255 and then pushed through a 3-channel grey kernel whose blue coefficient is
   *not* divided by 255, giving ~0.988; the first latent frame keeps the raw
   uint8 0/1 values and comes out at ~0.0039.  Both values must be reproduced
-  exactly -- see ``vibe/plan.md`` §1.
+  exactly.
 """
 
 from __future__ import annotations

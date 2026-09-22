@@ -156,5 +156,5 @@ tmp*.txt
 
 results/
 tasks/
-
+data/model
 

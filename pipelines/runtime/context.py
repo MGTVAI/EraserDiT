@@ -13,7 +13,7 @@ import torch
 
 from config.ltx095 import LTX095EraseSamplingParams
 from config.server_args import ServerArgs
-from utils.distributed_runtime import resolve_ltx095_native_vae_parallel_status
+from parallel.runtime import resolve_ltx095_native_vae_parallel_status
 from nodes.schedule_batch import Req
 from distributed.group_coordinator import GroupCoordinator
 from pipelines.runtime.windowing.sp_dispatch import (
@@ -30,10 +30,10 @@ from pipelines.runtime.contracts import (
     _resolve_runtime_mode,
 )
 from memory.policies.memory_phase_controller import MemoryPhaseController
-from entrypoints.server.control import service_checkpoint
+from nodes.control import service_checkpoint
 from utils.runtime_progress import create_runtime_progress
-from utils.ltx095_origin_contract import VideoEncodingProfile
-from utils.video_io import (
+from media.encoding import VideoEncodingProfile
+from media.video_io import (
     ArrayFrameCache,
     ChunkedFrameCache,
     SequentialVideoReader,

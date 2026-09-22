@@ -11,7 +11,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-from entrypoints.server.control import RequestCancelled
+from nodes.control import RequestCancelled
 from entrypoints.server.task import (
     ServiceError,
     TaskError,

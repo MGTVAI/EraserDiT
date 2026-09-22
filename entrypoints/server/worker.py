@@ -12,8 +12,10 @@ import torch.distributed as dist
 
 from config.server_args import ServerArgs
 from entrypoints.server.commands import CommandKind, WorkerCommand
-from config.service_contract import PipelineServiceContract, resolve_service_contract
-from entrypoints.server.control import CancellationToken, ServiceProgressState
+from config.service_contract import PipelineServiceContract
+from pipelines.service_contract import resolve_service_contract
+from entrypoints.server.control import ServiceProgressState
+from nodes.control import CancellationToken
 from pipelines.session import LTX095EraseSession
 
 

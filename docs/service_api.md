@@ -2,15 +2,23 @@
 
 [CLI](cli.md) · [性能与验收](performance.md)
 
-从仓库根目录运行，使用已安装依赖的解释器；可设置 `ERASERDIT_PYTHON="$(command -v python)"`。
+从仓库根目录运行，先按 [安装与部署](setup.md) 安装依赖并创建 `.venv` 环境。
+环境变量显式设置，见 [CLI](cli.md)。
 
-启动：
+启动（模型统一使用 `data/model`，默认输入目录为 `data/`）：
 
 ```bash
-./inference_server.sh --pipeline-name EraserDiTErasePipeline \
-  --model-path results/cache_prediction_model \
-  --task-root /tmp/mgerase_tasks --input-allowed-root "$PWD/data"
+MODEL_DIR="$PWD/data/model"
+INPUT_DIR="$PWD/data"
+CUDA_VISIBLE_DEVICES=0 uv run --no-project python -m entrypoints.server.serve \
+  --pipeline-name EraserDiTErasePipeline --model-path "$MODEL_DIR" \
+  --task-root "$PWD/outputs/service" --input-allowed-root "$INPUT_DIR" \
+  --host 127.0.0.1 --port 30000
 ```
+
+服务在前台运行，使用 Ctrl+C 停止。`--task-root` 是服务端可写的产物目录；
+`--input-allowed-root` 是服务端输入白名单，JSON 请求中的输入文件必须位于该目录内。
+服务不会自动选择或等待 GPU。
 
 `--pipeline-name` 决定使用哪个模型；请求 schema、采样参数构造与 capability 标识都由该管线
 声明的 `service_contract` 提供（`config/service_contracts/`），服务骨架不感知模型。
@@ -46,13 +54,12 @@
 
 输入接受本地路径（受 `--input-allowed-root` 白名单约束）或 multipart 文件上传。
 结果存储由部署配置决定，可使用本地存储或已有的 S3 发布后端。
-EraserDiT 的参数面见 `config/service_contracts/eraserdit.py`，默认值即冻结基线（50 步 / strength 0.8 /
-guidance 3.0 / infer_len 121 / overlap 9）。
+EraserDiT 的参数面见 `config/service_contracts/eraserdit.py`，默认采样配置为 50 步 / strength 0.8 /
+guidance 3.0 / infer_len 121 / overlap 9。
 
 ## 调用示例与兼容范围
 
-参考本地 sglang 的 `multimodal_gen/runtime/entrypoints/openai/video_api.py` 中
-repair、progress 和异步任务组织方式，保留 EraserDiT 的采样契约。
+服务接口设计参考 [SGLang](https://github.com/sgl-project/sglang)，使用 EraserDiT 的采样契约。
 这不是 sglang VideoEdit 请求体的完整兼容层：输入字段仍为 `video_path` / `mask_path`，
 任务 ID 由服务生成；不接受客户端 `task_id`、远程输入 URL、回调或请求级输出路径。
 任务记录在内存中，重启后不能继续查询旧任务。
@@ -62,15 +69,16 @@ repair、progress 和异步任务组织方式，保留 EraserDiT 的采样契约
 `/docs` 与 `/openapi.json` 展示启动管线的 JSON 参数和 multipart 定义。
 
 ```bash
-# 创建后保存响应中的 id
+# 在同机客户端终端从仓库根目录执行；创建后保存响应中的 id
+INPUT_DIR="$PWD/data"
 curl -sS http://127.0.0.1:30000/v1/videos/eraser \
   -H 'Content-Type: application/json' \
-  -d "{\"video_path\":\"$PWD/data/10268234.mp4\",\"mask_path\":\"$PWD/data/10268234_mask.mp4\",\"seed\":42}"
+  -d "{\"video_path\":\"$INPUT_DIR/113000356.mp4\",\"mask_path\":\"$INPUT_DIR/113000356_mask.mp4\",\"seed\":42}"
 
 # 文件上传：parameters 是 JSON 字符串，不是多个独立表单字段
 curl -sS http://127.0.0.1:30000/v1/videos/eraser \
-  -F 'video=@data/10268234.mp4' \
-  -F 'mask=@data/10268234_mask.mp4' \
+  -F "video=@$INPUT_DIR/113000356.mp4" \
+  -F "mask=@$INPUT_DIR/113000356_mask.mp4" \
   -F 'parameters={"seed":42,"num_inference_steps":50}'
 
 TASK_ID='替换为创建响应中的id'
@@ -90,26 +98,23 @@ curl -sS -X DELETE "http://127.0.0.1:30000/v1/videos/$TASK_ID"
 无需 GPU 的接口回归测试（需要服务依赖和 `httpx`）：
 
 ```bash
-python -m unittest discover -s tests -p test_service_api.py -v
+uv run --no-project python -m unittest discover -s tests -p test_service_api.py -v
 ```
 
 ## 验收
 
-```bash
-python scripts/validation/service_smoke.py --base-url http://127.0.0.1:30000 \
-  --video data/10268234.mp4 --mask data/10268234_mask.mp4 \
-  --prompt "There is a bridge over the lake."
-```
-
-覆盖全部端点、严格契约、任务生命周期、终态快照、结果下载与删除。
-
-一键起服务 + 验收（等卡、起服务、跑验收、无论成败都拆干净）：
+服务就绪后，在另一终端执行：
 
 ```bash
-ERASERDIT_MODEL="$PWD/results/cache_prediction_model" scripts/validation/service_verify.sh          # 自动等一张 ≥60 GiB 空闲的卡
-ERASERDIT_MODEL="$PWD/results/cache_prediction_model" scripts/validation/service_verify.sh 2        # 指定卡
+curl -fsS http://127.0.0.1:30000/ready
+curl -fsS http://127.0.0.1:30000/v1/models
 ```
 
-模型或权重路径变更后应重新验收。接口验收不判断画面质量，需另按
-[质量标准](performance.md#acceptance) 对照输出视频。回环请求受环境代理影响时，
-设置 `NO_PROXY=127.0.0.1,localhost`。
+按上面的调用示例提交任务、查询进度；确认状态为 `completed` 后下载并播放视频，再删除任务。
+远程客户端使用 multipart 上传，或提供服务端可读且在白名单中的路径。
+另提交一个任务，在运行中取消，查询到 `cancelled` 后再提交新任务，确认服务仍能正常完成请求。
+严格参数校验、错误码和任务生命周期由上面的无模型接口测试覆盖。
+如本机配置了 HTTP 代理，为本地调用设置 `NO_PROXY=127.0.0.1,localhost`。
+
+模型或权重变更后应重新验收。接口验收不判断画面质量，需另按
+[质量标准](performance.md#acceptance) 对照输出视频。

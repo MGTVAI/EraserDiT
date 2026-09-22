@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import Any
+from typing import Any, Callable
 
 from rich.logging import RichHandler
 
@@ -13,6 +13,14 @@ CYAN = "\033[1;36m"
 RED = "\033[91m"
 YELLOW = "\033[93m"
 RESET = "\033[0;0m"
+
+_main_process_check: Callable[[], bool] = lambda: True
+
+
+def set_main_process_check(check: Callable[[], bool]) -> None:
+    """Let the runtime supply rank state without importing it from logging."""
+    global _main_process_check
+    _main_process_check = check
 
 
 class _MainProcessOnlyFilter(logging.Filter):
@@ -79,9 +87,7 @@ def _sanitize_for_logging(value: Any, key_hint: str | None = None) -> Any:
 
 def get_is_main_process() -> bool:
     try:
-        from utils.distributed_runtime import get_runtime_distributed_context
-
-        return get_runtime_distributed_context().is_main_process
+        return _main_process_check()
     except Exception:
         return True
 

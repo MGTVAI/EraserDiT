@@ -62,7 +62,7 @@ class Int8KernelTests(unittest.TestCase):
             num_layers=2,caption_channels=16).to(device='cuda',dtype=torch.bfloat16).eval()
         from config.eraserdit import EraserDiTPipelineConfig
         from pipelines.eraserdit_erase_pipeline import EraserDiTErasePipeline
-        from nodes.composed_pipeline_base import ComposedPipelineBase
+        from pipelines.base import ComposedPipelineBase
         args=ServerArgs(device='cuda:0', transformer_quantization='int8_w8a8_native',
                         pipeline_config=EraserDiTPipelineConfig())
         pipeline=EraserDiTErasePipeline.__new__(EraserDiTErasePipeline)

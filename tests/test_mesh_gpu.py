@@ -9,8 +9,8 @@ import torch
 
 from config.eraserdit import EraserDiTPipelineConfig
 from config.server_args import ServerArgs, set_global_server_args
-from parallel.eraserdit_mesh import EraserDiTMeshWindow, PeerExchange, SequenceRank
-from parallel.eraserdit_vae import tiled_vae
+from models.adapters.eraserdit.mesh import EraserDiTMeshWindow, PeerExchange, SequenceRank
+from models.adapters.eraserdit.vae import tiled_vae
 from utils.determinism import enable_deterministic_mode
 
 

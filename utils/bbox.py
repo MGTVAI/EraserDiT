@@ -110,3 +110,32 @@ def scale_and_align_bbox(
     new_x2 = max(min(new_x1 + target_w, video_width), target_w)
     new_y2 = max(min(new_y1 + target_h, video_height), target_h)
     return (new_x1, new_y1, new_x2 - new_x1, new_y2 - new_y1)
+
+
+def resolve_single_window_crop_bbox(
+    *,
+    bbox: tuple[int, int, int, int] | None,
+    video_width: int,
+    video_height: int,
+    align_h: int,
+    align_w: int,
+    scale_area_ratio: float,
+    min_pixels: int,
+    max_pixels: int,
+    force_crop_align: bool,
+) -> tuple[int, int, int, int]:
+    source_bbox = bbox or (0, 0, int(video_width), int(video_height))
+    aligned_bbox = scale_and_align_bbox(
+        bbox=source_bbox,
+        video_width=video_width,
+        video_height=video_height,
+        min_pixels=min_pixels,
+        max_pixels=max_pixels,
+        scale_ratio=scale_area_ratio,
+        align_width=align_w,
+        align_height=align_h,
+        force_align=force_crop_align,
+    )
+    if aligned_bbox is None:
+        raise ValueError("failed to align bbox")
+    return aligned_bbox

@@ -1,6 +1,6 @@
 """Memory management package.
 
-Three responsibility boundaries (see ``vibe/plan.md`` §3):
+Three responsibility boundaries:
 
 * ``adapters/``  – per-model residency adapters (what may be offloaded, when).
 * ``backends/``  – the actual move/offload machinery (extents, offload tools, storage).

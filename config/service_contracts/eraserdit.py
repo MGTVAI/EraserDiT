@@ -1,8 +1,7 @@
 """EraserDiT video-erase service contract.
 
 Request schema, sampling-parameter builder and capability id for the EraserDiT
-model.  Defaults are the frozen baseline's sampling configuration; the service
-layer never references them directly (``vibe/plan.md`` M2).
+model.  The contract owns sampling defaults; the service layer uses the contract.
 """
 
 from __future__ import annotations

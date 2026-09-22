@@ -23,13 +23,13 @@ from config.eraserdit import (
 )
 from config.server_args import ServerArgs
 from entrypoints.erase_runner import resolve_output_file_name
-from utils.distributed_runtime import destroy_runtime_distributed
+from parallel.runtime import destroy_runtime_distributed
 from utils.inference_timing import build_ltx095_pure_timing_payload
 from utils.determinism import enable_deterministic_mode
 from utils.logging_utils import init_logger
 from pipelines.session import EraseSession
-from parallel.eraserdit_cfg import validate_cfg_parallel
-from parallel.eraserdit_mesh import resolve_mesh
+from models.adapters.eraserdit.cfg import validate_cfg_parallel
+from models.adapters.eraserdit.mesh import resolve_mesh
 
 logger = init_logger(__name__)
 

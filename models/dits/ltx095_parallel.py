@@ -10,7 +10,7 @@ import torch
 from config.transformer_cache import validate_transformer_cache_request
 from layers.attention.sequence_parallel import SequenceParallelMetadata
 from distributed import communication_op
-from parallel.planner import ResolvedAccelerationPlan
+from config.parallel import ResolvedAccelerationPlan
 
 if TYPE_CHECKING:
     from distributed.group_coordinator import GroupCoordinator

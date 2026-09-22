@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import torch
 
-from parallel.eraserdit_cfg import EraserDiTCFGWindow, validate_cfg_parallel
+from models.adapters.eraserdit.cfg import EraserDiTCFGWindow, validate_cfg_parallel
 
 
 class ConfigTests(unittest.TestCase):

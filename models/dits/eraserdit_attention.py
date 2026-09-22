@@ -8,8 +8,7 @@ mask, and the ``qk_rmsnorm_rope`` kernel is defined for a single full-width Q/K
 pair, which is exactly what self-attention has.
 
 With ``attention_backend="sdpa"`` and fusion disabled every value is produced by
-the same ``F.scaled_dot_product_attention`` call the vendored model used, so the
-M1b equivalence result is preserved (``vibe/plan.md`` M3).
+the same ``F.scaled_dot_product_attention`` call as the model implementation.
 """
 
 from __future__ import annotations

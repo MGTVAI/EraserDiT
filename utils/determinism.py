@@ -1,13 +1,8 @@
 """Deterministic numerical profile.
 
-Mirrors the frozen baseline's third external modification (``vibe/plan.md`` M0):
-it pins kernel selection and reduction order only -- no algorithmic or sampling
-parameter is touched.  Enabled by default; performance measurement runs with
-``ERASERDIT_DETERMINISTIC=0``.
-
-M1b equivalence runs must use this profile on **both** sides; the baseline is
-byte-reproducible under it, so any kernel difference in the new architecture
-shows up directly in the non-erase-region metrics.
+Pins kernel selection and reduction order without changing sampling parameters.
+Enabled by default; set ``ERASERDIT_DETERMINISTIC=0`` to disable it.
+Use the same profile for both configurations in a numerical comparison.
 """
 
 from __future__ import annotations

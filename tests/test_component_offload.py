@@ -68,7 +68,7 @@ class ComponentOffloadTests(unittest.TestCase):
 
     def test_pipeline_rejects_unsupported_modes_before_loading(self):
         from pipelines.eraserdit_erase_pipeline import EraserDiTErasePipeline
-        from nodes.composed_pipeline_base import ComposedPipelineBase
+        from pipelines.base import ComposedPipelineBase
 
         pipeline = object.__new__(EraserDiTErasePipeline)
         with patch.object(ComposedPipelineBase, 'load_modules') as loader:
@@ -80,7 +80,7 @@ class ComponentOffloadTests(unittest.TestCase):
 
     def test_preloaded_components_are_offloaded(self):
         from pipelines.eraserdit_erase_pipeline import EraserDiTErasePipeline
-        from nodes.composed_pipeline_base import ComposedPipelineBase
+        from pipelines.base import ComposedPipelineBase
 
         pipeline = object.__new__(EraserDiTErasePipeline)
         calls = []

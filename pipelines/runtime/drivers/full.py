@@ -30,7 +30,7 @@ from pipelines.runtime.contracts import (
     _is_windowed_runtime_mode,
 )
 from pipelines.runtime.io.masks import materialize_ltx095_window_mask
-from entrypoints.server.control import service_checkpoint
+from nodes.control import service_checkpoint
 from pipelines.runtime.windowing.materializer import (
     cache_ltx095_window_text_embeddings,
     materialize_ltx095_window_batch,

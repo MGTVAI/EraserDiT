@@ -10,9 +10,9 @@ import torch
 from config.ltx095 import LTX095EraseSamplingParams
 from nodes.schedule_batch import Req
 from pipelines.runtime.hooks import RuntimeHookRegistry
-from utils.ltx095_origin_contract import VideoEncodingProfile
+from media.encoding import VideoEncodingProfile
 from utils.runtime_progress import RuntimeProgressState
-from utils.video_io import (
+from media.video_io import (
     ArrayFrameCache,
     ChunkedFrameCache,
     SequentialVideoReader,

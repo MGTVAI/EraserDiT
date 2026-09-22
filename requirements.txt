@@ -27,9 +27,7 @@ pillow==10.4.0
 imageio==2.37.3
 rich==15.0.0
 
-# CUDA attention/operator backends. Keep Torch at 2.6.0 for this wheel.
-flash-attn==2.8.3
-sageattention==1.0.6
+# Optional attention backends: see requirements-attention.txt.
 triton==3.2.0
 
 # HTTP serving and S3 result publishing.

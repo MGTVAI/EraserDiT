@@ -9,7 +9,7 @@ import tempfile
 
 import torch
 
-from parallel.eraserdit_mesh import PeerExchange, SequenceRank, resolve_mesh, EraserDiTMeshWindow
+from models.adapters.eraserdit.mesh import PeerExchange, SequenceRank, resolve_mesh, EraserDiTMeshWindow
 from entrypoints.cli.erase_parallel import partition_tasks
 
 
@@ -100,7 +100,7 @@ class MeshTests(unittest.TestCase):
 
     def test_vae_one_tile_fallback_does_not_crop_to_stride(self):
         from config.eraserdit import EraserDiTPipelineConfig
-        from parallel.eraserdit_vae import tiled_vae
+        from models.adapters.eraserdit.vae import tiled_vae
         value = torch.zeros(1, 3, 1, 480, 32)
         vae = SimpleNamespace(spatial_compression_ratio=32, config=SimpleNamespace(decoder_inject_noise=()),
                               encoder=lambda x: torch.cat([x, x], dim=1))

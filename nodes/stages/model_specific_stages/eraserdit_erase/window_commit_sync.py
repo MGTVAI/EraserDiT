@@ -1,17 +1,6 @@
-"""EraserDiT erase – window commit sync stage.
+"""Compatibility alias for pipelines.stages.eraserdit_erase.window_commit_sync; no implementation lives here."""
 
-The commit handshake is windowing-runtime behaviour, not model behaviour, so the
-EraserDiT pipeline reuses the shared implementation unchanged.
-"""
+import importlib
+import sys
 
-from __future__ import annotations
-
-from config.server_args import ServerArgs
-from nodes.schedule_batch import Req
-from nodes.stages.base import PipelineStage
-from pipelines.runtime.windowing.commit_sync import synchronize_ltx095_window_commit
-
-
-class EraserDiTEraseWindowCommitSyncStage(PipelineStage):
-    def forward(self, batch: Req, server_args: ServerArgs) -> Req:
-        return synchronize_ltx095_window_commit(batch, server_args)
+sys.modules[__name__] = importlib.import_module("pipelines.stages.eraserdit_erase.window_commit_sync")

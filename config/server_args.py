@@ -8,7 +8,7 @@ from typing import Any
 
 import torch
 
-from utils.resource_policy import (
+from config.resource_policy import (
     RuntimeResourcePolicy,
     resolve_runtime_resource_policy,
 )

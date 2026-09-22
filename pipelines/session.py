@@ -17,7 +17,7 @@ from utils.cpu_resources import (
     process_cpu_resources_snapshot,
 )
 from utils.determinism import enable_deterministic_mode
-from utils.distributed_runtime import (
+from parallel.runtime import (
     barrier_if_distributed,
     initialize_runtime_distributed,
 )

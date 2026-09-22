@@ -23,7 +23,7 @@ from entrypoints.server.scheduler import ServiceScheduler
 from entrypoints.server.task_store import TaskStore
 from entrypoints.server.worker import ResidentWorkerGroup
 from config.service_contracts.ltx095 import LTX095_SERVICE_CONTRACT
-from utils.distributed_runtime import (
+from parallel.runtime import (
     barrier_if_distributed,
     destroy_runtime_distributed,
     initialize_runtime_distributed,

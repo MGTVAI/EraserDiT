@@ -17,9 +17,9 @@ from config.eraserdit import EraserDiTEraseSamplingParams, EraserDiTPipelineConf
 from config.server_args import ServerArgs
 from memory.adapters.model_memory_adapter import ModelMemoryAdapter
 from memory.adapters.eraserdit_memory_adapter import EraserDiTMemoryAdapter
-from nodes.composed_pipeline_base import ComposedPipelineBase
+from pipelines.base import ComposedPipelineBase
 from nodes.schedule_batch import Req
-from nodes.stages.model_specific_stages.eraserdit_erase import (
+from pipelines.stages.eraserdit_erase import (
     EraserDiTEraseConditionEncodingStage,
     EraserDiTEraseDecodingStage,
     EraserDiTEraseDenoisingStage,
@@ -31,13 +31,13 @@ from nodes.stages.model_specific_stages.eraserdit_erase import (
     EraserDiTEraseWindowPostprocessStage,
     EraserDiTEraseWindowValidationStage,
 )
-from nodes.stages.model_specific_stages.eraserdit_erase._common import (
+from pipelines.stages.eraserdit_erase._common import (
     TASK_STATE_KEY,
     EraserDiTTaskState,
 )
 from utils.inference_timing import record_diagnostic_stage
 from utils.logging_utils import init_logger
-from utils.video_io import (
+from media.video_io import (
     WindowedVideoStore,
     read_mask_rgb_array as _read_mask_rgb_array,
     read_video_array,
@@ -124,9 +124,9 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
     def load_modules(self, server_args, loaded_modules=None):
         from models.dits.eraserdit_quantization import validate_quantization
         validate_quantization(server_args)
-        from parallel.eraserdit_cfg import validate_cfg_parallel
+        from models.adapters.eraserdit.cfg import validate_cfg_parallel
         validate_cfg_parallel(server_args)
-        from parallel.eraserdit_mesh import resolve_mesh
+        from models.adapters.eraserdit.mesh import resolve_mesh
         resolve_mesh(server_args)
         policy = server_args.resolve_resource_policy()
         if policy.requested_dynamic_offload and (
@@ -442,9 +442,9 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
     def forward(self, batch: Req, server_args: ServerArgs) -> Req:
         from models.dits.eraserdit_quantization import validate_quantization, runtime_report
         validate_quantization(server_args, batch)
-        from parallel.eraserdit_cfg import validate_cfg_parallel
+        from models.adapters.eraserdit.cfg import validate_cfg_parallel
         validate_cfg_parallel(server_args, batch)
-        from parallel.eraserdit_mesh import resolve_mesh
+        from models.adapters.eraserdit.mesh import resolve_mesh
         resolve_mesh(server_args, batch)
         if getattr(self, "_closed", False):
             raise RuntimeError("EraserDiTErasePipeline is closed")

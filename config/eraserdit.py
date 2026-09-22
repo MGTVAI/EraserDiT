@@ -1,8 +1,6 @@
 """EraserDiT-specific configuration for the composed runtime.
 
-Defaults mirror the frozen baseline at commit ``9944867`` (see
-``vibe/environment.md`` "冻结记录"); changing any of them invalidates the M1b
-equivalence gate.
+Sampling defaults define the model's inference behavior; see ``docs/cli.md``.
 """
 
 from __future__ import annotations
@@ -11,8 +9,7 @@ from dataclasses import dataclass, field
 
 from config.sampling_params import SamplingParams
 
-# ``inference.py:17`` of the frozen baseline.  Fixed, not caller-tunable in the
-# first phase: the equivalence gate compares against runs that used this string.
+# Default negative prompt; callers may override it per request.
 ERASERDIT_NEGATIVE_PROMPT = (
     "Colorful color tone, overexposure, static, blurry details, subtitles, style, "
     "artwork, picture, static, overall graying, worst quality, low-quality, JPEG "
@@ -43,7 +40,7 @@ class EraserDiTPipelineConfig:
     vae_tiling: bool = False
     vae_tile_size: int = 512
     vae_tile_stride: int = 448
-    # Plan §4.1: the adapter declares its own component class names instead of
+    # The adapter declares its own component class names instead of
     # relying on the checkpoint's ``model_index.json`` / ``_class_name``.
     component_architectures: dict[str, str] = field(
         default_factory=lambda: {
@@ -86,7 +83,7 @@ class EraserDiTEraseSamplingParams(SamplingParams):
     mask_threshold: float = 0.039
     mask_enable_approximate: bool = True
     # RoPE temporal scale uses a *fixed* frame_rate of 25; it does not follow the
-    # input video frame rate (``vibe/environment.md`` 硬件与运行约定).
+    # input video frame rate.
     frame_rate: int = 25
     decode_timestep: float = 0.0
     decode_noise_scale: float = 0.0

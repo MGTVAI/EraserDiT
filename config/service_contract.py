@@ -2,7 +2,7 @@
 
 The service skeleton must not hard-code a model: the request schema, the
 sampling-parameter builder and the capability identifier all come from the
-pipeline the server was started with (``vibe/requirements.md`` 服务端).  Adding a
+pipeline the server was started with.  Adding a
 model therefore means adding a contract module, not editing ``video_api`` /
 ``worker`` / ``http_server``.
 """
@@ -14,7 +14,7 @@ from typing import Any, Callable
 
 from pydantic import BaseModel
 
-__all__ = ["PipelineServiceContract", "resolve_service_contract"]
+__all__ = ["PipelineServiceContract"]
 
 
 @dataclass(frozen=True)
@@ -37,16 +37,3 @@ class PipelineServiceContract:
 
     def sampling_payload(self, parsed: BaseModel) -> dict[str, Any]:
         return parsed.model_dump(exclude=set(self.path_fields))
-
-
-def resolve_service_contract(pipeline_name: str | None) -> PipelineServiceContract:
-    """Resolve the contract owned by the named pipeline."""
-    from pipelines.registry import PipelineRegistry
-
-    pipeline_cls, _ = PipelineRegistry.resolve(pipeline_name)
-    contract = getattr(pipeline_cls, "service_contract", None)
-    if contract is None:
-        raise ValueError(
-            f"pipeline {pipeline_cls.__name__} does not declare a service contract"
-        )
-    return contract

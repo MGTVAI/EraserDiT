@@ -11,8 +11,8 @@ from pipelines.runtime.contracts import (
     LTX095EraseRuntimeContext,
     _is_windowed_runtime_mode,
 )
-from entrypoints.server.control import service_checkpoint
-from utils.video_io import (
+from nodes.control import service_checkpoint
+from media.video_io import (
     SequentialVideoWriter,
     frames_tensor_to_uint8,
 )

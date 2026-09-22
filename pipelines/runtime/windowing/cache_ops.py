@@ -12,7 +12,7 @@ from pipelines.runtime.contracts import (
     LTX095EraseRuntimeContext,
     ObjectRuntimeState,
 )
-from utils.video_io import ArrayFrameCache, ChunkedFrameCache, TensorFrameCache
+from media.video_io import ArrayFrameCache, ChunkedFrameCache, TensorFrameCache
 
 FrameCache = ArrayFrameCache | ChunkedFrameCache | TensorFrameCache
 

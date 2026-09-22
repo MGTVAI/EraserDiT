@@ -11,9 +11,9 @@ import torch
 from config.ltx095 import LTX095EraseSamplingParams, LTX095PipelineConfig
 from config.server_args import ServerArgs
 from memory.adapters.model_memory_adapter import ModelMemoryAdapter
-from nodes.composed_pipeline_base import ComposedPipelineBase
+from pipelines.base import ComposedPipelineBase
 from nodes.schedule_batch import Req
-from nodes.stages.model_specific_stages.ltx095_erase import (
+from pipelines.stages.ltx095_erase import (
     LTX095EraseConditionEncodingStage,
     LTX095EraseDecodingStage,
     LTX095EraseDenoisingStage,
@@ -26,7 +26,7 @@ from nodes.stages.model_specific_stages.ltx095_erase import (
     LTX095EraseWindowCommitSyncStage,
     LTX095EraseWindowValidationStage,
 )
-from nodes.stages.model_specific_stages.ltx095_erase._common import (
+from pipelines.stages.ltx095_erase._common import (
     _offload_module,
     _onload_module,
     _should_skip_writer_only_stage,
@@ -82,9 +82,9 @@ from pipelines.runtime.drivers.windowed import (
     run_ltx095_windowed_runtime,
 )
 from utils.inference_timing import record_diagnostic_stage
-from utils.ltx095_text import encode_ltx095_text_pair
+from models.text_encoders.ltx095_text import encode_ltx095_text_pair
 from utils.logging_utils import init_logger
-from utils.video_io import (
+from media.video_io import (
     ArrayFrameCache,
     ChunkedFrameCache,
     TensorFrameCache,
