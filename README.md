@@ -12,9 +12,6 @@
 ## 原始算法：EraserDiT
 
 **EraserDiT: Fast Video Inpainting with Diffusion Transformer Model** 是 Jie Liu 和 Zheng Hui 在芒果tv期间的视频擦除工作，可根据指定区域擦除视频中的物体，并恢复背景内容与时序一致性。
-模型、论文与演示来自 [原始算法仓库](https://github.com/JieLiu95/EraserDiT)。
-
-本仓库的推理入口接收视频、掩码和背景提示词，权重沿用原作者发布的 [Hugging Face 模型](https://huggingface.co/jieeliu/EraserDiT)。
 
 ## 本仓库：面向算法的推理 infra
 
@@ -22,7 +19,6 @@
 实现思路参考 SGLang 的 `python/sglang/multimodal_gen`，可以理解为面向 EraserDiT 的 **mini SGLang 多模态推理运行时**。
 
 所需能力在仓库内实现，无需安装完整 SGLang。这样可以在算法使用的环境中维护兼容的 Torch、Diffusers、Transformers 依赖，减少框架升级对算法迭代的牵制，也便于直接**阅读和修改**。
-当前验证的依赖组合见 [requirements.txt](requirements.txt)；更换库版本仍需重新验证。
 
 ### 已实现的优化
 
@@ -36,26 +32,17 @@
 | **TeaCache / CacheDiT** | 根据步间变化复用 Transformer 残差；按窗口和 CFG 分支隔离缓存；预热、末步保护与连续跳步限制 | 有损加速；默认关闭，两种缓存启用后的默认阈值均为 `0.3` |
 | **实验性量化** | DiT Linear 的 INT8 W8A8，支持 blocks / FFN 范围 | 已验证与卸载、编译、CFG2 和 cache_dit 组合；本样例未快于推荐方案 |
 
-详细参数与组合限制见 [性能配置](docs/performance.md)，逐层预取和预算管理见 [内存实现](docs/layerwise_offload.md)。
 
 ### 实测结果
-
-> **推荐组合：逐层卸载 + CFG2 + compile + Sage + TeaCache**
->
-> 单窗口耗时 **89.87 s**，相对单卡基线加速 **2.37×**，总显存上界 **37.90 GiB**。
 
 | 测试项 | 设置 |
 | --- | --- |
 | 硬件 | A100 80GB |
 | 输入 | 1920 × 1080，121 帧 |
 | 推理参数 | BF16，seed = 42，50 步，strength = 0.8；一个窗口执行 40 个去噪步 |
-| 基线 | 本仓库原算法单卡复现，关闭缓存、编译和卸载 |
-| 计时范围 | 单窗口完整任务，不含模型加载；加速配置排除请求级 warmup |
 
 **性能对比**
 
-双卡配置均开启 FFN 局部编译；SP2 使用 sharded 模式。Sage / FA 分别指 SageAttention / FlashAttention。
-INT8 行对 DiT Linear 量化，其余配置使用 BF16。
 
 | 配置 | GPU 数 | 耗时 ↓ | 加速比 ↑ | 总峰值显存 ↓ |
 | --- | ---: | ---: | ---: | ---: |
@@ -69,29 +56,8 @@ INT8 行对 DiT Linear 量化，其余配置使用 BF16。
 | 组件阶段卸载 · CFG2 · Sage · TeaCache | 2 | 83.45 s | 2.55× | 41.02 GiB |
 | 逐层卸载 · CFG2 · INT8 · SDPA · cache_dit | 2 | 85.66 s | 2.49× | 38.07 GiB |
 
-**画面质量**
-
-| 配置 | SSIM ↑ | MSE ↓ | MAE ↓ | 验收结果 |
-| --- | ---: | ---: | ---: | --- |
-| 表内 SDPA 无缓存、无量化组合 | 1.000000 | 0 | 0 | 三指标通过 |
-| **逐层卸载 · CFG2 · Sage · TeaCache** | **0.981816** | **3.917522** | **1.398953** | **允许近似** |
-| 逐层卸载 · SP2 · FA · cache_dit | 0.981808 | 3.911658 | 1.389924 | 允许近似 |
-| 组件阶段卸载 · CFG2 · Sage · TeaCache | 0.981816 | 3.917522 | 1.398953 | 允许近似 |
-| 逐层卸载 · CFG2 · INT8 · SDPA · cache_dit | 0.981175 | 4.414913 | 1.492013 | 允许近似 |
-
-<details>
-<summary>测量说明与组合参数</summary>
-
-- **编译**：FFN 局部编译，保留原生 Linear 边界。
-- **缓存**：TeaCache / cache_dit 阈值均为 0.3，开启文本投影缓存，逻辑分支步复用率为 45%；cache_dit 命中时仍执行探针块。
-
-</details>
-
 
 ## 快速开始
-
-需要 Linux x86_64、NVIDIA GPU 和支持 CUDA 12.6 的驱动。先确认 `nvidia-smi` 正常。
-Python 3.10 和依赖由 [uv](https://docs.astral.sh/uv/) 管理，默认使用无需编译扩展的 SDPA。
 
 ### 1. 安装
 
@@ -133,25 +99,6 @@ CUDA_VISIBLE_DEVICES=0 HF_HUB_OFFLINE=1 uv run --no-project python -m entrypoint
 
 ## 常用优化配置
 
-完成上面的单视频运行后，按目标**替换**命令中的资源策略或注意力选项，并追加对应参数。
-CLI 默认使用 `dynamic_offload`，可叠加 FFN 局部编译、CFG / SP、缓存及 INT8。
-
-```bash
-# 内存优化：DiT 逐层卸载，2 GiB 受管权重预算，向前预取 1 个 block
---resource-policy dynamic_offload --max-weight-usage 2147483648 --dit-offload-prefetch-size 1
-
-# 单卡：SageAttention + 编译（先安装可选注意力依赖）
---resource-policy dynamic_offload --attention-backend sage_attn --enable-torch-compile --warmup
-
-# 单卡：TeaCache，允许有损的残差复用
---resource-policy dynamic_offload --transformer-cache-mode teacache --teacache-threshold 0.3
-```
-
-以上是参数片段；[可选依赖安装](docs/setup.md#可选依赖) 和 [缓存调参](docs/performance.md#cache) 见详细文档。
-TeaCache 根据调制输入的变化估计是否需要重新计算 Transformer；命中时复用残差。
-缓存按窗口与 CFG 分支维护，默认预热 4 步、保护末步、最多连续复用 1 步；阈值越宽松通常越容易复用，也需检查擦除区域和时序稳定性。
-可通过 `transformer_cache_history` 查看实际命中，不能仅凭开启开关判断加速是否生效。
-
 双卡推荐组合（需安装 SageAttention，允许缓存近似）：
 
 ```bash
@@ -165,10 +112,6 @@ CUDA_VISIBLE_DEVICES=0,1 HF_HUB_OFFLINE=1 uv run --no-project python -m entrypoi
   --transformer-cache-mode teacache --teacache-threshold 0.3 --cache-text-projections
 ```
 
-双卡 SP 可将 `--cfg-degree 2` 替换为 `--sp-degree 2`；批量 DP 使用独立的 `erase_parallel` 入口，见 [命令行推理](docs/cli.md#加速与多卡)。
-多卡 VAE 仍要求 `fullgpu`；强制手工 Triton 融合不能与 compile 或 INT8 叠加。
-双卡 Ring 仅完成小模型验证，CFG × SP 四卡组合未验收。完整约束见 [性能配置](docs/performance.md)。
-
 ## 启动服务
 
 ```bash
@@ -178,8 +121,6 @@ CUDA_VISIBLE_DEVICES=0 HF_HUB_OFFLINE=1 uv run --no-project python -m entrypoint
   --host 127.0.0.1 --port 30000
 ```
 
-启动后访问 `http://127.0.0.1:30000/docs` 查看交互式 API。
-上传、查询进度、下载和取消任务见[服务 API](docs/service_api.md)。
 
 ## 文档
 
