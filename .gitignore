@@ -100,7 +100,7 @@ lmms-eval/
 *.jpeg
 *.webp
 *.gif
-!assets/*.gif
+!docs/*.gif
 *.bmp
 *.mp4
 *.mov
