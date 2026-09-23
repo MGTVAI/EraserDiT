@@ -23,19 +23,17 @@
 
 实现参考 SGLang 的 `python/sglang/multimodal_gen`，可理解为面向 EraserDiT 的 **mini SGLang 多模态推理运行时**。所需能力在仓库内实现，便于在算法环境中维护依赖兼容性，无需安装完整 SGLang；模块划分清晰，便于**阅读、调试、二次开发和跟随算法迭代**。
 
-本仓库扩展了连续多窗口视频处理能力，通过 overlap 重叠区的上下文复用与结果融合，解决窗口衔接处内容和时序不一致的问题，使长视频能够跨窗口连续处理。
-
 ### 已实现的优化
 
-| 方向 | 实现 | 用途与边界 |
+| 方向 | 实现 |
 | --- | --- | --- |
-| **显存优化** | 整组件分阶段卸载；DiT 逐层卸载、pinned CPU 权重、独立 CUDA stream 预取与权重预算；阶段边界回收空闲显存缓存 | 降低权重驻留及初始化显存；预算不包含激活、VAE 峰值或 allocator reserved |
-| **视频内存** | 按窗口执行与帧缓存释放；可选流式读取、VAE 分块 | 控制长视频缓存或 VAE 激活开销；流式模式和近似 VAE 分块需检查画面差异 |
-| **单卡计算** | SDPA / FlashAttention / SageAttention 后端；`torch.compile`；Triton RMSNorm + AdaLN、QK RMSNorm + RoPE 融合；文本投影复用 | 降低注意力、算子和重复计算开销；收益依赖输入、硬件及组合，部分路径有数值差异 |
-| **多卡单任务** | CFG 正负分支并行、SP 序列并行、VAE 编解码并行及 CFG × SP 组合 | 降低单视频延迟；单任务 mesh 最多四卡，显存不会按卡数均分 |
-| **多卡多任务** | DP dispatcher 将独立视频分配给不同 worker | 提高批量吞吐，worker 内复用已加载模型 |
-| **TeaCache / CacheDiT** | 根据步间变化复用 Transformer 残差；按窗口和 CFG 分支隔离缓存；预热、末步保护与连续跳步限制 | 有损加速；默认关闭，两种缓存启用后的默认阈值均为 `0.3` |
-| **实验性量化** | DiT Linear 的 INT8 W8A8，支持 blocks / FFN 范围 | 已验证与卸载、编译、CFG2 和 cache_dit 组合；本样例未快于推荐方案 |
+| **显存优化** | 整组件分阶段卸载；DiT 逐层卸载、pinned CPU 权重、独立 CUDA stream 预取与权重预算；阶段边界回收空闲显存缓存 | 
+| **视频内存** | 按窗口执行与帧缓存释放；可选流式读取、VAE 分块 | 
+| **单卡计算** | SDPA / FlashAttention / SageAttention 后端；`torch.compile`；Triton RMSNorm + AdaLN、QK RMSNorm + RoPE 融合；文本投影复用 | 
+| **多卡单任务** | CFG 正负分支并行、SP 序列并行、VAE 编解码并行及 CFG × SP 组合 | 
+| **多卡多任务** | DP dispatcher 将独立视频分配给不同 worker | 
+| **TeaCache / CacheDiT** | 根据步间变化复用 Transformer 残差；按窗口和 CFG 分支隔离缓存；预热、末步保护与连续跳步限制 | 
+| **实验性量化** | DiT Linear 的 INT8 W8A8，支持 blocks / FFN 范围 |
 
 ### 实测结果
 
