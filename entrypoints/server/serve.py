@@ -62,10 +62,12 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["fullgpu", "fullgpu_pin_memory", "dynamic_offload", "component_offload"],
     )
     parser.add_argument("--runtime-mode", default=None)
+    parser.add_argument("--dit-offload-prefetch-size", type=int, default=1,
+                        help="DiT lookahead blocks; 0 disables prefetch; bounded by weight budget")
     parser.add_argument("--max-weight-usage", type=int, default=2 * 1024**3,
-                        help="dynamic offload managed-weight budget in bytes (excludes activations)")
+                        help="DiT block weight budget in bytes, including in-flight copies; excludes other weights and activations")
     parser.add_argument("--pin-memory", action=argparse.BooleanOptionalAction, default=False,
-                        help="pin small unwrapped weights; dynamic extents always use pinned mirrors")
+                        help="pin weights in resident modes; dynamic DiT blocks always use pinned CPU storage")
     parser.add_argument(
         "--attention-backend",
         default="sdpa",
@@ -79,6 +81,17 @@ def _build_parser() -> argparse.ArgumentParser:
         default="disabled",
         choices=["disabled", "auto", "triton"],
     )
+    parser.add_argument('--sp-degree', type=int, default=None)
+    parser.add_argument('--cfg-degree', type=int, default=None)
+    parser.add_argument('--sp-linear-mode', choices=['reference', 'sharded'], default=None)
+    parser.add_argument('--sp-attention-mode', choices=['ulysses', 'ring'], default=None)
+    parser.add_argument('--parallel-devices', type=lambda s: tuple(int(i) for i in s.split(',')), default=None)
+    parser.add_argument('--vae-degree', type=int, default=None)
+    parser.add_argument('--vae-tiling', action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument('--vae-tile-size', type=int, default=None)
+    parser.add_argument('--vae-tile-stride', type=int, default=None)
+    parser.add_argument('--transformer-quantization', choices=['none', 'int8_w8a8_native'], default='none')
+    parser.add_argument('--quantization-scope', choices=['blocks', 'ffn'], default=None)
     parser.add_argument("--operator-fusion-ops", default=None)
     parser.add_argument("--warmup", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--warmup-steps", type=int, default=1)
@@ -113,6 +126,14 @@ def _default_runtime_mode(pipeline_cls: type) -> str:
 
 def _build_server_args(args: argparse.Namespace, pipeline_cls: type) -> ServerArgs:
     config, architectures = _resolve_pipeline_config(pipeline_cls, args.dtype)
+    for name in ('sp_degree', 'cfg_degree', 'sp_linear_mode', 'sp_attention_mode',
+                 'parallel_devices', 'vae_degree', 'vae_tiling', 'vae_tile_size', 'vae_tile_stride',
+                 'quantization_scope'):
+        value = getattr(args, name, None)
+        if value is not None:
+            if not hasattr(config, name):
+                raise ValueError(f'{args.pipeline_name} does not support --{name.replace("_", "-")}')
+            setattr(config, name, value)
     return ServerArgs(
         model_path=str(Path(args.model_path).expanduser().resolve()),
         pipeline_class_name=args.pipeline_name,
@@ -120,10 +141,12 @@ def _build_server_args(args: argparse.Namespace, pipeline_cls: type) -> ServerAr
         weight_dtype=args.dtype,
         resource_policy=args.resource_policy,
         max_weight_usage=args.max_weight_usage,
+        dit_offload_prefetch_size=args.dit_offload_prefetch_size,
         pin_memory=args.pin_memory,
         pipeline_config=config,
         component_architectures=architectures,
         attention_backend=args.attention_backend,
+        transformer_quantization=getattr(args, "transformer_quantization", "none"),
         enable_torch_compile=bool(args.enable_torch_compile),
         operator_fusion_backend=args.operator_fusion_backend,
         operator_fusion_ops=args.operator_fusion_ops,

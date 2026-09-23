@@ -17,6 +17,8 @@ import os
 import glob
 import math
 import json
+from contextlib import nullcontext
+
 from typing import Any, Dict, Optional, Tuple, Union
 
 import torch
@@ -493,8 +495,8 @@ class EraserDiTLTXVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalM
         # rounding difference can be amplified by the full denoising chain.
         hidden_states = self.proj_in(hidden_states)
         if sequence_parallel is not None:
-            if cache_adapter is not None or text_cache is not None:
-                raise ValueError("sequence parallel requires caches disabled")
+            if cache_adapter is not None:
+                cache_adapter.global_sequence_length = hidden_states.shape[1]
             shard = sequence_parallel.partition(hidden_states.shape[1])
             hidden_states = hidden_states[:, shard]
             image_rotary_emb = tuple(t[:, shard] for t in image_rotary_emb)
@@ -512,34 +514,37 @@ class EraserDiTLTXVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalM
                                  else text_cache.project(encoder_hidden_states, self.caption_projection))
         encoder_hidden_states = encoder_hidden_states.view(batch_size, -1, hidden_states.size(-1))
 
-        if cache_adapter is not None:
-            if torch.is_grad_enabled():
-                raise RuntimeError("EraserDiT caching is inference-only")
-            def run_blocks(hidden_states, start, end):
+        offload = getattr(self, "_layerwise_offload_manager", None)
+
+        def run_blocks(hidden_states, start, end):
+            scope = offload.execution_range(start, end) if offload else nullcontext()
+            with scope:
                 for block in self.transformer_blocks[start:end]:
-                    if hasattr(block, "flexible_extent"):
-                        # The fusion helper normally bypasses block.forward. Registered
-                        # extents must go through their wrapper so weights are resident
-                        # before the helper reads scale_shift_table and child layers.
+                    if torch.is_grad_enabled() and self.gradient_checkpointing:
+                        hidden_states = self._gradient_checkpointing_func(
+                            block, hidden_states, encoder_hidden_states, temb,
+                            image_rotary_emb, encoder_attention_mask,
+                        )
+                    else:
+                        # Always enter Module.__call__: offload hooks must run
+                        # before the internal fused implementation reads weights.
                         hidden_states = block(
                             hidden_states, encoder_hidden_states, temb,
                             image_rotary_emb, encoder_attention_mask,
                             decision=self.operator_fusion_decision, text_cache=text_cache,
                         )
-                    else:
-                        hidden_states = forward_eraserdit_block(
-                            block,
-                            hidden_states,
-                            encoder_hidden_states,
-                            temb,
-                            image_rotary_emb,
-                            encoder_attention_mask,
-                            decision=self.operator_fusion_decision, text_cache=text_cache,
-                        )
-                return hidden_states
+            return hidden_states
+
+        if cache_adapter is not None:
+            if torch.is_grad_enabled():
+                raise RuntimeError("EraserDiT caching is inference-only")
             cache_probe = temb
             if cache_adapter.controller.mode.value == 'teacache':
-                cache_probe = self.transformer_blocks[0](
+                first = self.transformer_blocks[0]
+                # The probe's norm/table are stage-resident under layerwise
+                # offload, so it must not trigger a full block transfer.
+                probe = first.forward if offload else first
+                cache_probe = probe(
                     hidden_states, encoder_hidden_states, temb, cache_probe_only=True,
                 )
             hidden_states = cache_adapter.run(
@@ -548,35 +553,7 @@ class EraserDiTLTXVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalM
                 layout=(num_frames, height, width, repr(rope_interpolation_scale)),
             )
         else:
-            for block in self.transformer_blocks:
-                if torch.is_grad_enabled() and self.gradient_checkpointing:
-                    hidden_states = self._gradient_checkpointing_func(
-                        block,
-                        hidden_states,
-                        encoder_hidden_states,
-                        temb,
-                        image_rotary_emb,
-                        encoder_attention_mask,
-                    )
-                elif hasattr(block, "flexible_extent"):
-                    # The fusion helper normally bypasses block.forward. Registered
-                    # extents must go through their wrapper so weights are resident
-                    # before the helper reads scale_shift_table and child layers.
-                    hidden_states = block(
-                        hidden_states, encoder_hidden_states, temb,
-                        image_rotary_emb, encoder_attention_mask,
-                        decision=self.operator_fusion_decision, text_cache=text_cache,
-                    )
-                else:
-                    hidden_states = forward_eraserdit_block(
-                        block,
-                        hidden_states,
-                        encoder_hidden_states,
-                        temb,
-                        image_rotary_emb,
-                        encoder_attention_mask,
-                        decision=self.operator_fusion_decision, text_cache=text_cache,
-                    )
+            hidden_states = run_blocks(hidden_states, 0, len(self.transformer_blocks))
 
         scale_shift_values = self.scale_shift_table[None, None] + embedded_timestep[:, :, None]
         shift, scale = scale_shift_values[:, :, 0], scale_shift_values[:, :, 1]

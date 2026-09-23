@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from media.encoding import VideoEncodingProfile, _optional_string
+from utils.encoding import VideoEncodingProfile, _optional_string
 
 
 SUPPORTED_WINDOW_SP_DEGREES = frozenset({1, 2, 4})

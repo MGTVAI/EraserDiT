@@ -71,11 +71,10 @@ class ComponentOffloadTests(unittest.TestCase):
         from pipelines.base import ComposedPipelineBase
 
         pipeline = object.__new__(EraserDiTErasePipeline)
-        with patch.object(ComposedPipelineBase, 'load_modules') as loader:
+        with patch.object(ComposedPipelineBase, 'load_modules') as loader, \
+                patch('torch.cuda.is_available', return_value=False):
             with self.assertRaises(ValueError):
                 pipeline.load_modules(ServerArgs(resource_policy='dynamic_offload'))
-            with self.assertRaises(ValueError):
-                pipeline.load_modules(ServerArgs(resource_policy='component_offload', enable_torch_compile=True))
             loader.assert_not_called()
 
     def test_preloaded_components_are_offloaded(self):
@@ -86,7 +85,7 @@ class ComponentOffloadTests(unittest.TestCase):
         calls = []
         modules = {name: RecordingModule(calls) for name in ('text_encoder', 'vae', 'transformer')}
         with patch.object(ComposedPipelineBase, 'load_modules', return_value=modules):
-            result = pipeline.load_modules(ServerArgs(resource_policy='component_offload'), modules)
+            result = pipeline.load_modules(ServerArgs(resource_policy='component_offload', enable_torch_compile=True), modules)
         self.assertIs(result, modules)
         self.assertEqual(calls, ['cpu', 'cpu', 'cpu'])
 

@@ -58,6 +58,7 @@ class TextEncoderLoader(ComponentLoader):
         text_encoder, loading_info = T5EncoderModel.from_pretrained(
             component_model_path,
             torch_dtype=dtype,
+            low_cpu_mem_usage=True,
             output_loading_info=True,
             **common_kwargs,
         )

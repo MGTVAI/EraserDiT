@@ -20,7 +20,7 @@ from pipelines.runtime.contracts import (
 )
 from pipelines.runtime.windowing.planner import infer_window_bbox
 from pipelines.runtime.windowing.factory import build_window_generator
-from media.video_io import (
+from utils.video_io import (
     ArrayFrameCache,
     ChunkedFrameCache,
     TensorFrameCache,

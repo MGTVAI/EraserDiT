@@ -9,6 +9,7 @@ this stage issues directly.
 from __future__ import annotations
 
 import time
+from contextlib import nullcontext
 
 import torch
 
@@ -19,6 +20,7 @@ from models.adapters.eraserdit.mesh import EraserDiTMeshWindow, resolve_mesh
 from config.server_args import ServerArgs
 from memory.policies.component_offload import offload_component
 from nodes.schedule_batch import Req
+from nodes.control import service_checkpoint
 from nodes.stages.denoising import DenoisingStage
 from pipelines.stages.eraserdit_erase._common import (
     field_summary,
@@ -37,12 +39,7 @@ def self_attention_backend_report(transformer) -> dict | None:
 
 
 class EraserDiTEraseDenoisingStage(DenoisingStage):
-    """Denoising loop with optional torch.compile of the transformer.
-
-    Extends the shared ``DenoisingStage`` so the compile wrapper, its warmup
-    bookkeeping and the eager fallback all follow the framework's contract
-    (plan §M3).
-    """
+    """Denoising with local FFN compilation and window-scoped rank residency."""
 
     def __init__(self, transformer, scheduler, server_args=None):
         if server_args is None:
@@ -52,6 +49,49 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
         validate_cfg_parallel(server_args)
         super().__init__(transformer, server_args)
         self._scheduler = scheduler
+        plan = resolve_mesh(server_args)
+        self._replica_pool = None
+        if plan is not None and plan['sp'] * plan['cfg'] > 1:
+            from models.adapters.eraserdit.replicas import EraserDiTReplicaPool
+            self._replica_pool = EraserDiTReplicaPool(transformer, plan, server_args)
+
+    def close(self):
+        if self._replica_pool is not None:
+            self._replica_pool.close()
+
+
+    def register_torch_compile(self):
+        from layers.block_compile import configure_block_compile
+        from nodes.stages.denoising import resolve_torch_compile_mode
+        if self._compile_registration_attempted:
+            return
+        self._compile_registration_attempted = True
+        started = time.perf_counter()
+        report = configure_block_compile(self._transformer, mode=resolve_torch_compile_mode())
+        self._compiled_transformer = self._transformer
+        self._compile_status.applied = True
+        self._compile_status.mode = report['mode']
+        self._compile_status.compile_seconds = time.perf_counter() - started
+
+    def fallback_to_eager(self, reason):
+        from layers.block_compile import remove_block_compile
+        remove_block_compile(self._transformer)
+        if self._replica_pool is not None:
+            for model in self._replica_pool.models[1:]:
+                remove_block_compile(model)
+        super().fallback_to_eager(reason)
+
+    def compile_status_snapshot(self):
+        report = super().compile_status_snapshot()
+        report.update(getattr(self._transformer, '_block_compile_report', {}))
+        report['scope'] = 'block_ffn'
+        report['signature_scope'] = 'window_input_before_sp_partition'
+        config = self._compile_server_args.pipeline_config
+        for signature in report['signatures']:
+            signature['sp_degree'] = config.sp_degree
+            signature['cfg_degree'] = config.cfg_degree
+        report['cudagraphs'] = False
+        return report
 
     @offload_component("transformer")
     def forward(self, batch: Req, server_args: ServerArgs) -> Req:
@@ -92,12 +132,16 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
 
         parallel_device = validate_cfg_parallel(server_args, batch)
         mesh_plan = resolve_mesh(server_args, batch)
-        with EraserDiTMeshWindow(transformer, mesh_plan) as mesh, EraserDiTCFGWindow(transformer, parallel_device) as cfg_window, EraserDiTCacheWindow(
-            batch, total_steps=len(timesteps),
-            num_blocks=len(transformer.transformer_blocks),
-            enable_torch_compile=server_args.enable_torch_compile,
-        ) as cache_window, torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+        use_mesh = mesh_plan is not None and mesh_plan['sp'] * mesh_plan['cfg'] > 1
+        cache_scope = (nullcontext(None) if use_mesh else EraserDiTCacheWindow(
+            batch, total_steps=len(timesteps), num_blocks=len(transformer.transformer_blocks),
+            enable_torch_compile=server_args.enable_torch_compile))
+        with EraserDiTMeshWindow(transformer, mesh_plan, pool=self._replica_pool,
+                                batch=batch, total_steps=len(timesteps)) as mesh, \
+                EraserDiTCFGWindow(transformer, parallel_device) as cfg_window, \
+                cache_scope as cache_window, torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
             for step_index, timestep in enumerate(timesteps):
+                service_checkpoint(batch, server_args, phase="denoise_step")
                 step_start = time.perf_counter()
                 latent_model_input = latents.to(model_dtype)
                 cond_input = cond_latents.to(device=device)
@@ -117,7 +161,7 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
                     return_dict=False,
                     cond_latents=cond_input,
                     mask_values=mask_input,
-                    **cache_window.kwargs("negative", step_index),
+                    **(cache_window.kwargs("negative", step_index) if cache_window else {}),
                 )
                 if mesh.active:
                     pass
@@ -139,7 +183,7 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
                     return_dict=False,
                     cond_latents=cond_input,
                     mask_values=mask_input,
-                    **cache_window.kwargs("positive", step_index),
+                    **(cache_window.kwargs("positive", step_index) if cache_window else {}),
                 )
                 if mesh.active:
                     noise_pred_uncond, noise_pred_text = mesh.predict(negative_kwargs, positive_kwargs)

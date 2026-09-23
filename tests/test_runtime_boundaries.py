@@ -16,8 +16,8 @@ import torch
 
 from config.server_args import ServerArgs
 from config.resource_policy import resolve_runtime_resource_policy
-from media.encoding import VideoEncodingProfile
-from media.video_io import (
+from utils.encoding import VideoEncodingProfile
+from utils.video_io import (
     SequentialVideoReader, SequentialVideoWriter, read_video_metadata,
     binarize_mask_array,
 )
@@ -65,7 +65,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
 import sys
 from utils.logging_utils import get_is_main_process
 assert get_is_main_process()
-import media.video_io
+import utils.video_io
 for name in ('config', 'distributed', 'parallel', 'models', 'memory', 'nodes', 'pipelines'):
     assert name not in sys.modules, name
 """], cwd=ROOT, capture_output=True, text=True, timeout=120)
@@ -74,7 +74,6 @@ for name in ('config', 'distributed', 'parallel', 'models', 'memory', 'nodes', '
     def test_compatibility_aliases_share_runtime_state(self):
         for old, new in (
             ("utils.distributed_runtime", "parallel.runtime"),
-            ("utils.video_io", "media.video_io"),
         ):
             self.assertIs(importlib.import_module(old), importlib.import_module(new))
         legacy = importlib.import_module("utils.distributed_runtime")

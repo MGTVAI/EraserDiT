@@ -49,13 +49,13 @@ def select_eraserdit_coefficients(sequence_length):
 def resolve_eraserdit_cache_params(source, *, enable_torch_compile=False, num_blocks=28):
     def get(name):
         return source.get(name, CACHE_DEFAULTS[name]) if isinstance(source, dict) else getattr(source, name, CACHE_DEFAULTS[name])
+    # EraserDiT compiles FFNs only: cache decisions remain outside the graph.
+    # The shared validator still rejects caches with whole-transformer compile.
     mode = validate_transformer_cache_request(
-        mode=get('transformer_cache_mode'), enable_torch_compile=enable_torch_compile,
+        mode=get('transformer_cache_mode'), enable_torch_compile=False,
     )
     if get('cache_text_projections') is not None and type(get('cache_text_projections')) is not bool:
         raise TypeError('cache_text_projections must be a bool or None (auto)')
-    if get('cache_text_projections') and enable_torch_compile:
-        raise ValueError('EraserDiT text cache cannot be combined with torch.compile')
     if get('cache_residual_predictor') not in ('none', 'linear'):
         raise ValueError('cache_residual_predictor must be none or linear')
     force = get('transformer_cache_force_compute')

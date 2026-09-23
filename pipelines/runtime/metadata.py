@@ -38,6 +38,8 @@ def collect_window_transformer_cache_status(
     batch: Req,
     window_batch: Req,
 ) -> None:
+    if "attention_backend" in window_batch.extra:
+        batch.extra["attention_backend"] = deepcopy(window_batch.extra["attention_backend"])
     cfg_status = window_batch.extra.get("cfg_parallel")
     if cfg_status is not None:
         batch.extra.setdefault("cfg_parallel", []).append(deepcopy(cfg_status))

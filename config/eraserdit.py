@@ -34,6 +34,7 @@ class EraserDiTPipelineConfig:
     quantization_scope: str = "blocks"
     sp_degree: int = 1
     sp_linear_mode: str = "reference"
+    sp_attention_mode: str = "ulysses"
     cfg_degree: int = 1
     vae_degree: int = 1
     parallel_devices: tuple[int, ...] | None = None

@@ -39,6 +39,7 @@ class ServerArgs:
     dynamic_offload: bool = False
     pin_memory: bool = False
     max_weight_usage: int = 2 * 1024**3
+    dit_offload_prefetch_size: int = 1
     vae_cpu_offload: bool = False
     dit_cpu_offload: bool = False
     text_encoder_cpu_offload: bool = False
@@ -80,6 +81,8 @@ class ServerArgs:
     operator_fusion_decision: Any | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        if type(self.dit_offload_prefetch_size) is not int or self.dit_offload_prefetch_size < 0:
+            raise ValueError("dit_offload_prefetch_size must be a non-negative integer")
         self.transformer_quantization = str(
             self.transformer_quantization
         ).strip().lower()

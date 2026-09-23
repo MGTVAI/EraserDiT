@@ -200,14 +200,12 @@ class CacheTests(unittest.TestCase):
                 resolve_eraserdit_cache_params(values)
         resolve_eraserdit_cache_params({'transformer_cache_mode': 'off'}, num_blocks=1)
         resolve_eraserdit_cache_params({'transformer_cache_mode': 'teacache'}, num_blocks=1)
-        with self.assertRaisesRegex(ValueError, 'torch.compile'):
-            resolve_eraserdit_cache_params({'cache_text_projections': True}, enable_torch_compile=True)
+        resolve_eraserdit_cache_params({'cache_text_projections': True}, enable_torch_compile=True)
         with self.assertRaises(ValueError):
             resolve_eraserdit_cache_params({'transformer_cache_mode': 'cache_dit'}, num_blocks=1)
         for mode in ('teacache', 'cache_dit'):
-            with self.assertRaisesRegex(ValueError, 'torch.compile'):
-                _validate_eraserdit_request({'sampling': {'transformer_cache_mode': mode}},
-                                           SimpleNamespace(enable_torch_compile=True))
+            _validate_eraserdit_request({'sampling': {'transformer_cache_mode': mode}},
+                                       SimpleNamespace(enable_torch_compile=True))
             self.assertEqual(EraserDiTVideoRequest(transformer_cache_mode=mode).transformer_cache_mode, mode)
 
     def test_http_contract_round_trip_and_strict_validation(self):
@@ -345,6 +343,31 @@ class CacheTests(unittest.TestCase):
                          source.untyped_storage().nbytes())
         self.assertTrue(all(c.on_update is None for c in w.text_caches.values()))
 
+
+
+class RankSummaryTests(unittest.TestCase):
+    def test_cfg_branch_totals_do_not_double_count_sp_or_overwrite_active_text_cache(self):
+        from cache.eraserdit import aggregate_rank_cache_reports
+        from copy import deepcopy
+        def report(branch):
+            return dict(mode='teacache', peak_retained_tensor_bytes=100,
+                text_cache={b: {'peak_retained_tensor_bytes': 20 if b == branch else 0}
+                            for b in ('positive', 'negative')},
+                branches={b: {'calc_steps': 3 if b == branch else 0,
+                              'skip_steps': 1 if b == branch else 0}
+                          for b in ('positive', 'negative')},
+                total={'calc_steps': 3, 'skip_steps': 1})
+        positive, negative = report('positive'), report('negative')
+        summary = aggregate_rank_cache_reports([positive, negative], sp_degree=1)
+        self.assertEqual(summary['total']['calc_steps'], 6)
+        self.assertEqual(summary['total']['skip_steps'], 2)
+        self.assertEqual(summary['total']['cache_hit_rate'], .25)
+        self.assertEqual(summary['branches']['positive']['calc_steps'], 3)
+        self.assertEqual(summary['text_cache']['positive']['peak_retained_tensor_bytes'], 20)
+        # Replicated SP counters are physical work; count logical steps once.
+        sp = aggregate_rank_cache_reports([positive, deepcopy(positive)], sp_degree=2)
+        self.assertEqual(sp['total']['calc_steps'], 3)
+        self.assertEqual(sp['peak_retained_tensor_bytes'], 200)
 
 if __name__ == '__main__':
     unittest.main()

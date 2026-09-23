@@ -21,6 +21,7 @@ class RuntimeResourcePolicy:
     vae_cpu_offload: bool
     dit_cpu_offload: bool
     fallback_reasons: tuple[str, ...] = field(default_factory=tuple)
+    dit_offload_prefetch_size: int = 1
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -99,4 +100,5 @@ def resolve_runtime_resource_policy(server_args) -> RuntimeResourcePolicy:
         vae_cpu_offload=vae_offload,
         dit_cpu_offload=dit_offload,
         fallback_reasons=tuple(fallback_reasons),
+        dit_offload_prefetch_size=getattr(server_args, "dit_offload_prefetch_size", 1),
     )

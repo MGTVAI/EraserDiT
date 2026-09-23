@@ -2,9 +2,12 @@
 
 [CLI](cli.md) · [服务 API](service_api.md) · [测量步骤](validation.md) · [测试](../tests/README.md)
 
-CLI 默认使用 SDPA、BF16、单 GPU 和 `dynamic_offload`（2 GiB 受管权重预算）；
+CLI 默认使用 SDPA、BF16、单 GPU 和 `dynamic_offload`（2 GiB DiT block 权重预算）；
 性能对照应显式指定 `--resource-policy fullgpu`。根据显存与吞吐需求选择下列配置，
 每次只改变一个选项，并使用实际素材检查画面和耗时。
+
+最新组合实现与验收见 [2026-09-23 可组合加速](composable_acceleration_validation_20260923.md)。
+下面的 2026-09-22 表格保留为历史对照，旧组合限制不再代表当前代码。
 
 ## 实测性能总结（2026-09-22）
 
@@ -30,8 +33,7 @@ CLI 默认使用 SDPA、BF16、单 GPU 和 `dynamic_offload`（2 GiB 受管权�
 在本次原片测试中，双卡 CFG 的耗时最短；SP=2 reference 同样保持像素一致。
 单卡允许缓存损失时，阈值 `0.3` 的 TeaCache / CacheDiT 均获得实际复用收益。
 优先降低显存时，动态卸载将主卡峰值从 47.14 GiB 降到 33.64 GiB，耗时略增。
-双卡单任务目前不能叠加残差缓存或卸载；`0.3` 缓存与卸载的组合尚未重跑，
-不能套用表内 `0.02` 组合的性能。
+该历史轮次未测试双卡叠加残差缓存/卸载，不能把表内单项加速比直接相乘。
 
 两种 `0.3` 缓存均开启文本投影缓存，warmup=4、末步保护=1、最多连续复用一步。
 每项两个窗口合计 160 个 CFG 分支步，计算 88 步、复用 72 步；CacheDiT 复用时仍计算探针。
@@ -89,12 +91,13 @@ bash results/cache_threshold_03_20260922/command.sh
 | 目的 | 配置 | 组合限制 |
 | --- | --- | --- |
 | 单卡注意力加速 | `--attention-backend sage_attn` | 先安装可选注意力依赖 |
-| 编译加速 | `--enable-torch-compile --warmup` | fullgpu；关闭残差缓存、单任务并行、量化及算子融合 |
-| 节省权重显存 | `--resource-policy dynamic_offload` | 关闭 compile；预算只约束受管权重 |
-| 双卡单任务 | `--cfg-degree 2` | fullgpu；关闭 compile、缓存和量化 |
-| 四卡单任务 | `--cfg-degree 2 --sp-degree 2` | 同上；显存不会均分到四卡 |
-| 残差复用 | TeaCache / CacheDiT | 关闭 compile、单任务并行和量化；检查画面变化 |
-| INT8 量化 | `--transformer-quantization int8_w8a8_native` | fullgpu、BF16；关闭 compile、融合、缓存和单任务并行 |
+| 编译加速 | `--enable-torch-compile` | EraserDiT 编译 FFN，CUDA graph 关闭；可叠加卸载、缓存和 CFG/SP |
+| 节省权重显存 | `--resource-policy dynamic_offload` | 每 rank 独立预算；预算不包含激活和其他组件 |
+| 双卡单任务 | `--cfg-degree 2` 或 `--sp-degree 2` | 持久化副本；可叠加卸载、编译及二选一缓存 |
+| 残差复用 | TeaCache / CacheDiT | 二选一；SP 组内同步决定；检查画面变化 |
+| INT8 量化 | `--transformer-quantization int8_w8a8_native` | BF16 输入；手工算子融合关闭；支持 CPU 转换和卸载 |
+| 实验 Ring | `--sp-degree 2 --sp-attention-mode ring --attention-backend sdpa` | 本轮只验证双卡，不代表四卡混合 USP 验收 |
+
 
 以下参数片段添加到[完整 CLI 命令](cli.md#单视频)使用。具体支持范围由启动校验决定。
 
@@ -108,6 +111,10 @@ bash results/cache_threshold_03_20260922/command.sh
 SageAttention / FlashAttention 安装见[可选依赖](setup.md#可选依赖)。
 编译和预热有一次性成本，常驻会话内的重复请求更适合测量稳态收益。
 `--warmup` 仅为首个任务预热，输入形状变化可能再次触发编译。
+双卡执行前串行准备各 rank 的 FFN 图，避免 Torch 2.6 的 FX tracing 全局 hook 干扰另一个线程。
+`compile_preparation_seconds` 记录这项成本；后续窗口复用相同形状的图。
+默认 `MGERASE_COMPILE_LINEAR_BACKEND=native` 保留 GEMM 的 BF16 bias 舍入；
+`inductor` 允许编译器重写 GEMM，但目前测得的无缓存组合未过 SSIM 门槛。
 更换 GPU 或 Torch 版本后在目标环境重新生成编译产物，并检查输出质量。
 
 <a id="offload"></a>
@@ -115,17 +122,41 @@ SageAttention / FlashAttention 安装见[可选依赖](setup.md#可选依赖)。
 
 `fullgpu` 保持组件驻留 GPU；`fullgpu_pin_memory` 额外使用 pinned CPU 内存。
 `component_offload` 按文本编码、VAE 编解码和去噪阶段搬运整个组件。
-`dynamic_offload` 能放下时整阶段驻留，否则按块异步搬运，默认受管权重预算为 2 GiB，下面示例显式提高到 5 GiB：
+`dynamic_offload` 使用参考 SGLang 实现的 DiT 逐层卸载：CPU 保存 pinned 权重，
+独立 CUDA stream 预取后续 blocks，计算后释放 GPU 副本。Text Encoder、VAE 编码器和
+解码器按阶段整体加载；不会跨组件预取。阶段边界清理空闲 CUDA allocator 缓存，
+不在 block 之间清理。该模式不再使用旧的通用 extent 调度器。
 
 ```bash
---resource-policy dynamic_offload --max-weight-usage 5368709120
+--resource-policy dynamic_offload --max-weight-usage 2147483648 --dit-offload-prefetch-size 1
 ```
 
-预算单位为字节，不包含激活、workspace、未包装小层及 allocator reserved。
-动态卸载的受管权重保留 pinned CPU 镜像，需预留主机内存；`--pin-memory` 额外固定小层。
-卸载不能消除 VAE 激活峰值，不能保证任意 GPU 都能处理原尺寸视频。
-CLI 的 `memory_runtime` 与服务 `effective_acceleration.memory_runtime` 提供驻留和搬运信息，
-搬运计数按会话累计。
+`--dit-offload-prefetch-size` 是向前预取的 block 数，默认 1；0 关闭预取，仍按层加载。
+`--max-weight-usage` 只限制 DiT blocks 的在途、使用中和待释放权重，预算不足时减少
+预取或等待释放；小于最大单个 block 时拒绝初始化。它不包含 Text Encoder、VAE、
+DiT 非 block 层、TeaCache 小探针参数、激活、缓存、workspace 或 allocator reserved。
+Text Encoder、VAE 需要能在其各自阶段容纳完整活动组件，不能沿用旧版的小显存承诺。
+
+初始化直接加载到 CPU，显式启用低 CPU 内存加载，再按 block 建立 pinned 存储，
+不会先把完整 DiT 搬到 GPU，也不在初始化时预取 blocks。当前仍经由库的
+`from_pretrained` 加载；尚未实现 checkpoint 直接写入最终 pinned 存储。
+DiT blocks 始终使用 pinned CPU 权重；Text Encoder、VAE 不额外 pin。
+卸载不消除 VAE 激活峰值；不能保证任意 GPU 都能处理原尺寸视频。
+
+支持局部编译、TeaCache、cache_dit、文本投影缓存和 CFG/SP。预取限于实际执行区间，
+TeaCache 小探针不触发首层完整搬运；缓存复用区间不搬运跳过的 blocks。
+INT8 可在 CPU 转换后注册卸载。多卡 VAE 暂要求 fullgpu；单卡 tiling 可与卸载组合。
+
+CLI 的 `memory_registration.initialization_memory` 记录加载前、加载后和注册后的
+CPU RSS、CPU 峰值 RSS、CUDA allocated/reserved 及峰值，并记录副本初始化后的各卡观测。CUDA 峰值口径为最近一次外部
+reset 后累计，不把采样点误称为独立阶段峰值；新进程中可用于观察初始化峰值。
+`memory_runtime` 中的 `resident_bytes`/`peak_resident_bytes` 只统计受管 DiT 权重；
+其他组件字节数另列 `component_resident_bytes`/`component_weight_bytes`。
+`h2d_bytes`、`h2d_count`、`budget_waits` 按会话累计，组件搬运历史只保留最近 64 条。
+请求的总峰值显存仍看 CLI timing 的 allocated/reserved；服务也返回内存运行信息。
+
+上方 2026-09-22 动态卸载性能属于旧 extent 后端，不能直接当作本实现的测试结果。
+新后端的实测、峰值口径和覆盖范围见 [2026-09-23 验证](layerwise_offload_validation_20260923.md)。
 
 <a id="cache"></a>
 ## Transformer 缓存
@@ -179,7 +210,7 @@ VAE 默认保留完整空间上下文；`--vae-tiling` 启用近似分块，需�
 `int8_w8a8_native` 使用按输出通道权重量化、按 token 激活量化及 FP32 scale，
 通过 Triton 和 `torch._int_mm` 执行，输出 BF16。
 默认 `--quantization-scope blocks`，也可选 `ffn`；文本编码器、VAE 和输入输出投影保持原精度。
-量化在加载后执行，不修改 checkpoint。私有整数接口依赖 Torch 版本，升级后需复验。
+量化在加载后执行，不修改 checkpoint。卸载模式下直接在 CPU 逐层转换，无完整 GPU BF16 权重副本。私有整数接口依赖 Torch 版本，升级后需复验。
 量化不保证提速；应分别记录转换成本、稳态耗时、显存和画面变化。
 
 <a id="acceptance"></a>

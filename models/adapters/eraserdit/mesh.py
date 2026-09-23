@@ -4,10 +4,11 @@ Collectives use peer tensor copies and bounded thread barriers, not NCCL. Each
 rank owns a model replica; weights are neither tensor nor pipeline partitioned.
 """
 from concurrent.futures import ThreadPoolExecutor
-from copy import deepcopy
+from copy import copy
 from contextlib import contextmanager
 from threading import Barrier
 import time
+import sys
 
 import torch
 
@@ -22,6 +23,11 @@ def resolve_mesh(args, batch=None):
         raise TypeError("parallel degrees must be integers")
     if sp not in (1, 2, 4) or cfg not in (1, 2) or vae not in (1, 2, 4):
         raise ValueError("SP/VAE degrees must be 1,2,4; CFG degree must be 1,2")
+    attention_mode = getattr(config, 'sp_attention_mode', 'ulysses')
+    if attention_mode not in ('ulysses', 'ring'):
+        raise ValueError('sp_attention_mode must be ulysses or ring')
+    if attention_mode == 'ring' and (sp != 2 or getattr(args, 'attention_backend', 'sdpa') != 'sdpa'):
+        raise ValueError('experimental Ring currently supports SP2 with explicit sdpa only')
     size = max(sp * cfg, vae)
     active = size > 1 or tiling
     if not active:
@@ -33,8 +39,11 @@ def resolve_mesh(args, batch=None):
         raise ValueError("sp_linear_mode must be reference or sharded")
     if getattr(config, "cfg_parallel_device", None) is not None and sp * cfg > 1:
         raise ValueError("use cfg_degree instead of cfg_parallel_device with a mesh")
-    if args.resource_policy != "fullgpu" or args.enable_torch_compile:
-        raise ValueError("EraserDiT mesh requires fullgpu and compile disabled")
+    if getattr(args, "use_fsdp_inference", False):
+        raise ValueError("EraserDiT peer mesh cannot wrap FSDP models")
+    if vae > 1 and (args.resource_policy != "fullgpu" or getattr(args, "dynamic_offload", False)
+                    or getattr(args, "vae_cpu_offload", False)):
+        raise ValueError("parallel VAE currently requires fullgpu; DiT SP/CFG supports offload")
     tile = getattr(config, "vae_tile_size", 512)
     stride = getattr(config, "vae_tile_stride", 448)
     if tile < 64 or stride < 32 or stride >= tile or tile % 32 or stride % 32:
@@ -49,11 +58,8 @@ def resolve_mesh(args, batch=None):
         raise ValueError("parallel_devices must be distinct, match mesh size, and start with primary")
     if any(type(i) is not int or i < 0 or i >= torch.cuda.device_count() for i in indexes):
         raise ValueError("parallel_devices contains unavailable local CUDA indices")
-    if batch is not None and (getattr(batch, "transformer_cache_mode", "off") != "off"
-                              or getattr(batch, "cache_text_projections", False)):
-        raise ValueError("device mesh requires all transformer caches disabled")
     return dict(sp=sp, cfg=cfg, vae=vae, devices=[torch.device("cuda", i) for i in indexes],
-                linear_mode=linear_mode)
+                linear_mode=linear_mode, attention_mode=attention_mode)
 
 
 class PeerExchange:
@@ -69,10 +75,10 @@ class PeerExchange:
 
     def exchange(self, rank, values, select, dim):
         device = values[0].device
-        torch.cuda.current_stream(device).synchronize()
-        self.slots[rank] = values
-        self.barrier.wait()
         try:
+            torch.cuda.current_stream(device).synchronize()
+            self.slots[rank] = values
+            self.barrier.wait()
             result = tuple(torch.cat([select(peer[k]).to(device) for peer in self.slots], dim=dim)
                            for k in range(len(values)))
             torch.cuda.current_stream(device).synchronize()
@@ -84,9 +90,38 @@ class PeerExchange:
             raise
 
 
-class SequenceRank:
+    def rotate(self, rank, values):
+        """One ring hop; no full-sequence K/V allocation."""
+        device = values[0].device
+        try:
+            torch.cuda.current_stream(device).synchronize()
+            self.slots[rank] = values
+            self.barrier.wait()
+            result = tuple(x.to(device) for x in self.slots[(rank - 1) % self.degree])
+            torch.cuda.current_stream(device).synchronize()
+            self.barrier.wait()
+            self.calls[rank] += 1
+            return result
+        except BaseException:
+            self.abort()
+            raise
+
+
+class PeerCacheCoordinator:
+    """Cache consensus shares the ordered SP transport with attention."""
     def __init__(self, exchange, rank):
         self.exchange, self.rank = exchange, rank
+        self.world_size = exchange.degree
+
+    def all_reduce(self, tensor):
+        values = self.exchange.exchange(self.rank, (tensor.unsqueeze(0),), lambda x: x, dim=0)[0]
+        return values.sum(dim=0)
+
+
+class SequenceRank:
+    def __init__(self, exchange, rank, attention_mode='ulysses'):
+        self.exchange, self.rank = exchange, rank
+        self.attention_mode = attention_mode
         self.degree = exchange.degree
         self.start = self.end = 0
 
@@ -113,7 +148,7 @@ class SequenceRank:
                 for block in model.transformer_blocks:
                     modules.extend([block.attn1.to_q, block.attn1.to_k, block.attn1.to_v,
                                     block.attn1.to_out[0], block.attn2.to_q, block.attn2.to_out[0],
-                                    block.ff.net[0].proj, block.ff.net[2]])
+                                    block.ff])
                 for module in modules:
                     saved.append((module, module.__dict__.get("forward")))
                     original = module.forward
@@ -130,6 +165,9 @@ class SequenceRank:
                     module.forward = previous
 
     def attention(self, query, key, value, impl, metadata):
+        if self.attention_mode == 'ring':
+            from models.adapters.eraserdit.ring import ring_attention
+            return ring_attention(self, query, key, value, impl, metadata)
         heads = query.shape[2]
         if heads % self.degree:
             raise ValueError("attention heads must be divisible by SP degree")
@@ -154,12 +192,16 @@ class SequenceRank:
 
 
 class EraserDiTMeshWindow:
-    def __init__(self, transformer, plan):
+    def __init__(self, transformer, plan, *, pool=None, batch=None, total_steps=0):
         self.source, self.plan = transformer, plan
+        self.pool, self.batch, self.total_steps = pool, batch, total_steps
+        self.caches = []
+        self.cache_batches = []
         self.models, self.groups, self.ranks, self.static = [], [], [], []
         self.executor = None
         self.setup_seconds = 0.0
         self.steps = 0
+        self.compile_preparation_seconds = 0.0
 
     @property
     def active(self):
@@ -171,18 +213,37 @@ class EraserDiTMeshWindow:
         started = time.perf_counter()
         sp, cfg = self.plan["sp"], self.plan["cfg"]
         try:
-            for index, device in enumerate(self.plan["devices"][:sp * cfg]):
-                model = self.source if index == 0 else deepcopy(self.source).to(device).eval()
-                self.models.append(model)
-                torch.cuda.synchronize(device)
+            if self.pool is not None:
+                self.pool.acquire()
+                self.models = list(self.pool.models)
+            else:
+                from models.adapters.eraserdit.replicas import clone_transformer_cpu
+                if getattr(self.source, '_layerwise_offload_manager', None) is not None:
+                    raise ValueError('offloaded mesh requires a persistent replica pool')
+                for index, device in enumerate(self.plan['devices'][:sp * cfg]):
+                    model = self.source if index == 0 else clone_transformer_cpu(self.source).to(device)
+                    self.models.append(model)
+                    torch.cuda.synchronize(device)
             self.groups = [PeerExchange(sp) for _ in range(cfg)]
-            self.ranks = [SequenceRank(self.groups[i // sp], i % sp) if sp > 1 else None
+            self.ranks = [SequenceRank(self.groups[i // sp], i % sp, self.plan.get("attention_mode", "ulysses")) if sp > 1 else None
                           for i in range(sp * cfg)]
+            if self.batch is not None:
+                from cache.eraserdit import EraserDiTCacheWindow
+                for index in range(sp * cfg):
+                    batch = copy(self.batch)
+                    batch.extra = dict(self.batch.extra)
+                    coordinator = PeerCacheCoordinator(self.groups[index // sp], index % sp) if sp > 1 else None
+                    cache = EraserDiTCacheWindow(batch, total_steps=self.total_steps,
+                        num_blocks=len(self.source.transformer_blocks), sp_degree=sp, sp_rank=index % sp,
+                        cfg_degree=cfg, cfg_rank=index // sp, coordinator=coordinator)
+                    self.cache_batches.append(batch)
+                    self.caches.append(cache)
+                    cache.__enter__()
             self.static = [{} for _ in self.models]
             self.executor = ThreadPoolExecutor(max_workers=sp * cfg, thread_name_prefix="eraserdit-mesh")
             self.setup_seconds = time.perf_counter() - started
         except BaseException:
-            self.__exit__(None, None, None)
+            self.__exit__(*sys.exc_info())
             raise
         return self
 
@@ -194,14 +255,15 @@ class EraserDiTMeshWindow:
                 if branch not in self.static[index]:
                     self.static[index][branch] = {
                         k: v.to(device) if isinstance(v, torch.Tensor) else v
-                        for k, v in kwargs.items() if k not in ("hidden_states", "timestep")
+                        for k, v in kwargs.items() if k not in ("hidden_states", "timestep", "cache_adapter", "text_cache")
                     }
                 for block in model.transformer_blocks:
                     block.attn1.processor.sequence_parallel = rank
                 from contextlib import nullcontext
                 scope = rank.linear_scope(model, self.plan.get("linear_mode", "reference")) if rank else nullcontext()
+                cache_kwargs = self.caches[index].kwargs(branch, self.steps) if self.caches else {}
                 with scope:
-                    output = model(**self.static[index][branch],
+                    output = model(**self.static[index][branch], **cache_kwargs,
                                    hidden_states=kwargs["hidden_states"].to(device),
                                    timestep=kwargs["timestep"].to(device), sequence_parallel=rank)[0]
                 torch.cuda.current_stream(device).synchronize()
@@ -217,6 +279,19 @@ class EraserDiTMeshWindow:
     def predict(self, negative, positive):
         torch.cuda.current_stream(positive["hidden_states"].device).synchronize()
         sp, cfg = self.plan["sp"], self.plan["cfg"]
+        if self.steps == 0:
+            from layers.block_compile import prepare_block_compile
+            config = self.source.config
+            tokens = (positive['num_frames'] // config.patch_size_t
+                      * (positive['height'] // config.patch_size) * (positive['width'] // config.patch_size))
+            for index, model in enumerate(self.models):
+                length = tokens
+                if sp > 1 and self.plan.get('linear_mode', 'reference') == 'sharded':
+                    rank = index % sp
+                    length = tokens * (rank + 1) // sp - tokens * rank // sp
+                self.compile_preparation_seconds += prepare_block_compile(model,
+                    batch_size=positive['hidden_states'].shape[0], sequence_length=length,
+                    device=self.plan['devices'][index], dtype=positive['hidden_states'].dtype)
         if cfg == 2:
             futures = [self.executor.submit(self._forward, i, "positive" if i < sp else "negative",
                                            positive if i < sp else negative) for i in range(2 * sp)]
@@ -239,12 +314,20 @@ class EraserDiTMeshWindow:
         return gather(neg), gather(pos)
 
     def report(self):
+        from memory.telemetry import memory_observation
         return {"sp_degree": self.plan["sp"], "cfg_degree": self.plan["cfg"],
                 "devices": [str(d) for d in self.plan["devices"][:len(self.models)]],
                 "steps": self.steps, "replica_setup_seconds": self.setup_seconds,
+                "compile_preparation_seconds": self.compile_preparation_seconds,
                 "collectives_per_rank": [g.calls[:] for g in self.groups],
                 "linear_mode": self.plan.get("linear_mode", "reference"),
-                "transport": "peer_copy_ulysses", "transformer_cache_mode": "off"}
+                "transport": "peer_copy_" + self.plan.get("attention_mode", "ulysses"),
+                "persistent_replicas": self.pool is not None,
+                "rank_attention": [m.transformer_blocks[0].attn1.processor.attention_backend_report()
+                                   for m in self.models],
+                "rank_memory": [memory_observation(d) for d in self.plan["devices"][:len(self.models)]],
+                "replica_offload": self.pool.snapshot() if self.pool else [],
+                "transformer_cache_mode": self.caches[0].mode if self.caches else "off"}
 
     def __exit__(self, *exc):
         for group in self.groups:
@@ -252,8 +335,22 @@ class EraserDiTMeshWindow:
         if self.executor is not None:
             self.executor.shutdown(wait=True)
         self.executor = None
-        self.models.clear()
-        self.static.clear()
-        for group in self.groups:
-            group.slots.clear()
+        try:
+            for cache in self.caches:
+                cache.__exit__(*exc)
+            if self.batch is not None and self.cache_batches:
+                reports = [batch.extra['transformer_cache'] for batch in self.cache_batches]
+                from cache.eraserdit import aggregate_rank_cache_reports
+                self.batch.extra['transformer_cache'] = aggregate_rank_cache_reports(reports, sp_degree=self.plan['sp'])
+        finally:
+            self.caches.clear()
+            self.cache_batches.clear()
+            try:
+                if self.pool is not None:
+                    self.pool.release()
+            finally:
+                self.models.clear()
+                self.static.clear()
+                for group in self.groups:
+                    group.slots.clear()
         return False

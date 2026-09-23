@@ -38,6 +38,7 @@ class VAELoader(ComponentLoader):
         vae, loading_info = model_cls.from_pretrained(
             component_model_path,
             torch_dtype=dtype,
+            low_cpu_mem_usage=True,
             local_files_only=True,
             output_loading_info=True,
             trust_remote_code=server_args.trust_remote_code,

@@ -15,7 +15,7 @@ from pipelines.runtime.contracts import (
     ObjectRuntimeState,
     _is_windowed_runtime_mode,
 )
-from media.video_io import (
+from utils.video_io import (
     TensorFrameCache,
     frames_tensor_to_uint8,
 )

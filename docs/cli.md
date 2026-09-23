@@ -88,7 +88,9 @@ CUDA_VISIBLE_DEVICES=0 uv run --no-project python -m entrypoints.cli.erase_erase
 | `--guidance-scale` | `3.0` |
 | `--infer-len` / `--overlap` | `121` / `9`，窗口长度与重叠帧数 |
 | `--dtype` | `bf16` |
-| `--resource-policy` | `dynamic_offload`，默认预算 2 GiB；可显式选择 `fullgpu` 或整组件卸载 |
+| `--resource-policy` | `dynamic_offload`：DiT 逐层卸载，Text Encoder/VAE 按阶段卸载；可选 `fullgpu` 或整组件卸载 |
+| `--max-weight-usage` | 默认 2 GiB，仅限制 DiT blocks 的在途、使用中及待释放权重，不是总显存上限 |
+| `--dit-offload-prefetch-size` | 默认向前预取 1 个 block；0 关闭预取，实际受权重预算约束 |
 | `--attention-backend` | `sdpa`；可选项以 `--help` 为准 |
 | `--transformer-cache-mode` | `off`；可选 `teacache` / `cache_dit` |
 | `--teacache-threshold` / `--cache-dit-residual-diff-threshold` | 均为 `0.3`，仅对应缓存模式启用时生效 |
@@ -100,7 +102,7 @@ CUDA_VISIBLE_DEVICES=0 uv run --no-project python -m entrypoints.cli.erase_erase
 
 ## 加速与多卡
 
-单卡已测配置可将 `--attention-backend sdpa` 替换为：
+单卡可启用注意力与局部 FFN 编译；近似后端仍需按素材验收：
 
 ```bash
 --attention-backend sage_attn --enable-torch-compile --warmup
@@ -109,11 +111,17 @@ CUDA_VISIBLE_DEVICES=0 uv run --no-project python -m entrypoints.cli.erase_erase
 预热和编译有一次性成本，冷启动不保证净加速。卸载、缓存、并行、量化的组合限制与测量条件见
 [性能说明](performance.md)。
 
-两卡单任务：设置 `CUDA_VISIBLE_DEVICES=0,1`，添加 `--cfg-degree 2`，关闭编译及缓存：
+两卡单任务：设置 `CUDA_VISIBLE_DEVICES=6,7`，可叠加卸载、局部编译和缓存：
 
 ```bash
---cfg-degree 2 --transformer-cache-mode off --no-cache-text-projections
+--resource-policy dynamic_offload --cfg-degree 2 --enable-torch-compile \
+--attention-backend sage_attn --transformer-cache-mode teacache
 ```
+
+无近似缓存使用 `--attention-backend sdpa --transformer-cache-mode off --no-cache-text-projections`。
+SP 使用 `--sp-degree 2 --cfg-degree 1 --sp-linear-mode sharded`；
+本轮完整命令与验收数据见 [可组合加速验收](composable_acceleration_validation_20260923.md)。
+服务入口也支持同名的 SP/CFG、VAE 与量化进程参数。
 
 多视频分配到不同 GPU 使用 DP dispatcher；`tasks.json` 沿用上面的格式：
 

@@ -11,7 +11,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGES = (
     "cache", "config", "distributed", "entrypoints", "layers", "loader",
-    "memory", "models", "nodes", "parallel", "pipelines", "utils", "media",
+    "memory", "models", "nodes", "parallel", "pipelines", "utils",
 )
 
 RESOURCE_POLICY_EXPORTS = """
@@ -27,7 +27,6 @@ UTILITY_ALIASES = {
     "utils/eraserdit_preprocess.py": "models.adapters.eraserdit.preprocess",
     "utils/eraserdit_postprocess.py": "models.adapters.eraserdit.postprocess",
 
-    "utils/video_io.py": "media.video_io",
     "utils/distributed_runtime.py": "parallel.runtime",
 }
 
@@ -95,9 +94,7 @@ class ArchitectureTests(unittest.TestCase):
             if source == "models":
                 forbidden |= {"loader", "nodes", "pipelines"}
             if source == "utils":
-                forbidden |= set(PACKAGES) - {"utils", "media"}
-            if source == "media":
-                forbidden |= set(PACKAGES) - {"media"}
+                forbidden |= set(PACKAGES) - {"utils"}
             if source == "memory":
                 forbidden |= set(PACKAGES) - {"memory", "config", "utils"}
             for path in sorted((ROOT / source).rglob("*.py")):
@@ -111,7 +108,7 @@ class ArchitectureTests(unittest.TestCase):
                     legacy = target == "nodes.composed_pipeline_base" or target.startswith(
                         "nodes.stages.model_specific_stages"
                     ) or target.startswith("parallel.eraserdit_") or target in {
-                        "utils.resource_policy", "utils.video_io", "utils.distributed_runtime",
+                        "utils.resource_policy", "utils.distributed_runtime",
                         "utils.eraserdit_preprocess", "utils.eraserdit_postprocess",
                     }
                     if legacy and path != ROOT / "nodes/__init__.py":

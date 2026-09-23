@@ -10,9 +10,9 @@ import torch
 from config.eraserdit import EraserDiTEraseSamplingParams
 from nodes.schedule_batch import Req
 from pipelines.runtime.hooks import RuntimeHookRegistry
-from media.encoding import VideoEncodingProfile
+from utils.encoding import VideoEncodingProfile
 from utils.runtime_progress import RuntimeProgressState
-from media.video_io import (
+from utils.video_io import (
     ArrayFrameCache,
     ChunkedFrameCache,
     SequentialVideoReader,

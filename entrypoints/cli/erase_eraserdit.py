@@ -101,6 +101,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sp-degree", type=int, default=1)
     parser.add_argument("--sp-linear-mode", choices=["reference", "sharded"], default="reference",
                         help="reference preserves full GEMM shape; sharded is experimental BF16 numerics")
+    parser.add_argument("--sp-attention-mode", choices=["ulysses", "ring"], default="ulysses")
     parser.add_argument("--cfg-degree", type=int, default=1)
     parser.add_argument("--vae-degree", type=int, default=1)
     parser.add_argument("--parallel-devices", type=lambda s: tuple(int(i) for i in s.split(',')), default=None,
@@ -118,10 +119,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "windowed_streaming uses bf16 caches and is only for very long inputs",
     )
     parser.add_argument("--runtime-workdir", type=str, default=None)
+    parser.add_argument("--dit-offload-prefetch-size", type=int, default=1,
+                        help="DiT lookahead blocks; 0 disables prefetch; bounded by weight budget")
     parser.add_argument("--max-weight-usage", type=int, default=2 * 1024**3,
-                        help="dynamic offload managed-weight budget in bytes (excludes activations)")
+                        help="DiT block weight budget in bytes, including in-flight copies; excludes other weights and activations")
     parser.add_argument("--pin-memory", action=argparse.BooleanOptionalAction, default=False,
-                        help="pin small unwrapped weights; dynamic extents always use pinned mirrors")
+                        help="pin weights in resident modes; dynamic DiT blocks always use pinned CPU storage")
     parser.add_argument(
         "--resource-policy", default="dynamic_offload",
         choices=["fullgpu", "fullgpu_pin_memory", "dynamic_offload", "component_offload"],
@@ -170,6 +173,7 @@ def _build_server_args(args: argparse.Namespace) -> ServerArgs:
         text_encoder_precision=args.dtype,
         cfg_parallel_device=args.cfg_parallel_device,
         sp_degree=args.sp_degree, cfg_degree=args.cfg_degree, vae_degree=args.vae_degree,
+        sp_attention_mode=args.sp_attention_mode,
         sp_linear_mode=args.sp_linear_mode,
         parallel_devices=args.parallel_devices, vae_tiling=args.vae_tiling,
         vae_tile_size=args.vae_tile_size, vae_tile_stride=args.vae_tile_stride,
@@ -182,6 +186,7 @@ def _build_server_args(args: argparse.Namespace) -> ServerArgs:
         weight_dtype=args.dtype,
         resource_policy=args.resource_policy,
         max_weight_usage=args.max_weight_usage,
+        dit_offload_prefetch_size=args.dit_offload_prefetch_size,
         pin_memory=args.pin_memory,
         pipeline_config=pipeline_config,
         component_architectures=dict(pipeline_config.component_architectures),
@@ -346,6 +351,7 @@ def main() -> None:
                     "runtime_video_metadata": video_meta,
                     "resource_policy": server_args.resolve_resource_policy().as_dict(),
                     "memory_runtime": result.extra.get("memory_runtime"),
+                    "memory_registration": session.pipeline.memory_registration_summary,
                     "cfg_parallel": result.extra.get("cfg_parallel"),
                     "quantization": result.extra.get("quantization"),
                     "parallel_history": result.extra.get("parallel_history", []),

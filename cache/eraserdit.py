@@ -14,7 +14,8 @@ from config.eraserdit_cache import (
 
 
 class EraserDiTCacheWindow:
-    def __init__(self, batch, *, total_steps, num_blocks, enable_torch_compile=False):
+    def __init__(self, batch, *, total_steps, num_blocks, enable_torch_compile=False,
+                 sp_degree=1, sp_rank=0, cfg_degree=1, cfg_rank=0, coordinator=None):
         mode, tea, dbc, self.force_compute = resolve_eraserdit_cache_params(
             batch, enable_torch_compile=enable_torch_compile, num_blocks=num_blocks,
         )
@@ -36,8 +37,9 @@ class EraserDiTCacheWindow:
                            or extra.get('request_id') or uuid4()),
             object_index=int(extra.get('object_index', 0)),
             window_index=int(extra.get('window_index', 0)), total_steps=total_steps,
-            sp_degree=1, sp_rank=0, cfg_degree=1, cfg_rank=0, coordinator=None,
-            sp_group_identity='eraserdit_serial', cfg_group_identity='eraserdit_serial',
+            sp_degree=sp_degree, sp_rank=sp_rank, cfg_degree=cfg_degree, cfg_rank=cfg_rank, coordinator=coordinator,
+            sp_group_identity=f'eraserdit_peer_sp_cfg_{cfg_rank}' if sp_degree > 1 else 'eraserdit_serial',
+            cfg_group_identity='eraserdit_peer_cfg' if cfg_degree > 1 else 'eraserdit_serial',
             model_identity=MODEL_IDENTITY,
         )
         if self.mode == 'teacache':
@@ -105,6 +107,7 @@ class EraserDiTCacheWindow:
 class EraserDiTCacheBranch:
     def __init__(self, controller, branch, step):
         self.controller, self.branch, self.step = controller, branch, step
+        self.global_sequence_length = None
 
     def run(self, hidden_states, modulated_input, run_blocks, *, num_blocks, layout):
         try:
@@ -120,7 +123,7 @@ class EraserDiTCacheBranch:
         c = self.controller
         common = dict(
             branch=self.branch, step=self.step,
-            global_sequence_length=hidden_states.shape[1],
+            global_sequence_length=self.global_sequence_length or hidden_states.shape[1],
             local_sequence_length=hidden_states.shape[1],
             valid_local_sequence_length=hidden_states.shape[1],
             layout_signature=repr((layout, tuple(hidden_states.shape), str(hidden_states.dtype), str(hidden_states.device))),
@@ -153,3 +156,33 @@ class EraserDiTCacheBranch:
         output = run_blocks(middle, c.back_start, num_blocks)
         c.complete_step(branch=self.branch, step=self.step)
         return output
+
+
+def aggregate_rank_cache_reports(reports, *, sp_degree):
+    """Count logical CFG work once per SP group; retain physical-rank details."""
+    leaders = reports[::sp_degree]
+    result = dict(reports[0], ranks=reports, summary_scope='logical_cfg_branches_sp_leaders')
+    result['peak_retained_tensor_bytes'] = sum(r['peak_retained_tensor_bytes'] for r in reports)
+    result['retained_peak_scope'] = 'sum_of_rank_peaks_upper_bound'
+    result['text_cache'] = {branch: value for r in leaders for branch, value in r['text_cache'].items()
+                            if value.get('peak_retained_tensor_bytes', 0)}
+    # Controllers also report zero-valued states for the unassigned CFG branch.
+    result['branches'] = {branch: value for r in leaders for branch, value in r.get('branches', {}).items()
+                          if value.get('calc_steps', 0) + value.get('skip_steps', 0) + value.get('completed_steps', 0)}
+    result['communication_scope'] = 'representative_rank_0; see ranks for all counters'
+    if result['mode'] == 'teacache':
+        calc = sum(r['total']['calc_steps'] for r in leaders)
+        skip = sum(r['total']['skip_steps'] for r in leaders)
+        result['total'] = dict(calc_steps=calc, compute_steps=calc, skip_steps=skip,
+            cache_hit_rate=skip/max(1, calc+skip), hit_rate=skip/max(1, calc+skip),
+            estimated_block_speedup=(calc+skip)/max(1, calc))
+    elif result['mode'] == 'cache_dit':
+        keys = ('computed_middle_steps', 'cached_middle_steps', 'effective_blocks_executed', 'completed_steps')
+        total = {key: sum(r['total'][key] for r in leaders) for key in keys}
+        total['middle_skip_ratio'] = total['cached_middle_steps']/max(1, total['completed_steps'])
+        # Same block count and completed-step count in every CFG group.
+        completed = total['completed_steps']
+        total['estimated_block_ratio'] = sum(r['total']['estimated_block_ratio'] * r['total']['completed_steps']
+                                             for r in leaders)/max(1, completed)
+        result['total'] = total
+    return result

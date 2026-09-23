@@ -31,8 +31,8 @@ from pipelines.runtime.contracts import (
 from memory.policies.memory_phase_controller import MemoryPhaseController
 from nodes.control import service_checkpoint
 from utils.runtime_progress import create_runtime_progress
-from media.encoding import VideoEncodingProfile
-from media.video_io import (
+from utils.encoding import VideoEncodingProfile
+from utils.video_io import (
     ArrayFrameCache,
     ChunkedFrameCache,
     SequentialVideoReader,

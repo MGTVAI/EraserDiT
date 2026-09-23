@@ -11,7 +11,7 @@ from pipelines.runtime.contracts import EraseRuntimeContext
 from pipelines.runtime.contracts import ObjectRuntimeState
 from pipelines.runtime.contracts import _is_windowed_runtime_mode
 from pipelines.runtime.io.masks import materialize_window_mask
-from media.video_io import (
+from utils.video_io import (
     TensorFrameCache,
     binarize_mask_array,
     frames_tensor_to_uint8,

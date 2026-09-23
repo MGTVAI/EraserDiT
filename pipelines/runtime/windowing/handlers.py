@@ -40,7 +40,7 @@ from pipelines.runtime.windowing.commit_ops import (
     record_skipped_object_window,
 )
 from pipelines.runtime.drivers.windowed import finalize_object_window_step
-from media.video_io import (
+from utils.video_io import (
     ArrayFrameCache,
     ChunkedFrameCache,
     TensorFrameCache,

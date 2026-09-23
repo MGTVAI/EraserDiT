@@ -46,8 +46,8 @@ class NativeInt8Linear(nn.Module):
 
     @classmethod
     def from_linear(cls, source):
-        if source.weight.device.type != 'cuda' or source.weight.dtype != torch.bfloat16:
-            raise ValueError('INT8 conversion requires CUDA BF16 Linear')
+        if source.weight.device.type not in ('cpu', 'cuda') or source.weight.dtype != torch.bfloat16:
+            raise ValueError('INT8 conversion requires CPU/CUDA BF16 Linear')
         if source.in_features % 32 or source.out_features % 32:
             raise ValueError('INT8 Linear dimensions must be multiples of 32')
         with torch.no_grad():
@@ -81,5 +81,6 @@ class NativeInt8Linear(nn.Module):
         _epilogue[(triton.cdiv(output.numel(),1024),)](
             accum, scale, self.weight_scale, self.bias, output,
             self.out_features, output.numel(), self.bias is not None, 1024)
-        self.calls += 1
+        if not torch.compiler.is_compiling():
+            self.calls += 1
         return output[:rows].reshape(*value.shape[:-1],self.out_features)

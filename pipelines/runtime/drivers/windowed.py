@@ -56,7 +56,7 @@ from utils.window_contract import (
     resolve_runtime_sp_degree,
     resolve_spatial_alignment,
 )
-from media.video_io import TensorFrameCache, frames_uint8_to_tensor
+from utils.video_io import TensorFrameCache, frames_uint8_to_tensor
 from utils.windowing import WindowSpec
 
 

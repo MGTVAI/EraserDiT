@@ -74,6 +74,41 @@ class MeshTests(unittest.TestCase):
             with self.assertRaises(Exception):
                 future.result(timeout=3)
 
+    def test_sp_cache_metric_uses_global_sums_and_rejects_divergent_decisions(self):
+        from cache.consensus import CacheConsensusStats, CacheDecisionConsensus
+        from models.adapters.eraserdit.mesh import PeerCacheCoordinator
+        exchange = PeerExchange(2, timeout=5)
+        def work(rank):
+            consensus = CacheDecisionConsensus(PeerCacheCoordinator(exchange, rank), stats=CacheConsensusStats())
+            previous = torch.ones(1 if rank == 0 else 3)
+            current = previous * (3 if rank == 0 else 1)
+            ratio = consensus.relative_l1(current, previous, context=None)
+            with self.assertRaisesRegex(RuntimeError, 'decision mismatch'):
+                consensus.assert_decision(rank, device=torch.device('cpu'))
+            return ratio
+        with patch('torch.cuda.current_stream'), ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(work, rank) for rank in range(2)]
+            self.assertEqual([f.result(timeout=10) for f in futures], [.5, .5])
+
+    def test_composable_mesh_and_ring_validation(self):
+        from config.eraserdit import EraserDiTPipelineConfig
+        from config.server_args import ServerArgs
+        args = ServerArgs(device='cuda:0', resource_policy='dynamic_offload', enable_torch_compile=True,
+                          pipeline_config=EraserDiTPipelineConfig(sp_degree=2, sp_attention_mode='ring'))
+        with patch('torch.cuda.device_count', return_value=2):
+            self.assertEqual(resolve_mesh(args)['attention_mode'], 'ring')
+            args.attention_backend = 'sage_attn'
+            with self.assertRaisesRegex(ValueError, 'explicit sdpa'):
+                resolve_mesh(args)
+            args.attention_backend = 'sdpa'
+            args.pipeline_config.sp_degree = 1
+            with self.assertRaisesRegex(ValueError, 'SP2'):
+                resolve_mesh(args)
+            args.pipeline_config.sp_attention_mode = 'ulysses'
+            args.pipeline_config.vae_degree = 2
+            with self.assertRaisesRegex(ValueError, 'parallel VAE'):
+                resolve_mesh(args)
+
     def test_configuration_and_mesh_cardinality(self):
         config = SimpleNamespace(sp_degree=2, cfg_degree=2, vae_degree=4, vae_tiling=True,
                                  parallel_devices=(0, 1, 2, 3), cfg_parallel_device=None)
@@ -88,8 +123,7 @@ class MeshTests(unittest.TestCase):
             config.vae_tiling = False
             self.assertEqual(resolve_mesh(args)["vae"], 4)
             config.vae_tiling = True
-            with self.assertRaises(ValueError):
-                resolve_mesh(args, SimpleNamespace(transformer_cache_mode="teacache"))
+            self.assertEqual(resolve_mesh(args, SimpleNamespace(transformer_cache_mode="teacache"))["sp"], 2)
 
     def test_task_partition_has_no_duplicate_or_missing_tasks(self):
         tasks = list(range(7))

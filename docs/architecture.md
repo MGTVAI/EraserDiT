@@ -21,8 +21,7 @@ CLI 和 HTTP worker 通过常驻 session 复用模型，各请求独立维护采
 | `memory/` | 组件驻留、权重卸载、张量搬运及阶段内存管理 |
 | `parallel/` | 并行策略、布局、分片与运行时初始化 |
 | `distributed/` | 通信组、通信操作与分布式状态 |
-| `media/` | 视频读写、编码契约与帧缓存 |
-| `utils/` | 裁剪框、窗口、日志、计时等基础工具 |
+| `utils/` | 视频读写、编码契约、帧缓存、裁剪框、窗口、日志、计时等基础工具 |
 
 ## 执行流程
 
@@ -30,7 +29,7 @@ CLI 和 HTTP worker 通过常驻 session 复用模型，各请求独立维护采
 CLI / HTTP worker → EraseSession → pipeline 装配
                                    ├─ loader → 模型组件
                                    ├─ 模型 stages → models / layers / cache / memory
-                                   └─ 窗口 runtime → nodes / parallel / media
+                                   └─ 窗口 runtime → nodes / parallel / utils
 ```
 
 视频按窗口处理，重叠部分为相邻窗口提供连续性。运行时负责装载输入、执行 stages、
@@ -48,7 +47,7 @@ CLI / HTTP worker → EraseSession → pipeline 装配
 - `nodes` 不依赖模型和流水线装配；窗口 runtime 不反向导入模型 stages 或装配模块。
 - `distributed` 不依赖上层并行策略；通用 `parallel` 不导入模型实现。
 - `layers` 可以使用通用并行能力，`models` 不依赖 loader 或流水线。
-- `media` 独立于其他项目包；`utils` 只依赖本包和 `media`。
+- `utils` 的基础工具实现只依赖本包，不依赖其他项目包。
 - `memory` 仅使用配置和基础工具，不依赖模型装配。
 
 `tests/test_architecture.py` 检查包依赖方向、实现包静态依赖图无环及独立导入行为。

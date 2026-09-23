@@ -11,14 +11,12 @@ def validate_quantization(args, batch=None):
     if mode != 'int8_w8a8_native':
         raise ValueError('EraserDiT supports only none or int8_w8a8_native')
     c = args.pipeline_config
-    if args.resource_policy != 'fullgpu' or args.enable_torch_compile:
-        raise ValueError('EraserDiT INT8 currently requires fullgpu without compile')
+    if getattr(args, 'use_fsdp_inference', False):
+        raise ValueError('EraserDiT INT8 cannot wrap FSDP models')
     if args.operator_fusion_backend != 'disabled':
-        raise ValueError('EraserDiT INT8 currently requires operator fusion disabled')
-    if any(getattr(c,k,1) != 1 for k in ('sp_degree','cfg_degree','vae_degree')) or c.cfg_parallel_device:
-        raise ValueError('EraserDiT INT8 first release is single-GPU only')
-    if batch is not None and (batch.transformer_cache_mode != 'off' or batch.cache_text_projections):
-        raise ValueError('EraserDiT INT8 first release requires caches off')
+        raise ValueError('EraserDiT INT8 requires operator fusion disabled')
+    if c.cfg_parallel_device:
+        raise ValueError('use cfg_degree for composable INT8 CFG')
 
 
 def selected_names(model, scope):
@@ -31,13 +29,15 @@ def selected_names(model, scope):
     return [f'transformer_blocks.{i}.{s}' for i in range(len(model.transformer_blocks)) for s in suffixes]
 
 
-def quantize_transformer(model, scope='blocks'):
+def quantize_transformer(model, scope='blocks', *, execution_device=None):
     from layers.quantization.eraserdit_int8 import NativeInt8Linear
     existing = getattr(model, '_eraserdit_int8_report', None)
     if existing is not None:
         if existing['scope'] != scope:
             raise ValueError('model already quantized with a different scope')
         return existing
+    if getattr(model, '_layerwise_offload_manager', None) is not None or hasattr(model, '_block_compile_report'):
+        raise ValueError('quantize before registering offload or compile')
     if getattr(model,'peft_config',None):
         raise ValueError('INT8 conversion with LoRA adapters is not supported')
     names = selected_names(model, scope)
@@ -45,9 +45,13 @@ def quantize_transformer(model, scope='blocks'):
         module = model.get_submodule(name)
         if not isinstance(module, nn.Linear) or module.in_features%32 or module.out_features%32:
             raise ValueError(f'unsupported INT8 target: {name}')
-        if module.weight.dtype != torch.bfloat16 or module.weight.device.type != 'cuda':
-            raise ValueError(f'INT8 target must be CUDA BF16: {name}')
+        if module.weight.dtype != torch.bfloat16 or module.weight.device.type not in ('cuda', 'cpu'):
+            raise ValueError(f'INT8 target must be CPU/CUDA BF16: {name}')
     device = model.get_submodule(names[0]).weight.device
+    source_device = device
+    device = torch.device(execution_device) if execution_device is not None else device
+    if device.type != 'cuda':
+        raise ValueError('CPU quantization needs a CUDA execution_device')
     if torch.cuda.get_device_capability(device) < (8,0):
         raise ValueError('this INT8 implementation requires CUDA capability >= 8.0')
     # Execute the real backend before mutating any model layer.
@@ -68,7 +72,7 @@ def quantize_transformer(model, scope='blocks'):
                   selected_names=names,source_linear_bytes=original_bytes,
                   quantized_linear_bytes=quantized_bytes,bf16_duplicate_weight_count=0,
                   backend='torch._int_mm + triton quantization/epilogue',
-                  conversion_seconds=time.perf_counter()-started)
+                  conversion_seconds=time.perf_counter()-started, conversion_device=str(source_device))
     model._eraserdit_int8_report = report
     return report
 
@@ -80,4 +84,5 @@ def runtime_report(model):
     from layers.quantization.eraserdit_int8 import NativeInt8Linear
     modules = [m for m in model.modules() if isinstance(m,NativeInt8Linear)]
     return dict(base,runtime_call_count=sum(m.calls for m in modules),
+                runtime_counts_include_compiled=False,
                 executed_module_count=sum(m.calls>0 for m in modules), fallback_count=0)

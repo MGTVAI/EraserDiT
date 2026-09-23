@@ -14,7 +14,7 @@ from pipelines.runtime.contracts import (
     ObjectRuntimeState,
 )
 from pipelines.runtime.windowing.planner import build_window_specs
-from media.video_io import ArrayFrameCache, ChunkedFrameCache, TensorFrameCache
+from utils.video_io import ArrayFrameCache, ChunkedFrameCache, TensorFrameCache
 
 FrameCache = ArrayFrameCache | ChunkedFrameCache | TensorFrameCache
 

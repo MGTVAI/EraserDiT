@@ -27,6 +27,7 @@ CUDA_VISIBLE_DEVICES='' ERASERDIT_TEST_TWO_GPU=0 ERASERDIT_TEST_INT8=0 \
 | `test_prepost_boundaries.py` | EraserDiT 预/后处理导入契约、patch 行为、通用裁剪独立导入 |
 | `test_service_api.py` | HTTP 契约、任务和产物；使用 scheduler stub，无权重 |
 | `test_component_offload.py` | 组件租约、异常清理；CUDA 可用时附加设备验证 |
+| `test_layerwise_offload.py` | 新 DiT 卸载的预取预算、跳层、布局、异常恢复、组件阶段和缓存一致性；CUDA 用例需 GPU |
 | `test_dynamic_offload.py` | 事件、预算、搬运回滚与恢复；部分测试需要 CUDA |
 | `test_cache.py` | CFG/窗口隔离、探针、FP32 残差、请求契约；部分测试需要 CUDA |
 | `test_cfg_parallel.py` | CFG 配置约束与显式双卡小模型检查 |
@@ -59,3 +60,14 @@ CUDA_VISIBLE_DEVICES=0,1 ERASERDIT_TEST_TWO_GPU=1 \
 
 这些回归不替代完整视频质量与性能验证；端到端操作见 [测量与验证](../docs/validation.md)，
 验收口径见 [performance](../docs/performance.md#acceptance)。
+
+双卡组合回归（物理卡 6、7；不启动四卡测试）：
+
+```bash
+CUDA_VISIBLE_DEVICES=6,7 ERASERDIT_TEST_TWO_GPU=1 ERASERDIT_TEST_INT8=1 \
+  python -m unittest tests.test_composable_gpu.ComposableTests tests.test_quantization -v
+```
+
+覆盖局部编译 + 逐层卸载 + CFG2 / Ulysses2 / Ring2、TeaCache / cache_dit 命中、
+缓存全局决策、CPU INT8 转换、异常后权重卸载与跨窗口副本复用。
+完整视频阈值验收见 `docs/composable_acceleration_validation_20260923.md`。

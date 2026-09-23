@@ -8,7 +8,7 @@ import torch
 
 from pipelines.runtime.contracts import EraseRuntimeContext
 from pipelines.runtime.contracts import _is_windowed_runtime_mode
-from media.video_io import mask_uint8_to_tensor
+from utils.video_io import mask_uint8_to_tensor
 from utils.windowing import WindowSpec
 
 

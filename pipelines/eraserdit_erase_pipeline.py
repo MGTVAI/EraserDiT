@@ -37,7 +37,7 @@ from pipelines.stages.eraserdit_erase._common import (
 )
 from utils.inference_timing import record_diagnostic_stage
 from utils.logging_utils import init_logger
-from media.video_io import (
+from utils.video_io import (
     WindowedVideoStore,
     read_mask_rgb_array as _read_mask_rgb_array,
     read_video_array,
@@ -133,11 +133,12 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
             torch.device(server_args.device).type != "cuda" or not torch.cuda.is_available()
         ):
             raise ValueError("EraserDiT dynamic_offload requires an available CUDA device")
-        if policy.dit_cpu_offload and server_args.enable_torch_compile:
-            raise ValueError(
-                "EraserDiT transformer CPU offload with torch.compile is not yet "
-                "validated; disable torch.compile for CPU offload"
-            )
+        if policy.dynamic_offload and server_args.use_fsdp_inference:
+            raise ValueError("EraserDiT layerwise offload cannot be combined with FSDP")
+        from memory.telemetry import memory_observation
+        self._initialization_memory = {
+            "before_loading": memory_observation(server_args.device),
+        }
         modules = super().load_modules(server_args, loaded_modules)
         # Preloaded components bypass the component loaders' target-device logic.
         for name, enabled in (
@@ -149,9 +150,11 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
                 modules[name].to(device="cpu")
         if server_args.transformer_quantization == "int8_w8a8_native":
             from models.dits.eraserdit_quantization import quantize_transformer
-            report = quantize_transformer(modules["transformer"], server_args.pipeline_config.quantization_scope)
+            report = quantize_transformer(modules["transformer"], server_args.pipeline_config.quantization_scope,
+                                          execution_device=server_args.device)
             server_args.effective_transformer_quantization = report["mode"]
             server_args.transformer_quantization_report = report
+        self._initialization_memory["after_loading"] = memory_observation(server_args.device)
         return modules
 
     def create_pipeline_stages(self, server_args: ServerArgs) -> None:
@@ -179,10 +182,23 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
             ]
         )
 
+        from memory.telemetry import memory_observation
+        from models.adapters.eraserdit.mesh import resolve_mesh
+        plan = resolve_mesh(server_args)
+        devices = plan['devices'] if plan else [torch.device(server_args.device)]
+        self._initialization_memory['after_replica_initialization'] = {
+            str(device): memory_observation(device) for device in devices}
+
     def initialize_pipeline(self, server_args: ServerArgs) -> None:
         self._closed = False
-        self._memory_adapter = self._build_memory_adapter()
         policy = server_args.resolve_resource_policy()
+        if policy.dynamic_offload:
+            from memory.adapters.layerwise_memory_adapter import LayerwiseMemoryAdapter
+            self._memory_adapter = LayerwiseMemoryAdapter(
+                prefetch_size=server_args.dit_offload_prefetch_size,
+            )
+        else:
+            self._memory_adapter = self._build_memory_adapter()
         if policy.dynamic_offload or policy.pin_memory:
             self._memory_adapter.register(
                 modules=self.modules,
@@ -197,6 +213,9 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
             server_args.resolve_resource_policy().as_dict()
         )
         self._report_attention_backend(server_args)
+        from memory.telemetry import memory_observation
+        self._initialization_memory["after_registration"] = memory_observation(server_args.device)
+        self.memory_registration_summary["initialization_memory"] = self._initialization_memory
 
     def _report_attention_backend(self, server_args: ServerArgs) -> None:
         """Resolve the self-attention backend once, at startup.
@@ -237,6 +256,10 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
     def close(self, *, terminal: bool = False) -> dict[str, object]:
         if getattr(self, "_closed", False):
             return dict(getattr(self, "_memory_adapter_shutdown_snapshot", None) or {})
+        for stage in self.stages:
+            close = getattr(stage, "close", None)
+            if callable(close):
+                close()
         memory_adapter = getattr(self, "_memory_adapter", None)
         snapshot = (
             memory_adapter.shutdown(terminal=terminal) if memory_adapter else {}

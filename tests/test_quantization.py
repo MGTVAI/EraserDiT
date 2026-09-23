@@ -31,9 +31,13 @@ class QuantizationPolicyTests(unittest.TestCase):
             resource_policy='fullgpu',enable_torch_compile=False,operator_fusion_backend='disabled')
         validate_quantization(args)
         c.sp_degree=2
-        with self.assertRaises(ValueError):validate_quantization(args)
-        c.sp_degree=1
-        with self.assertRaises(ValueError):validate_quantization(args,SimpleNamespace(transformer_cache_mode='teacache',cache_text_projections=False))
+        validate_quantization(args)
+        args.resource_policy = "dynamic_offload"
+        args.enable_torch_compile = True
+        validate_quantization(args,SimpleNamespace(transformer_cache_mode="teacache",cache_text_projections=False))
+        args.operator_fusion_backend = "triton"
+        with self.assertRaises(ValueError):
+            validate_quantization(args)
 
 
 @unittest.skipUnless(os.environ.get('ERASERDIT_TEST_INT8')=='1','single GPU opt-in')
