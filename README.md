@@ -11,7 +11,7 @@
 
 ## 原始算法：[EraserDiT](https://github.com/JieLiu95/EraserDiT)
 
-**EraserDiT: Fast Video Inpainting with Diffusion Transformer Model** 是 Jie Liu 和 Zheng Hui 在芒果tv期间的视频擦除工作，可根据指定区域擦除视频中的物体，并恢复背景内容与时序一致性。
+**EraserDiT: Fast Video Inpainting with Diffusion Transformer Model** 可根据指定区域擦除视频中的物体，并恢复背景内容与时序一致性。
 
 | 输入视频 | 擦除结果 |
 | :---: | :---: |
