@@ -26,7 +26,7 @@
 ### 已实现的优化
 
 | 方向 | 实现 |
-| --- | --- | --- |
+| --- | --- |
 | **显存优化** | 整组件分阶段卸载；DiT 逐层卸载、pinned CPU 权重、独立 CUDA stream 预取与权重预算；阶段边界回收空闲显存缓存 | 
 | **视频内存** | 按窗口执行与帧缓存释放；可选流式读取、VAE 分块 | 
 | **单卡计算** | SDPA / FlashAttention / SageAttention 后端；`torch.compile`；Triton RMSNorm + AdaLN、QK RMSNorm + RoPE 融合；文本投影复用 | 
