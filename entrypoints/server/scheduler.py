@@ -139,7 +139,12 @@ class ServiceScheduler:
         time.sleep(self._cancel_timeout_seconds)
         with self._condition:
             self._cancel_watchdogs.discard(task_id)
-            record = self.task_store.get(task_id)
+            try:
+                record = self.task_store.get(task_id)
+            except ServiceError as error:
+                if error.code == "task_not_found":
+                    return
+                raise
             if (
                 record.status is not TaskStatus.RUNNING
                 or not record.cancellation_requested

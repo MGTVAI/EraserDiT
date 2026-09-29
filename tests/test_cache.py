@@ -228,6 +228,30 @@ class CacheTests(unittest.TestCase):
                                  input_hidden_states=torch.ones(1, 4, 8),
                                  output_hidden_states=torch.ones(1, 4, 8))
 
+    def test_cache_dit_completion_requires_current_compute(self):
+        from cache.base import CacheBranch
+
+        b = batch('cache_dit', cache_dit_warmup_steps=3)
+        with EraserDiTCacheWindow(b, total_steps=5, num_blocks=4) as w:
+            c = w.controller
+            branch = CacheBranch.POSITIVE
+            hidden = torch.ones(1, 4, 8)
+            for step in (0, 1, 1):
+                c.check(branch=branch, step=step, input_hidden_states=hidden,
+                        front_output_hidden_states=hidden + 1,
+                        global_sequence_length=4, local_sequence_length=4,
+                        valid_local_sequence_length=4, layout_signature='grid',
+                        dtype='torch.float32', device='cpu', hidden_width=8)
+                before = c.stats()['branches'][branch.value]
+                with self.assertRaisesRegex(RuntimeError, 'compute result was not recorded'):
+                    c.complete_step(branch=branch, step=step)
+                self.assertEqual(c.stats()['branches'][branch.value], before)
+                c.record_middle_compute(branch=branch, step=step,
+                                        front_output_hidden_states=hidden + 1,
+                                        middle_output_hidden_states=hidden + 4)
+                c.complete_step(branch=branch, step=step)
+            self.assertEqual(c.stats()['total']['completed_steps'], 3)
+
     def test_back_blocks_execute_on_reuse(self):
         b = batch('cache_dit', cache_dit_back_blocks=1, cache_dit_warmup_steps=0)
         with EraserDiTCacheWindow(b, total_steps=4, num_blocks=4) as w:

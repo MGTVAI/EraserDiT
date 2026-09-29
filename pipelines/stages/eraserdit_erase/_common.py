@@ -13,6 +13,8 @@ from typing import Any, Optional, Union
 import torch
 from diffusers.utils.torch_utils import randn_tensor
 
+from utils.latent import normalize_latents, denormalize_latents, latent_frame_count
+
 __all__ = [
     "EraserDiTTaskState",
     "field_summary",
@@ -153,32 +155,6 @@ def get_timesteps(scheduler, num_inference_steps: int, strength: float, device):
     if hasattr(scheduler, "set_begin_index"):
         scheduler.set_begin_index(t_start * scheduler.order)
     return timesteps, num_inference_steps - t_start
-
-
-def normalize_latents(
-    latents: torch.Tensor,
-    latents_mean: torch.Tensor,
-    latents_std: torch.Tensor,
-    scaling_factor: float = 1.0,
-) -> torch.Tensor:
-    latents_mean = latents_mean.view(1, -1, 1, 1, 1).to(latents.device, latents.dtype)
-    latents_std = latents_std.view(1, -1, 1, 1, 1).to(latents.device, latents.dtype)
-    return (latents - latents_mean) * scaling_factor / latents_std
-
-
-def denormalize_latents(
-    latents: torch.Tensor,
-    latents_mean: torch.Tensor,
-    latents_std: torch.Tensor,
-    scaling_factor: float = 1.0,
-) -> torch.Tensor:
-    latents_mean = latents_mean.view(1, -1, 1, 1, 1).to(latents.device, latents.dtype)
-    latents_std = latents_std.view(1, -1, 1, 1, 1).to(latents.device, latents.dtype)
-    return latents * latents_std / scaling_factor + latents_mean
-
-
-def latent_frame_count(num_frames: int, temporal_ratio: int = 8) -> int:
-    return (num_frames - 1) // temporal_ratio + 1
 
 
 __all__ += ["randn_tensor", "latent_frame_count"]

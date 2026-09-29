@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import time
-from typing import Callable
 
 import torch
+
+from pipelines.runtime.events import record_runtime_event
 
 from pipelines.runtime.contracts import EraseRuntimeContext
 from pipelines.runtime.contracts import ObjectRuntimeState
@@ -38,11 +39,9 @@ def _write_streaming_frames(
 
 
 def release_mask_frames(
-    *,
     context: EraseRuntimeContext,
     release_end: int,
     source: str,
-    record_runtime_event: Callable[..., dict],
 ) -> None:
     if context.mask_frame_cache is None:
         return
@@ -70,10 +69,8 @@ def release_mask_frames(
 
 
 def ensure_window_cache_loaded(
-    *,
     context: EraseRuntimeContext,
     spec: WindowSpec,
-    record_runtime_event: Callable[..., dict],
 ) -> None:
     if not _is_windowed_runtime_mode(context.runtime_mode):
         return
@@ -160,10 +157,8 @@ def ensure_window_cache_loaded(
 
 
 def evict_cache_before(
-    *,
     context: EraseRuntimeContext,
     frame_index: int,
-    record_runtime_event: Callable[..., dict],
 ) -> None:
     if context.window_runtime_mode != "streaming":
         return
@@ -280,12 +275,8 @@ def evict_cache_before(
 
 
 def flush_windowed_frames(
-    *,
     context: EraseRuntimeContext,
     flush_end: int,
-    record_runtime_event: Callable[..., dict],
-    evict_cache_before_fn: Callable[..., None],
-    release_mask_frames_fn: Callable[..., None],
 ) -> None:
     if not _is_windowed_runtime_mode(context.runtime_mode):
         return
@@ -335,9 +326,9 @@ def flush_windowed_frames(
             **flush_history_item,
         )
     context.next_write_index = flush_end
-    evict_cache_before_fn(context=context, frame_index=context.next_write_index)
+    evict_cache_before(context=context, frame_index=context.next_write_index)
     if context.window_runtime_mode == "streaming":
-        release_mask_frames_fn(
+        release_mask_frames(
             context=context,
             release_end=flush_end,
             source="streaming_tail_flush_after_evict",
@@ -351,17 +342,14 @@ def flush_windowed_frames(
 
 
 def materialize_object_window_mask(
-    *,
     context: EraseRuntimeContext,
     object_state: ObjectRuntimeState,
     spec: WindowSpec,
-    ensure_window_cache_loaded_fn: Callable[..., None],
     crop_bbox: tuple[int, int, int, int] | None = None,
 ):
-    _ = object_state
+    ensure_window_cache_loaded(context, spec)
     return materialize_window_mask(
         context=context,
         spec=spec,
-        ensure_window_cache_loaded_fn=ensure_window_cache_loaded_fn,
         crop_bbox=crop_bbox,
     )

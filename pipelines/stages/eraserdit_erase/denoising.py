@@ -195,11 +195,9 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
                 mask_input = mask_values.to(device=device)
                 expanded_timestep = timestep.expand(1)
 
-                negative_kwargs = dict(
+                model_kwargs = dict(
                     hidden_states=latent_model_input,
-                    encoder_hidden_states=negative_prompt_embeds,
                     timestep=expanded_timestep,
-                    encoder_attention_mask=negative_attention_mask,
                     num_frames=latent_num_frames,
                     height=latent_height,
                     width=latent_width,
@@ -209,29 +207,23 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
                     cond_latents=cond_input,
                     mask_values=mask_input,
                     **rotary_kwargs,
+                )
+                negative_kwargs = dict(
+                    model_kwargs,
+                    encoder_hidden_states=negative_prompt_embeds,
+                    encoder_attention_mask=negative_attention_mask,
                     **(cache_window.kwargs("negative", step_index) if cache_window else {}),
                 )
-                if mesh.active:
-                    pass
-                elif parallel_device is not None:
-                    negative_future = cfg_window.submit(**negative_kwargs)
-                else:
-                    noise_pred_uncond = transformer_for_forward(**negative_kwargs)[0].float()
+                if not mesh.active:
+                    if parallel_device is not None:
+                        negative_future = cfg_window.submit(**negative_kwargs)
+                    else:
+                        noise_pred_uncond = transformer_for_forward(**negative_kwargs)[0].float()
 
                 positive_kwargs = dict(
-                    hidden_states=latent_model_input,
+                    model_kwargs,
                     encoder_hidden_states=prompt_embeds,
-                    timestep=expanded_timestep,
                     encoder_attention_mask=prompt_attention_mask,
-                    num_frames=latent_num_frames,
-                    height=latent_height,
-                    width=latent_width,
-                    rope_interpolation_scale=rope_interpolation_scale,
-                    attention_kwargs=None,
-                    return_dict=False,
-                    cond_latents=cond_input,
-                    mask_values=mask_input,
-                    **rotary_kwargs,
                     **(cache_window.kwargs("positive", step_index) if cache_window else {}),
                 )
                 if nccl:

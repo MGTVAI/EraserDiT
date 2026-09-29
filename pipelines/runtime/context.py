@@ -11,6 +11,11 @@ from typing import Any, Callable
 import numpy as np
 import torch
 
+from pipelines.runtime.metadata import window_cache_impl_name as _window_cache_impl_name
+from pipelines.runtime.windowing.handlers import (
+    _build_runtime_video as build_runtime_video,
+    _build_runtime_mask as build_runtime_mask,
+)
 from config.eraserdit import EraserDiTEraseSamplingParams
 from config.server_args import ServerArgs
 from nodes.schedule_batch import Req
@@ -19,6 +24,7 @@ from pipelines.runtime.windowing.sp_dispatch import (
     ActiveSPWindowContext,
     SPWindowControlError,
     resolve_active_window_commit_context,
+    synchronize_window_runtime_boundary,
 )
 from pipelines.runtime.scheduler import RuntimeTaskScheduler
 from pipelines.runtime.tracks import _load_bbox_tracks
@@ -38,7 +44,8 @@ from utils.video_io import (
     SequentialVideoReader,
     SequentialVideoWriter,
     TensorFrameCache,
-    WindowedVideoStore,
+    read_video_array,
+    read_video_metadata,
 )
 
 _VIDEO_METADATA_PROTOCOL_VERSION = 1
@@ -128,17 +135,6 @@ def _decode_sp_video_metadata(
     return _validate_sp_video_metadata(metadata, fallback_fps=25.0)
 
 
-def _synchronize_sp_metadata_error(
-    error: BaseException | None,
-    server_args: ServerArgs,
-) -> None:
-    from pipelines.runtime.windowing.commit_sync import (
-        synchronize_window_runtime_boundary,
-    )
-
-    synchronize_window_runtime_boundary(error, server_args)
-
-
 def _apply_baseline_output_contract(
     profile: "VideoEncodingProfile",
     video_metadata: dict[str, Any],
@@ -176,7 +172,6 @@ def _read_and_broadcast_sp_video_metadata(
     video_path: str,
     fallback_fps: float,
     server_args: ServerArgs,
-    read_video_metadata: Callable[[str], dict[str, Any]],
 ) -> dict[str, Any]:
     writer_metadata: dict[str, Any] | None = None
     local_error: BaseException | None = None
@@ -228,10 +223,10 @@ def _read_and_broadcast_sp_video_metadata(
     except BaseException as error:
         decode_error = error
     if decode_error is not None:
-        _synchronize_sp_metadata_error(decode_error, server_args)
+        synchronize_window_runtime_boundary(decode_error, server_args)
         raise decode_error
     if decoded is None:
-        _synchronize_sp_metadata_error(local_error, server_args)
+        synchronize_window_runtime_boundary(local_error, server_args)
         raise SPWindowControlError(
             rank=active.parallel_context.global_rank,
             phase="video metadata preparation",
@@ -247,12 +242,6 @@ def _read_and_broadcast_sp_video_metadata(
         fps=fps,
     )
     return metadata
-
-
-def _window_cache_impl_name(cache: ArrayFrameCache | ChunkedFrameCache | TensorFrameCache | None) -> str:
-    if cache is None:
-        return "none"
-    return type(cache).__name__
 
 
 def _resolve_ffmpeg_thread_count(batch: Req) -> object:
@@ -271,14 +260,7 @@ def prepare_runtime_context(
     params: EraserDiTEraseSamplingParams,
     server_args: ServerArgs,
     resource_policy: Any,
-    build_runtime_video: Callable[
-        [torch.Tensor | str], tuple[torch.Tensor, dict[str, object]]
-    ],
-    build_runtime_mask: Callable[[torch.Tensor | str, int], torch.Tensor],
-    read_video_metadata: Callable[[str], dict[str, Any]],
-    read_video_array: Callable[[str], tuple[np.ndarray, Any] | np.ndarray],
     read_mask_array: Callable[[str], tuple[np.ndarray, Any] | np.ndarray],
-    window_store_builder: Callable[[str], WindowedVideoStore],
     memory_adapter: Any | None = None,
 ) -> EraseRuntimeContext:
     service_checkpoint(batch, server_args, phase="runtime_context_start")
@@ -346,7 +328,6 @@ def prepare_runtime_context(
                 video_path=params.video_input_path,
                 fallback_fps=float(params.fps or 25),
                 server_args=server_args,
-                read_video_metadata=read_video_metadata,
             )
         else:
             video_metadata = read_video_metadata(params.video_input_path)

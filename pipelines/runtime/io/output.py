@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import time
 
+from pipelines.runtime.io.streaming import flush_windowed_frames, release_mask_frames
+
 from config.eraserdit import EraserDiTEraseSamplingParams
 from nodes.schedule_batch import Req
 from pipelines.runtime.metadata import write_runtime_history_batch_extra
@@ -55,8 +57,6 @@ def finalize_output(
     batch: Req,
     context: EraseRuntimeContext,
     params: EraserDiTEraseSamplingParams,
-    flush_windowed_frames_fn,
-    release_mask_frames_fn,
 ) -> None:
     finalization_started = time.perf_counter()
     service_checkpoint(
@@ -82,7 +82,7 @@ def finalize_output(
                     raise ValueError(
                         "windowed_streaming runtime missing final output cache at finalize"
                     )
-                flush_windowed_frames_fn(context, flush_end=final_cache.end_index)
+                flush_windowed_frames(context, flush_end=final_cache.end_index)
                 if context.sequential_video_writer is not None:
                     close_started = time.perf_counter()
                     context.sequential_video_writer.close()
@@ -116,7 +116,7 @@ def finalize_output(
                 context.record_runtime_timing(
                     "video_encode_close", time.perf_counter() - close_started
                 )
-                release_mask_frames_fn(
+                release_mask_frames(
                     context,
                     release_end=cache_end,
                     source="preload_finalize",

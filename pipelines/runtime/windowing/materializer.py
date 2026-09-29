@@ -4,15 +4,16 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import asdict
-from typing import Any, Callable
 
 import numpy as np
 import torch
 
 from config.eraserdit import EraserDiTEraseSamplingParams
 from nodes.schedule_batch import Req
-from pipelines.runtime.tracks import _resolve_object_value
+from pipelines.runtime.events import record_runtime_event
 from pipelines.runtime.io.masks import materialize_window_mask
+from pipelines.runtime.io.streaming import ensure_window_cache_loaded
+from pipelines.runtime.tracks import _resolve_object_value, _select_sequence_item
 from pipelines.runtime.contracts import (
     EraseRuntimeContext,
     ObjectRuntimeState,
@@ -44,14 +45,6 @@ _SP_PEER_EXTRA_KEYS = (
 
 def _cpu_detach_tensor(tensor: torch.Tensor) -> torch.Tensor:
     return tensor.detach().to(device="cpu").contiguous()
-
-
-def _select_sequence_item(value: Any, index: int) -> Any:
-    if isinstance(value, (list, tuple)):
-        if not value:
-            return None
-        return value[min(index, len(value) - 1)]
-    return value
 
 
 def build_sp_peer_window_batch(
@@ -119,8 +112,6 @@ def materialize_window_batch(
     spec: WindowSpec,
     object_index: int,
     bbox_frames: torch.Tensor | None,
-    ensure_window_cache_loaded_fn: Callable[[EraseRuntimeContext, WindowSpec], None],
-    record_runtime_event_fn: Callable[..., dict[str, Any]],
     object_state: ObjectRuntimeState | None = None,
     video_cache: FrameCache | None = None,
     window_mask: torch.Tensor | None = None,
@@ -128,7 +119,7 @@ def materialize_window_batch(
     aligned_crop_bbox: tuple[int, int, int, int] | None = None,
 ) -> Req:
     if _is_windowed_runtime_mode(context.runtime_mode):
-        ensure_window_cache_loaded_fn(context, spec)
+        ensure_window_cache_loaded(context, spec)
         source_video_cache = video_cache or context.video_frame_cache
         if source_video_cache is None or context.mask_frame_cache is None:
             raise ValueError(f"{context.runtime_mode} runtime missing frame caches")
@@ -194,7 +185,6 @@ def materialize_window_batch(
             window_mask = materialize_window_mask(
                 context=context,
                 spec=spec,
-                ensure_window_cache_loaded_fn=ensure_window_cache_loaded_fn,
             )
     else:
         assert context.working_video is not None
@@ -270,7 +260,7 @@ def materialize_window_batch(
             }
         )
         if object_state is not None:
-            record_runtime_event_fn(
+            record_runtime_event(
                 context,
                 "text_embedding_cache_hit",
                 task_state=object_state,
@@ -312,7 +302,6 @@ def cache_window_text_embeddings(
     prompt_attention_mask: torch.Tensor,
     negative_prompt_embeds: torch.Tensor,
     negative_attention_mask: torch.Tensor,
-    record_runtime_event_fn: Callable[..., dict[str, Any]],
 ) -> None:
     cache_key = (
         object_index,
@@ -343,7 +332,7 @@ def cache_window_text_embeddings(
         if 0 <= int(object_index) < len(context.object_states)
         else None
     )
-    record_runtime_event_fn(
+    record_runtime_event(
         context,
         "text_embedding_cache_store",
         task_state=task_state,

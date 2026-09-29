@@ -176,6 +176,22 @@ for name in ('entrypoints', 'pipelines', 'loader', 'models'):
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_runtime_module_graph_is_acyclic(self):
+        paths = {
+            '.'.join(path.relative_to(ROOT).with_suffix('').parts).removesuffix('.__init__'): path
+            for path in (ROOT / 'pipelines/runtime').rglob('*.py')
+        }
+        dependencies = {
+            name: {target for _, target in imported_modules(path) if target in paths and target != name}
+            for name, path in paths.items()
+        }
+        while dependencies:
+            leaves = {name for name, targets in dependencies.items()
+                      if not targets & dependencies.keys()}
+            self.assertTrue(leaves, f'Cyclic runtime dependencies: {dependencies}')
+            for name in leaves:
+                del dependencies[name]
+
 
 if __name__ == "__main__":
     unittest.main()

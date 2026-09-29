@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Callable
-
 import torch
 
 from pipelines.runtime.contracts import EraseRuntimeContext
@@ -16,13 +14,9 @@ def materialize_window_mask(
     *,
     context: EraseRuntimeContext,
     spec: WindowSpec,
-    ensure_window_cache_loaded_fn: Callable[[EraseRuntimeContext, WindowSpec], None]
-    | None = None,
     crop_bbox: tuple[int, int, int, int] | None = None,
 ) -> torch.Tensor:
     if _is_windowed_runtime_mode(context.runtime_mode):
-        if ensure_window_cache_loaded_fn is not None:
-            ensure_window_cache_loaded_fn(context, spec)
         if context.mask_frame_cache is None:
             raise ValueError(f"{context.runtime_mode} runtime missing mask frame cache")
         active_mask_frames = context.mask_frame_cache.slice(

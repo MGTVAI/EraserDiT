@@ -277,7 +277,13 @@ class TaskStore:
             expired_ids.update(record.task_id for record in retained[:overflow])
         purged: list[str] = []
         for task_id in sorted(expired_ids):
-            self.purge(task_id)
+            try:
+                self.purge(task_id)
+            except ServiceError as error:
+                # A client may delete a terminal task after the snapshot above.
+                if error.code == "task_not_found":
+                    continue
+                raise
             purged.append(task_id)
         return purged
 

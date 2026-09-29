@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 import torch
+
+from pipelines.runtime.events import record_runtime_event, record_task_state_snapshot, update_window_state
+from pipelines.runtime.windowing.cache_ops import append_passthrough_gap, set_object_overlap_cache
 
 from nodes.schedule_batch import Req
 from pipelines.runtime.io.masks import consume_window_mask
@@ -231,11 +234,6 @@ def commit_window_to_object_output(
     object_state: ObjectRuntimeState,
     spec: WindowSpec,
     window_batch: Req,
-    append_passthrough_gap_fn,
-    set_object_overlap_cache_fn,
-    record_runtime_event_fn: Callable[..., dict[str, Any]],
-    record_task_state_snapshot_fn: Callable[..., dict[str, Any]],
-    update_window_state_fn,
 ) -> None:
     crop_patch_video = getattr(window_batch, "crop_video_modified", None)
     if crop_patch_video is None:
@@ -387,7 +385,7 @@ def commit_window_to_object_output(
             f"advanced beyond stable start {stable_start}: {output_cache.end_index}"
         )
     if output_cache.end_index < stable_start:
-        passthrough_gap_start, passthrough_gap_end = append_passthrough_gap_fn(
+        passthrough_gap_start, passthrough_gap_end = append_passthrough_gap(
             output_cache,
             input_cache,
             stable_start,
@@ -395,7 +393,7 @@ def commit_window_to_object_output(
     passthrough_gap_length = max(0, passthrough_gap_end - passthrough_gap_start)
     if passthrough_gap_length > 0:
         object_state.emit_pop_raw_input(passthrough_gap_start, passthrough_gap_length)
-        record_runtime_event_fn(
+        record_runtime_event(
             context,
             "raw_pop",
             task_state=object_state,
@@ -431,7 +429,7 @@ def commit_window_to_object_output(
             else int(stable_frames.nbytes),
         )
         object_state.emit_pop_modified(stable_start, stable_length)
-        record_runtime_event_fn(
+        record_runtime_event(
             context,
             "modified_pop",
             task_state=object_state,
@@ -451,7 +449,7 @@ def commit_window_to_object_output(
         overlap_frames = (
             overlap_frames.clone() if bf16_object_chain else overlap_frames.copy()
         )
-    set_object_overlap_cache_fn(object_state, stable_end, overlap_frames)
+    set_object_overlap_cache(object_state, stable_end, overlap_frames)
     consume_window_mask(
         context=context,
         spec=spec,
@@ -460,7 +458,7 @@ def commit_window_to_object_output(
 
     object_state.scene_index = spec.scene_index
     object_state.flush_frontier = stable_end
-    update_window_state_fn(
+    update_window_state(
         context,
         object_state.object_index,
         spec.window_index,
@@ -505,7 +503,7 @@ def commit_window_to_object_output(
             "output_cache_end": output_cache.end_index,
         }
     )
-    record_runtime_event_fn(
+    record_runtime_event(
         context,
         "window_commit",
         task_state=object_state,
@@ -517,7 +515,7 @@ def commit_window_to_object_output(
         overlap_right=spec.overlap_right,
         overlap_fuse_mode=overlap_fuse_mode,
     )
-    record_task_state_snapshot_fn(
+    record_task_state_snapshot(
         context,
         object_state,
         phase="committed",
@@ -534,11 +532,6 @@ def record_skipped_object_window(
     reason: str,
     prompt: Any,
     negative_prompt: Any,
-    append_passthrough_gap_fn,
-    set_object_overlap_cache_fn,
-    record_runtime_event_fn: Callable[..., dict[str, Any]],
-    record_task_state_snapshot_fn: Callable[..., dict[str, Any]],
-    update_window_state_fn,
 ) -> None:
     object_state.skip_count += 1
     stable_start = spec.load_start
@@ -552,7 +545,7 @@ def record_skipped_object_window(
             f"advanced beyond stable start {stable_start}: {object_state.output_cache.end_index}"
         )
     if object_state.output_cache.end_index < stable_start:
-        passthrough_gap_start, passthrough_gap_end = append_passthrough_gap_fn(
+        passthrough_gap_start, passthrough_gap_end = append_passthrough_gap(
             object_state.output_cache,
             object_state.input_cache,
             stable_start,
@@ -560,7 +553,7 @@ def record_skipped_object_window(
     passthrough_gap_length = max(0, passthrough_gap_end - passthrough_gap_start)
     if passthrough_gap_length > 0:
         object_state.emit_pop_raw_input(passthrough_gap_start, passthrough_gap_length)
-        record_runtime_event_fn(
+        record_runtime_event(
             context,
             "raw_pop",
             task_state=object_state,
@@ -579,7 +572,7 @@ def record_skipped_object_window(
             object_state.input_cache.slice(stable_start, stable_end)
         )
         object_state.emit_pop_raw_input(stable_start, stable_end - stable_start)
-        record_runtime_event_fn(
+        record_runtime_event(
             context,
             "raw_pop",
             task_state=object_state,
@@ -591,10 +584,10 @@ def record_skipped_object_window(
     overlap_frames = None
     if spec.overlap_right > 0:
         overlap_frames = object_state.input_cache.slice(stable_end, spec.commit_end)
-    set_object_overlap_cache_fn(object_state, stable_end, overlap_frames)
+    set_object_overlap_cache(object_state, stable_end, overlap_frames)
     object_state.scene_index = spec.scene_index
     object_state.flush_frontier = stable_end
-    update_window_state_fn(
+    update_window_state(
         context,
         object_state.object_index,
         spec.window_index,
@@ -641,7 +634,7 @@ def record_skipped_object_window(
             "output_cache_end": object_state.output_cache.end_index,
         }
     )
-    record_runtime_event_fn(
+    record_runtime_event(
         context,
         "window_skip",
         task_state=object_state,
@@ -650,7 +643,7 @@ def record_skipped_object_window(
         stable_end=stable_end,
         skip_reason=reason,
     )
-    record_task_state_snapshot_fn(
+    record_task_state_snapshot(
         context,
         object_state,
         phase="skipped",

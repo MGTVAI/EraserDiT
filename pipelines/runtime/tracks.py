@@ -159,3 +159,11 @@ def _resolve_object_scenes(
     if _is_scene_tuple(object_scenes):
         return [tuple(int(v) for v in object_scenes)]
     return [tuple(int(v) for v in scene) for scene in object_scenes]
+
+
+def _select_sequence_item(value: Any, index: int) -> Any:
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return None
+        return value[min(index, len(value) - 1)]
+    return value

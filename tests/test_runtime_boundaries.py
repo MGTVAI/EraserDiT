@@ -1,7 +1,9 @@
 """Behavior across relocated resource, distributed and media boundaries."""
 
 from dataclasses import replace
+from fractions import Fraction
 import importlib
+import logging
 import os
 from pathlib import Path
 import shutil
@@ -9,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -19,7 +22,7 @@ from config.resource_policy import resolve_runtime_resource_policy
 from utils.encoding import VideoEncodingProfile
 from utils.video_io import (
     SequentialVideoReader, SequentialVideoWriter, read_video_metadata,
-    binarize_mask_array,
+    binarize_mask_array, ArrayFrameCache, TensorFrameCache, frames_uint8_to_tensor,
 )
 from memory.tensor_ops import maybe_pin_tensor, module_device, move_module_to_device
 from parallel import runtime
@@ -27,6 +30,132 @@ from utils import logging_utils
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class WindowRuntimeTests(unittest.TestCase):
+    def make_runtime(self, *, streaming=False, objects=1, skip_tail=False):
+        from config.eraserdit import EraserDiTEraseSamplingParams
+        from nodes.schedule_batch import Req
+        from pipelines.runtime.contracts import EraseRuntimeContext
+
+        frames = np.full((17, 32, 32, 3), 64, dtype=np.uint8)
+        mode = 'windowed_streaming' if streaming else 'windowed_preload'
+        params = EraserDiTEraseSamplingParams(
+            num_frames=17, height=32, width=32, infer_len=9, overlap=1,
+            prompt='background', save_output=False, suppress_logs=True, runtime_mode=mode,
+        )
+        batch = Req(sampling_params=params, generator=torch.Generator().manual_seed(42))
+        cache = (
+            TensorFrameCache(start_index=0, shape_tail=(3, 32, 32), dtype=torch.bfloat16)
+            if streaming else ArrayFrameCache(start_index=0, shape_tail=(32, 32, 3), dtype=np.uint8)
+        )
+        cache.append(frames_uint8_to_tensor(frames).bfloat16() if streaming else frames)
+        mask = ArrayFrameCache(start_index=0, shape_tail=(32, 32), dtype=np.uint8)
+        mask.append(np.full((17, 32, 32), 255, dtype=np.uint8))
+        boxes = torch.tensor([[0, 0, 32, 32]] * 17)
+        if skip_tail:
+            boxes[9:] = 0
+        context = EraseRuntimeContext(
+            original_video=None, working_video=None, final_video=None, mask_cache=None,
+            fps=25, codec_name=None, runtime_mode=mode, requested_runtime_mode=mode,
+            effective_runtime_mode=mode, window_runtime_mode='streaming' if streaming else 'preload',
+            video_frame_cache=cache, mask_frame_cache=mask, object_count=objects,
+            bbox_tracks=[boxes.clone() for _ in range(objects)], request_batch=batch,
+        )
+        calls = []
+
+        def execute(stages, window, args):
+            calls.append((window.extra['object_index'], window.extra['window_index']))
+            window.crop_bbox = (0, 0, 32, 32)
+            window.crop_video_modified = (window.video + 16 / 255).clamp(0, 1)
+            window.output = window.crop_video_modified
+            return window
+
+        inputs = dict(executor=SimpleNamespace(execute_with_profiling=execute), stages=[],
+                      batch=batch, context=context, params=params, server_args=ServerArgs(),
+                      logger=logging.getLogger(__name__))
+        return inputs, calls
+
+    def test_window_order_overlap_skip_and_object_forwarding(self):
+        from pipelines.runtime.drivers.windowed import run_windowed_runtime
+
+        for streaming in (False, True):
+            for objects in (1, 2):
+                for skip_tail in (False, True):
+                    with self.subTest(streaming=streaming, objects=objects, skip_tail=skip_tail):
+                        inputs, calls = self.make_runtime(
+                            streaming=streaming, objects=objects, skip_tail=skip_tail)
+                        run_windowed_runtime(**inputs)
+                        context = inputs['context']
+                        self.assertEqual(calls, [(obj, win) for obj in range(objects)
+                                                 for win in range(1 if skip_tail else 2)])
+                        expected = torch.full((1, 3, 17, 32, 32), 64 / 255)
+                        if streaming:
+                            expected = expected.bfloat16()
+                        for _ in range(objects):
+                            # A skipped tail passes through from its load start,
+                            # including the preceding window's uncommitted overlap.
+                            expected[:, :, :8 if skip_tail else 17] += 16 / 255
+                        torch.testing.assert_close(context.final_video, expected, rtol=0, atol=0)
+                        self.assertTrue(all(state.finished for state in context.object_states))
+                        self.assertEqual([state.skip_count for state in context.object_states],
+                                         [int(skip_tail)] * objects)
+                        self.assertIsNone(context.pending_window_reclaim)
+
+    def test_failed_commit_releases_payload_and_records_timing(self):
+        from pipelines.runtime.drivers.windowed import run_windowed_runtime
+
+        inputs, _ = self.make_runtime()
+        windows = []
+
+        def fail_commit(**kwargs):
+            windows.append(kwargs['window_batch'])
+            raise RuntimeError('commit failed')
+
+        with patch('pipelines.runtime.drivers.windowed.commit_window_to_object_output',
+                   side_effect=fail_commit), \
+             patch('pipelines.runtime.windowing.commit_sync.resolve_active_window_commit_context',
+                   return_value=object()):
+            with self.assertRaisesRegex(RuntimeError, 'commit failed'):
+                run_windowed_runtime(**inputs)
+        self.assertIsNone(windows[0].crop_video_modified)
+        self.assertIsNone(windows[0].output)
+        self.assertEqual(inputs['context'].runtime_timing_counts['cache_commit'], 1)
+
+    def test_file_context_and_output_for_both_runtime_modes(self):
+        from pipelines.eraserdit_erase_pipeline import EraserDiTErasePipeline
+        from pipelines.runtime.drivers.windowed import run_windowed_runtime
+        from pipelines.runtime.io.output import close_runtime_resources
+
+        with tempfile.TemporaryDirectory() as directory:
+            for name, value in (('video', 64), ('mask', 255)):
+                writer = SequentialVideoWriter(str(Path(directory) / f'{name}.mp4'),
+                                               width=32, height=32, fps=25, thread_count=1)
+                try:
+                    writer.write_frames(np.full((17, 32, 32, 3), value, dtype=np.uint8))
+                finally:
+                    writer.close()
+            for streaming in (False, True):
+                inputs, _ = self.make_runtime(streaming=streaming)
+                batch, params = inputs['batch'], inputs['params']
+                params.video_input_path = str(Path(directory) / 'video.mp4')
+                params.mask_input_path = str(Path(directory) / 'mask.mp4')
+                params.output_path = directory
+                params.output_file_name = f'result-{streaming}.mp4'
+                params.save_output = True
+                pipeline = EraserDiTErasePipeline.__new__(EraserDiTErasePipeline)
+                pipeline._memory_adapter = None
+                context = pipeline._prepare_global_context(batch, inputs['server_args'])
+                try:
+                    inputs['context'] = context
+                    run_windowed_runtime(**inputs)
+                    pipeline._maybe_save_output(batch, context)
+                    output = read_video_metadata(batch.extra['output_file_path'])
+                    self.assertEqual((output['num_frames'], output['width'], output['height']),
+                                     (17, 32, 32))
+                    self.assertEqual(Fraction(output['fps_fraction']), 25)
+                finally:
+                    close_runtime_resources(context)
 
 
 class RuntimeBoundaryTests(unittest.TestCase):

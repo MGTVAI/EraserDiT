@@ -40,6 +40,15 @@ CLI / HTTP worker → EraseSession → pipeline 装配
 采样参数构造和 capability。服务进度适配位于 `entrypoints/server/control.py`，
 通用取消令牌和同步检查点位于 `nodes/control.py`。
 
+流水线负责模型组件、stage 装配和请求资源生命周期；窗口驱动直接调用运行时的事件、
+帧加载、对象调度与提交函数，不再由流水线构造回调集合并逐层传递。
+`windowing/handlers.py` 只负责输入张量格式转换。模型专用的 RGB 掩码读取阈值仍由
+EraserDiT 流水线传入，帧缓存释放和对象间转发 hooks 则由运行时维护。
+
+窗口命令和共用错误同步由 `windowing/sp_dispatch.py` 管理，提交模块
+`windowing/commit_sync.py` 单向依赖它，并保留原有错误与同步函数导出。
+模型 stages 的 latent 归一化、反归一化和帧数换算统一使用 `utils/latent.py`。
+
 ## 依赖约束
 
 - 非入口模块不导入 `entrypoints`。
@@ -50,7 +59,8 @@ CLI / HTTP worker → EraseSession → pipeline 装配
 - `utils` 的基础工具实现只依赖本包，不依赖其他项目包。
 - `memory` 仅使用配置和基础工具，不依赖模型装配。
 
-`tests/test_architecture.py` 检查包依赖方向、实现包静态依赖图无环及独立导入行为。
+`tests/test_architecture.py` 检查包依赖方向、实现包及运行时模块静态依赖图无环，
+并验证独立导入行为。
 检查覆盖普通导入、函数内导入、类型检查分支和字面量动态导入。
 
 ## 开发验证

@@ -1,8 +1,11 @@
 """CPU-only HTTP contract tests; no weights or worker processes required."""
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
 
@@ -165,6 +168,41 @@ class ServiceAPITest(unittest.TestCase):
             self.assertEqual(properties["num_inference_steps"]["default"], 50)
             self.assertIn("model", properties)
             self.assertIn("multipart/form-data", content)
+
+    def test_expiry_cleanup_tolerates_concurrent_deletion(self):
+        task_ids = [self.create() for _ in range(2)]
+        for task_id in task_ids:
+            self.store.transition(task_id, TaskStatus.CANCELLED, now=0)
+        deleted_id, retained_id = sorted(task_ids)
+        purge = self.store.purge
+
+        def concurrent_purge(task_id):
+            if task_id == deleted_id:
+                purge(task_id)  # Another caller deletes after the expiry snapshot.
+            return purge(task_id)
+
+        with patch.object(self.store, "purge", side_effect=concurrent_purge):
+            self.assertEqual(self.store.cleanup_expired(now=61), [retained_id])
+        self.assertEqual(self.store.list_records(), [])
+        self.assertEqual(list(self.store.tasks_root.iterdir()), [])
+
+    def test_cancel_watchdog_after_task_deletion(self):
+        from entrypoints.server.scheduler import ServiceScheduler
+
+        task_id = self.create()
+        self.store.transition(task_id, TaskStatus.RUNNING)
+        self.store.request_cancellation(task_id)
+        self.store.transition(task_id, TaskStatus.CANCELLED)
+        self.store.purge(task_id)
+        scheduler = SimpleNamespace(
+            task_store=self.store, worker_group=Mock(), _accepting=True,
+            _condition=threading.Condition(), _cancel_timeout_seconds=0,
+            _cancel_watchdogs={task_id},
+        )
+        ServiceScheduler._cancel_watchdog(scheduler, task_id)
+        self.assertEqual(scheduler._cancel_watchdogs, set())
+        self.assertTrue(scheduler._accepting)
+        scheduler.worker_group.mark_fatal.assert_not_called()
 
 
 if __name__ == "__main__":

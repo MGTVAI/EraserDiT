@@ -24,7 +24,7 @@ CUDA_VISIBLE_DEVICES='' ERASERDIT_TEST_TWO_GPU=0 ERASERDIT_TEST_INT8=0 \
 | `test_assembly_contracts.py` | EraserDiT 默认契约与旧模型拒绝、并行计划类型兼容及默认策略 |
 | `test_stage_compatibility.py` | stage 导入顺序、模块身份、patch 与装配契约 |
 | `test_parallel_compatibility.py` | 通用并行/算子独立导入、模型适配模块身份及 patch 契约 |
-| `test_runtime_boundaries.py` | 分布式状态与日志判断、资源策略回退、异步视频 IO 与编码契约 |
+| `test_runtime_boundaries.py` | 分布式状态与日志判断、资源策略回退、视频 IO；预加载/流式窗口顺序、重叠、跳过、多对象传递和提交异常释放 |
 | `test_prepost_boundaries.py` | EraserDiT 预/后处理导入契约、patch 行为、通用裁剪独立导入 |
 | `test_memory_lifetimes.py` | mask 分批与完整处理的 CPU/GPU 数值一致性、进入 VAE 前视频引用释放 |
 | `test_static_condition_reuse.py` | 请求内文本编码缓存失效和隔离、预计算 RoPE 的 CPU/GPU 数值一致性 |

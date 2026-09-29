@@ -8,6 +8,7 @@ from typing import Callable
 
 import torch
 
+from parallel.stage_policy import synchronize_stage_error
 from config.server_args import ServerArgs
 from config.window_parallel import SequenceParallelContract
 from distributed.group_coordinator import GroupCoordinator
@@ -273,15 +274,42 @@ def decode_sp_window_command(
     )
 
 
-def _synchronize_runtime_boundary(
+class WindowCommitFatalError(RuntimeError):
+    """Normalize a non-Exception failure before the executor stage boundary."""
+
+    def __init__(self, *, phase: str, original: BaseException) -> None:
+        self.phase = phase
+        self.original_type = type(original).__name__
+        super().__init__(
+            f"Window commit {phase} raised non-Exception "
+            f"{self.original_type}: {original}"
+        )
+
+
+def _normalize_stage_error(
+    error: BaseException | None,
+    *,
+    phase: str,
+) -> Exception | None:
+    if error is None or isinstance(error, Exception):
+        return error
+    try:
+        raise WindowCommitFatalError(phase=phase, original=error) from error
+    except WindowCommitFatalError as normalized_error:
+        return normalized_error
+
+
+def synchronize_window_runtime_boundary(
     error: BaseException | None,
     server_args: ServerArgs,
 ) -> None:
-    from pipelines.runtime.windowing.commit_sync import (
-        synchronize_window_runtime_boundary,
+    """Keep distributed ranks aligned after writer-only window lifecycle work."""
+    normalized_error = _normalize_stage_error(error, phase="runtime boundary")
+    parallel_context = getattr(server_args, "parallel_context", None)
+    synchronize_stage_error(
+        normalized_error,
+        parallel_context if isinstance(parallel_context, ParallelContext) else None,
     )
-
-    synchronize_window_runtime_boundary(error, server_args)
 
 
 def _error_command(error: BaseException) -> SPWindowCommand:
@@ -355,12 +383,12 @@ def dispatch_sp_window_command(
     except BaseException as error:
         decode_error = error
     if decode_error is not None:
-        _synchronize_runtime_boundary(decode_error, server_args)
+        synchronize_window_runtime_boundary(decode_error, server_args)
         raise decode_error
     assert command is not None
 
     if command.code is SPWindowCommandCode.ERROR:
-        _synchronize_runtime_boundary(preparation_error, server_args)
+        synchronize_window_runtime_boundary(preparation_error, server_args)
         raise SPWindowControlError(
             rank=active.parallel_context.global_rank,
             phase=phase,
@@ -381,4 +409,5 @@ __all__ = (
     "dispatch_sp_window_command",
     "encode_sp_window_command",
     "resolve_active_window_commit_context",
+    "synchronize_window_runtime_boundary",
 )

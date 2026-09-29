@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Callable
 
 import numpy as np
 import torch
+
+from pipelines.runtime.events import record_runtime_event, record_task_state_snapshot
 
 from pipelines.runtime.contracts import (
     EraseRuntimeContext,
@@ -147,8 +148,6 @@ def forward_task_channel_range(
     start_index: int,
     length: int,
     channel: str,
-    record_runtime_event: Callable[..., dict[str, Any]],
-    record_task_state_snapshot: Callable[..., dict[str, Any]],
 ) -> None:
     if length <= 0:
         return
@@ -224,8 +223,6 @@ def register_runtime_task_chain_hooks(
     *,
     context: EraseRuntimeContext,
     object_states: list[ObjectRuntimeState],
-    record_runtime_event: Callable[..., dict[str, Any]],
-    record_task_state_snapshot: Callable[..., dict[str, Any]],
 ) -> None:
     for object_index, object_state in enumerate(object_states[:-1]):
         next_state = object_states[object_index + 1]
@@ -238,8 +235,6 @@ def register_runtime_task_chain_hooks(
                 start_index=start_index,
                 length=length,
                 channel="raw",
-                record_runtime_event=record_runtime_event,
-                record_task_state_snapshot=record_task_state_snapshot,
             ),
         )
         object_state.register_pop_modified_hook(
@@ -251,7 +246,5 @@ def register_runtime_task_chain_hooks(
                 start_index=start_index,
                 length=length,
                 channel="modified",
-                record_runtime_event=record_runtime_event,
-                record_task_state_snapshot=record_task_state_snapshot,
             ),
         )

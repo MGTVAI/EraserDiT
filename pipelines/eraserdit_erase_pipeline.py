@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import time
 from functools import partial
-from typing import Any
 
 import torch
 
@@ -36,10 +35,7 @@ from pipelines.stages.eraserdit_erase._common import (
 from utils.inference_timing import record_diagnostic_stage
 from utils.logging_utils import init_logger
 from utils.video_io import (
-    WindowedVideoStore,
     read_mask_rgb_array as _read_mask_rgb_array,
-    read_video_array,
-    read_video_metadata,
 )
 from pipelines.runtime.context import prepare_runtime_context
 from pipelines.runtime.contracts import (
@@ -50,32 +46,6 @@ from pipelines.runtime.drivers.windowed import run_windowed_runtime
 from pipelines.runtime.io.output import (
     close_runtime_resources,
     finalize_output,
-)
-from pipelines.runtime.windowing.cache_ops import (
-    append_passthrough_gap as runtime_append_passthrough_gap,
-    create_empty_cache_like as runtime_create_empty_cache_like,
-    register_runtime_task_chain_hooks as runtime_register_task_chain_hooks,
-    set_object_overlap_cache as runtime_set_object_overlap_cache,
-)
-from pipelines.runtime.windowing.commit_ops import (
-    commit_window_to_object_output,
-    record_skipped_object_window,
-)
-from pipelines.runtime.windowing.handlers import (
-    _build_runtime_mask,
-    _build_runtime_video,
-    _create_runtime_empty_cache_like,
-    _ensure_runtime_window_cache_loaded,
-    _evict_runtime_cache_before,
-    _flush_runtime_windowed_frames,
-    _record_runtime_event,
-    _record_runtime_skipped_object_window,
-    _record_task_state_snapshot,
-    _register_runtime_task_chain_hooks,
-    _release_runtime_mask_frames,
-    _select_sequence_item,
-    _update_runtime_window_state,
-    _window_cache_impl_name,
 )
 
 logger = init_logger(__name__)
@@ -270,10 +240,6 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
             params=params,
             server_args=server_args,
             resource_policy=server_args.resolve_resource_policy(),
-            build_runtime_video=_build_runtime_video,
-            build_runtime_mask=_build_runtime_mask,
-            read_video_metadata=read_video_metadata,
-            read_video_array=read_video_array,
             # The baseline thresholds each RGB channel of the raw mask stream at
             # ``255/2 * mask_threshold`` (utils/pre.py:257).  The shared readers
             # default to 0.3*max and to a luma decode, either of which flips a
@@ -282,152 +248,8 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
                 _read_mask_rgb_array,
                 threshold_ratio=float(params.mask_threshold) / 2.0,
             ),
-            window_store_builder=WindowedVideoStore,
             memory_adapter=self._memory_adapter,
         )
-
-    def _commit_window_to_object_output(
-        self,
-        context: EraseRuntimeContext,
-        object_state: Any,
-        spec: Any,
-        window_batch: Req,
-    ) -> None:
-        started = time.perf_counter()
-        try:
-            commit_window_to_object_output(
-                context=context,
-                object_state=object_state,
-                spec=spec,
-                window_batch=window_batch,
-                append_passthrough_gap_fn=runtime_append_passthrough_gap,
-                set_object_overlap_cache_fn=runtime_set_object_overlap_cache,
-                record_runtime_event_fn=_record_runtime_event,
-                record_task_state_snapshot_fn=_record_task_state_snapshot,
-                update_window_state_fn=_update_runtime_window_state,
-            )
-        finally:
-            context.record_runtime_timing(
-                "cache_commit", time.perf_counter() - started
-            )
-
-    def _run_windowed_object_chain(
-        self,
-        batch: Req,
-        context: EraseRuntimeContext,
-        params: EraserDiTEraseSamplingParams,
-        server_args: ServerArgs,
-    ) -> Req:
-        from dataclasses import dataclass, field
-        from typing import Callable
-
-        @dataclass
-        class _WindowedHandlers:
-            window_cache_impl_name: Callable = field(default=lambda _: "none")
-            select_sequence_item: Callable = field(default=lambda v, i: v)
-            create_empty_cache_like: Callable = field(default=lambda *a, **kw: None)
-            register_runtime_task_chain_hooks: Callable = field(
-                default=lambda *a, **kw: None
-            )
-            record_runtime_event: Callable = field(default=lambda *a, **kw: None)
-            record_task_state_snapshot: Callable = field(default=lambda *a, **kw: None)
-            update_window_state: Callable = field(default=lambda *a, **kw: None)
-            ensure_window_cache_loaded: Callable = field(default=lambda *a, **kw: None)
-            materialize_object_window_mask: Callable = field(
-                default=lambda *a, **kw: None
-            )
-            record_skipped_object_window: Callable = field(
-                default=lambda *a, **kw: None
-            )
-            commit_window_to_object_output: Callable = field(
-                default=lambda *a, **kw: None
-            )
-            set_object_overlap_cache: Callable = field(default=lambda *a, **kw: None)
-            evict_cache_before: Callable = field(default=lambda *a, **kw: None)
-            release_mask_frames: Callable = field(default=lambda *a, **kw: None)
-            flush_windowed_frames: Callable = field(default=lambda *a, **kw: None)
-            log_runtime_progress: Callable = field(default=lambda *a, **kw: None)
-
-        handlers = _WindowedHandlers(
-            window_cache_impl_name=_window_cache_impl_name,
-            select_sequence_item=_select_sequence_item,
-            create_empty_cache_like=_create_runtime_empty_cache_like,
-            register_runtime_task_chain_hooks=_register_runtime_task_chain_hooks,
-            record_runtime_event=_record_runtime_event,
-            record_task_state_snapshot=_record_task_state_snapshot,
-            update_window_state=_update_runtime_window_state,
-            ensure_window_cache_loaded=_ensure_runtime_window_cache_loaded,
-            materialize_object_window_mask=self._materialize_object_window_mask,
-            record_skipped_object_window=_record_runtime_skipped_object_window,
-            commit_window_to_object_output=self._commit_window_to_object_output,
-            set_object_overlap_cache=runtime_set_object_overlap_cache,
-            evict_cache_before=_evict_runtime_cache_before,
-            release_mask_frames=_release_runtime_mask_frames,
-            flush_windowed_frames=_flush_runtime_windowed_frames,
-            log_runtime_progress=self._log_runtime_progress,
-        )
-        return run_windowed_runtime(
-            executor=self.executor,
-            stages=self.stages,
-            batch=batch,
-            context=context,
-            params=params,
-            server_args=server_args,
-            logger=logger,
-            handlers=handlers,
-        )
-
-    def _materialize_object_window_mask(
-        self,
-        context: EraseRuntimeContext,
-        object_state: Any,
-        spec: Any,
-        crop_bbox: tuple[int, int, int, int] | None = None,
-    ) -> torch.Tensor:
-        from pipelines.runtime.io.streaming import (
-            materialize_object_window_mask as runtime_materialize,
-        )
-
-        return runtime_materialize(
-            context=context,
-            object_state=object_state,
-            spec=spec,
-            ensure_window_cache_loaded_fn=_ensure_runtime_window_cache_loaded,
-            crop_bbox=crop_bbox,
-        )
-
-    def _log_runtime_progress(
-        self,
-        context: EraseRuntimeContext,
-        completed_windows: int,
-        total_windows: int,
-        current_object_index: int,
-        current_window_index: int,
-    ) -> None:
-        if total_windows <= 0:
-            return
-        elapsed = time.time() - context.pipeline_start_time
-        rate = elapsed / max(completed_windows, 1)
-        remaining = max(total_windows - completed_windows, 0) * rate
-        logger.info(
-            "Progress %d/%d %.1f%% object=%d window=%d elapsed=%.1fs eta=%.1fs",
-            completed_windows,
-            total_windows,
-            100.0 * completed_windows / max(total_windows, 1),
-            current_object_index + 1,
-            current_window_index + 1,
-            elapsed,
-            remaining,
-        )
-        if context.progress_state is not None:
-            context.progress_state.update_pipeline(
-                completed=completed_windows,
-                total=total_windows,
-                object_index=current_object_index,
-                object_count=context.object_count,
-                window_index=current_window_index,
-                window_count=len(context.window_specs),
-            )
 
     def _maybe_save_output(
         self, batch: Req, context: EraseRuntimeContext
@@ -437,8 +259,6 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
             batch=batch,
             context=context,
             params=params,
-            flush_windowed_frames_fn=_flush_runtime_windowed_frames,
-            release_mask_frames_fn=_release_runtime_mask_frames,
         )
 
     def _install_task_state(
@@ -493,8 +313,9 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
                     "runtime_mode='windowed_streaming'."
                 )
             runtime_driver_start = time.perf_counter()
-            result = self._run_windowed_object_chain(
-                batch, context, params, server_args
+            result = run_windowed_runtime(
+                executor=self.executor, stages=self.stages, batch=batch,
+                context=context, params=params, server_args=server_args, logger=logger,
             )
             record_diagnostic_stage(
                 batch.metrics,

@@ -16,6 +16,9 @@ from distributed.parallel_state import (
 )
 from pipelines.runtime.windowing.sp_dispatch import (
     ActiveSPWindowContext as _ActiveCommitContext,
+    WindowCommitFatalError,
+    _normalize_stage_error,
+    synchronize_window_runtime_boundary,
     resolve_active_window_commit_context,
 )
 from parallel.stage_policy import synchronize_stage_error
@@ -49,18 +52,6 @@ class WindowCommitPeerError(RuntimeError):
         rank_label = "rank" if len(peer_ranks) == 1 else "ranks"
         super().__init__(
             f"Window commit {phase} failed on peer {rank_label} {ranks}"
-        )
-
-
-class WindowCommitFatalError(RuntimeError):
-    """Normalize a non-Exception failure before the executor stage boundary."""
-
-    def __init__(self, *, phase: str, original: BaseException) -> None:
-        self.phase = phase
-        self.original_type = type(original).__name__
-        super().__init__(
-            f"Window commit {phase} raised non-Exception "
-            f"{self.original_type}: {original}"
         )
 
 
@@ -250,19 +241,6 @@ def _synchronize_local_error(
         )
 
 
-def _normalize_stage_error(
-    error: BaseException | None,
-    *,
-    phase: str,
-) -> Exception | None:
-    if error is None or isinstance(error, Exception):
-        return error
-    try:
-        raise WindowCommitFatalError(phase=phase, original=error) from error
-    except WindowCommitFatalError as normalized_error:
-        return normalized_error
-
-
 def _allocate_control_buffers(
     *,
     world_size: int,
@@ -387,19 +365,6 @@ def synchronize_window_commit(
         batch.output = payload
         batch.decoded_video = None
         return batch
-
-
-def synchronize_window_runtime_boundary(
-    error: BaseException | None,
-    server_args: ServerArgs,
-) -> None:
-    """Keep distributed ranks aligned after writer-only window lifecycle work."""
-    normalized_error = _normalize_stage_error(error, phase="runtime boundary")
-    parallel_context = getattr(server_args, "parallel_context", None)
-    synchronize_stage_error(
-        normalized_error,
-        parallel_context if isinstance(parallel_context, ParallelContext) else None,
-    )
 
 
 def release_window_commit_payload(

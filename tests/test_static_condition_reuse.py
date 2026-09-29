@@ -10,6 +10,58 @@ from config.server_args import ServerArgs, set_global_server_args
 
 
 class StaticConditionTests(unittest.TestCase):
+    def test_serial_denoising_keeps_cfg_inputs_and_scheduler_order(self):
+        from config.eraserdit import EraserDiTEraseSamplingParams, EraserDiTPipelineConfig
+        from nodes.schedule_batch import Req
+        from pipelines.stages.eraserdit_erase._common import MODEL_FRAMES_KEY
+        from pipelines.stages.eraserdit_erase.denoising import EraserDiTEraseDenoisingStage
+
+        calls, predictions = [], []
+        rotary = object()
+
+        class Transformer(torch.nn.Module):
+            config = SimpleNamespace(patch_size=1, patch_size_t=1)
+            transformer_blocks = []
+
+            def rope(self, *args):
+                return rotary
+
+            def forward(self, **kwargs):
+                calls.append(kwargs)
+                return (kwargs['hidden_states'] + kwargs['encoder_hidden_states'].mean(),)
+
+        def step(noise, timestep, latents, return_dict):
+            predictions.append(noise.clone())
+            return (latents - noise,)
+
+        args = ServerArgs(device='cpu', pipeline_config=EraserDiTPipelineConfig())
+        model = Transformer()
+        stage = EraserDiTEraseDenoisingStage(model, SimpleNamespace(step=step), args)
+        batch = Req(
+            sampling_params=EraserDiTEraseSamplingParams(num_inference_steps=2, guidance_scale=2),
+            modules={'vae': SimpleNamespace(temporal_compression_ratio=8)},
+            extra={MODEL_FRAMES_KEY: 1}, latents=torch.zeros(1, 1, 1, 2, 2),
+            cond_latents=torch.ones(1, 1, 1, 2, 2), mask_values=torch.ones(1, 1, 1, 2, 2),
+            prompt_embeds=torch.full((1, 4, 8), 3.), negative_prompt_embeds=torch.ones(1, 4, 8),
+            prompt_attention_mask=torch.ones(1, 4), negative_attention_mask=torch.zeros(1, 4),
+            timesteps=torch.tensor([2., 1.]),
+        )
+        with patch('torch.autocast', return_value=nullcontext()):
+            stage.forward(batch, args)
+        self.assertEqual(len(calls), 4)
+        for index, values in enumerate(calls):
+            negative = index % 2 == 0
+            self.assertIs(values['encoder_hidden_states'],
+                          batch.negative_prompt_embeds if negative else batch.prompt_embeds)
+            self.assertIs(values['encoder_attention_mask'],
+                          batch.negative_attention_mask if negative else batch.prompt_attention_mask)
+            self.assertIs(values['image_rotary_emb'], rotary)
+            self.assertIs(values['cond_latents'], batch.cond_latents)
+            self.assertEqual(values['timestep'].item(), 2 - index // 2)
+        torch.testing.assert_close(predictions[0], torch.full_like(batch.latents, 5.))
+        torch.testing.assert_close(predictions[1], torch.zeros_like(batch.latents))
+        torch.testing.assert_close(batch.latents, torch.full_like(batch.latents, -5.))
+
     def test_text_cache_invalidates_and_is_request_owned(self):
         from pipelines.stages.eraserdit_erase._common import EraserDiTTaskState, TASK_STATE_KEY
         from pipelines.stages.eraserdit_erase.text_encoding import EraserDiTEraseTextEncodingStage

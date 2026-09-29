@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable
-
 from config.eraserdit import EraserDiTEraseSamplingParams
+from pipelines.runtime.events import record_runtime_event, record_task_state_snapshot
+from pipelines.runtime.metadata import window_cache_impl_name
+from pipelines.runtime.windowing.cache_ops import (
+    create_empty_cache_like,
+    register_runtime_task_chain_hooks,
+)
 from pipelines.runtime.tracks import (
     _resolve_object_scenes,
     _resolve_object_value,
@@ -14,22 +18,12 @@ from pipelines.runtime.contracts import (
     ObjectRuntimeState,
 )
 from pipelines.runtime.windowing.planner import build_window_specs
-from utils.video_io import ArrayFrameCache, ChunkedFrameCache, TensorFrameCache
-
-FrameCache = ArrayFrameCache | ChunkedFrameCache | TensorFrameCache
 
 
 def build_object_runtime_states(
     *,
     context: EraseRuntimeContext,
     params: EraserDiTEraseSamplingParams,
-    create_empty_cache_like_fn: Callable[[FrameCache, int], FrameCache],
-    register_runtime_task_chain_hooks_fn: Callable[
-        [EraseRuntimeContext, list[ObjectRuntimeState]], None
-    ],
-    record_runtime_event_fn: Callable[..., dict[str, Any]],
-    record_task_state_snapshot_fn: Callable[..., dict[str, Any]],
-    window_cache_impl_name_fn: Callable[[FrameCache | None], str],
 ) -> tuple[list[ObjectRuntimeState], int]:
     if context.video_frame_cache is None:
         raise ValueError("windowed runtime missing source video cache")
@@ -73,12 +67,12 @@ def build_object_runtime_states(
             input_role = "source_video_cache"
             input_frontier = input_cache.end_index
         else:
-            input_cache = create_empty_cache_like_fn(context.video_frame_cache, 0)
+            input_cache = create_empty_cache_like(context.video_frame_cache, start_index=0)
             input_role = f"object_{object_index - 1}_output"
             input_frontier = input_cache.end_index
 
-        output_cache = create_empty_cache_like_fn(context.video_frame_cache, 0)
-        overlap_cache = create_empty_cache_like_fn(context.video_frame_cache, 0)
+        output_cache = create_empty_cache_like(context.video_frame_cache, start_index=0)
+        overlap_cache = create_empty_cache_like(context.video_frame_cache, start_index=0)
         object_states.append(
             ObjectRuntimeState(
                 task_index=object_index,
@@ -109,22 +103,22 @@ def build_object_runtime_states(
         object_states[-1].output_cache if object_states else None
     )
     context.task_state_history = []
-    register_runtime_task_chain_hooks_fn(context, object_states)
+    register_runtime_task_chain_hooks(context=context, object_states=object_states)
     for state in object_states:
-        record_runtime_event_fn(
+        record_runtime_event(
             context,
             "task_state_initialized",
             task_state=state,
             input_role=state.input_role,
             scene_index=state.scene_index,
             window_count=state.window_count,
-            raw_input_cache_impl=window_cache_impl_name_fn(state.raw_input_cache),
-            modified_output_cache_impl=window_cache_impl_name_fn(
+            raw_input_cache_impl=window_cache_impl_name(state.raw_input_cache),
+            modified_output_cache_impl=window_cache_impl_name(
                 state.modified_output_cache
             ),
-            overlap_output_cache_impl=window_cache_impl_name_fn(
+            overlap_output_cache_impl=window_cache_impl_name(
                 state.overlap_output_cache
             ),
         )
-        record_task_state_snapshot_fn(context, state, phase="initialized")
+        record_task_state_snapshot(context, state, phase="initialized")
     return object_states, total_windows

@@ -27,7 +27,7 @@ def denormalize_latents(
     return latents * latents_std / scaling_factor + latents_mean
 
 
-def latent_frame_count(num_frames: int, temporal_ratio: int) -> int:
+def latent_frame_count(num_frames: int, temporal_ratio: int = 8) -> int:
     return (num_frames - 1) // temporal_ratio + 1
 
 

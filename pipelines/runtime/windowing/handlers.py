@@ -1,62 +1,12 @@
-"""Composed-pipeline handlers for the windowed runtime.
-
-Model-agnostic glue that adapts the ``pipelines.runtime`` runtime callbacks to the
-pipeline-side helpers.  Shared by every windowed erase pipeline; nothing here is
-specific to a particular diffusion model.
-"""
+"""Normalize tensor and file inputs for runtime context preparation."""
 
 from __future__ import annotations
 
-import time
-from typing import Any
-
 import torch
 
-from nodes.schedule_batch import Req
-from pipelines.runtime.contracts import (
-    EraseRuntimeContext,
-    ObjectRuntimeState,
-)
-from pipelines.runtime.events import (
-    record_runtime_event as runtime_record_event,
-    record_task_state_snapshot as runtime_record_task_state_snapshot,
-    update_window_state as runtime_update_window_state,
-)
-from pipelines.runtime.io.streaming import (
-    ensure_window_cache_loaded as runtime_ensure_window_cache_loaded,
-    evict_cache_before as runtime_evict_cache_before,
-    flush_windowed_frames as runtime_flush_windowed_frames,
-    materialize_object_window_mask as runtime_materialize_object_window_mask,
-    release_mask_frames as runtime_release_mask_frames,
-)
-from pipelines.runtime.windowing.cache_ops import (
-    append_passthrough_gap as runtime_append_passthrough_gap,
-    create_empty_cache_like as runtime_create_empty_cache_like,
-    register_runtime_task_chain_hooks as runtime_register_task_chain_hooks,
-    set_object_overlap_cache as runtime_set_object_overlap_cache,
-)
-from pipelines.runtime.windowing.commit_ops import (
-    commit_window_to_object_output,
-    record_skipped_object_window,
-)
-from pipelines.runtime.drivers.windowed import finalize_object_window_step
 from utils.video_io import (
-    ArrayFrameCache,
-    ChunkedFrameCache,
-    TensorFrameCache,
-    binarize_mask_tensor,
-    ensure_nchw_video,
-    read_mask_tensor,
-    read_video_tensor,
+    binarize_mask_tensor, ensure_nchw_video, read_mask_tensor, read_video_tensor,
 )
-from utils.windowing import WindowSpec
-
-def _window_cache_impl_name(cache: ArrayFrameCache | ChunkedFrameCache | TensorFrameCache | None) -> str:
-    if cache is None:
-        return "none"
-    return type(cache).__name__
-
-
 
 
 def _ensure_5d_video(video: torch.Tensor, channels: int | None = None) -> torch.Tensor:
@@ -69,26 +19,6 @@ def _ensure_5d_video(video: torch.Tensor, channels: int | None = None) -> torch.
             f"Expected video channel count {channels}, got {video.shape[1]}"
         )
     return video
-
-
-def _module_device(module: Any) -> torch.device:
-    if hasattr(module, "device"):
-        return getattr(module, "device")
-    return next(module.parameters()).device
-
-
-def _synchronize_timing_device(device: torch.device | str) -> None:
-    resolved = torch.device(device)
-    if resolved.type == "cuda" and torch.cuda.is_available():
-        torch.cuda.synchronize(resolved)
-
-
-def _select_sequence_item(value: Any, index: int) -> Any:
-    if isinstance(value, (list, tuple)):
-        if not value:
-            return None
-        return value[min(index, len(value) - 1)]
-    return value
 
 
 def _build_runtime_video(
@@ -135,9 +65,7 @@ def _build_runtime_mask(
                 f"Unsupported mask tensor shape: {tuple(mask_source.shape)}"
             )
         mask = binarize_mask_tensor(mask)
-    if mask.ndim == 4:
-        mask = mask
-    else:
+    if mask.ndim != 4:
         raise ValueError(f"Unsupported mask tensor shape: {tuple(mask.shape)}")
     if mask.shape[0] < num_frames:
         tail = mask[-1:, ...].repeat(num_frames - mask.shape[0], 1, 1, 1)
@@ -145,196 +73,3 @@ def _build_runtime_mask(
     return _ensure_5d_video(
         mask[:num_frames].permute(1, 0, 2, 3).unsqueeze(0).float(), channels=1
     )
-
-
-def _record_runtime_event(
-    context: EraseRuntimeContext,
-    event: str,
-    task_state: ObjectRuntimeState | None = None,
-    **payload: Any,
-) -> dict[str, Any]:
-    return runtime_record_event(
-        context,
-        event,
-        task_state=task_state,
-        **payload,
-    )
-
-
-def _record_task_state_snapshot(
-    context: EraseRuntimeContext,
-    task_state: ObjectRuntimeState,
-    phase: str,
-    **payload: Any,
-) -> dict[str, Any]:
-    return runtime_record_task_state_snapshot(
-        context,
-        task_state,
-        phase,
-        **payload,
-    )
-
-
-def _update_runtime_window_state(
-    context: EraseRuntimeContext,
-    object_index: int,
-    window_index: int,
-    **payload: Any,
-) -> None:
-    runtime_update_window_state(
-        context,
-        object_index,
-        window_index,
-        record_runtime_event_fn=_record_runtime_event,
-        record_task_state_snapshot_fn=_record_task_state_snapshot,
-        **payload,
-    )
-
-
-def _ensure_runtime_window_cache_loaded(
-    context: EraseRuntimeContext,
-    spec: WindowSpec,
-) -> None:
-    runtime_ensure_window_cache_loaded(
-        context=context,
-        spec=spec,
-        record_runtime_event=_record_runtime_event,
-    )
-
-
-def _evict_runtime_cache_before(
-    context: EraseRuntimeContext,
-    frame_index: int,
-) -> None:
-    runtime_evict_cache_before(
-        context=context,
-        frame_index=frame_index,
-        record_runtime_event=_record_runtime_event,
-    )
-
-
-def _release_runtime_mask_frames(
-    context: EraseRuntimeContext,
-    release_end: int,
-    source: str,
-) -> None:
-    runtime_release_mask_frames(
-        context=context,
-        release_end=release_end,
-        source=source,
-        record_runtime_event=_record_runtime_event,
-    )
-
-
-def _flush_runtime_windowed_frames(
-    context: EraseRuntimeContext,
-    flush_end: int,
-) -> None:
-    runtime_flush_windowed_frames(
-        context=context,
-        flush_end=flush_end,
-        record_runtime_event=_record_runtime_event,
-        evict_cache_before_fn=_evict_runtime_cache_before,
-        release_mask_frames_fn=_release_runtime_mask_frames,
-    )
-
-
-def _register_runtime_task_chain_hooks(
-    context: EraseRuntimeContext,
-    object_states: list[ObjectRuntimeState],
-) -> None:
-    runtime_register_task_chain_hooks(
-        context=context,
-        object_states=object_states,
-        record_runtime_event=_record_runtime_event,
-        record_task_state_snapshot=_record_task_state_snapshot,
-    )
-
-
-def _materialize_runtime_object_window_mask(
-    context: EraseRuntimeContext,
-    object_state: ObjectRuntimeState,
-    spec: WindowSpec,
-    crop_bbox: tuple[int, int, int, int] | None = None,
-) -> torch.Tensor:
-    _ = object_state
-    return runtime_materialize_object_window_mask(
-        context=context,
-        object_state=object_state,
-        spec=spec,
-        ensure_window_cache_loaded_fn=_ensure_runtime_window_cache_loaded,
-        crop_bbox=crop_bbox,
-    )
-
-
-def _create_runtime_empty_cache_like(
-    cache: ArrayFrameCache | ChunkedFrameCache | TensorFrameCache,
-    start_index: int = 0,
-) -> ArrayFrameCache | ChunkedFrameCache | TensorFrameCache:
-    return runtime_create_empty_cache_like(cache, start_index=start_index)
-
-
-def _commit_runtime_window_to_object_output(
-    context: EraseRuntimeContext,
-    object_state: ObjectRuntimeState,
-    spec: WindowSpec,
-    window_batch: Req,
-) -> None:
-    commit_started = time.perf_counter()
-    try:
-        commit_window_to_object_output(
-            context=context,
-            object_state=object_state,
-            spec=spec,
-            window_batch=window_batch,
-            append_passthrough_gap_fn=runtime_append_passthrough_gap,
-            set_object_overlap_cache_fn=runtime_set_object_overlap_cache,
-            record_runtime_event_fn=_record_runtime_event,
-            record_task_state_snapshot_fn=_record_task_state_snapshot,
-            update_window_state_fn=_update_runtime_window_state,
-        )
-    finally:
-        context.record_runtime_timing(
-            "cache_commit", time.perf_counter() - commit_started
-        )
-
-
-def _record_runtime_skipped_object_window(
-    context: EraseRuntimeContext,
-    object_state: ObjectRuntimeState,
-    spec: WindowSpec,
-    reason: str,
-    prompt: Any,
-    negative_prompt: Any,
-) -> None:
-    record_skipped_object_window(
-        context=context,
-        object_state=object_state,
-        spec=spec,
-        reason=reason,
-        prompt=prompt,
-        negative_prompt=negative_prompt,
-        append_passthrough_gap_fn=runtime_append_passthrough_gap,
-        set_object_overlap_cache_fn=runtime_set_object_overlap_cache,
-        record_runtime_event_fn=_record_runtime_event,
-        record_task_state_snapshot_fn=_record_task_state_snapshot,
-        update_window_state_fn=_update_runtime_window_state,
-    )
-
-
-def _finalize_runtime_object_window_step(
-    context: EraseRuntimeContext,
-    object_states: list[ObjectRuntimeState],
-    object_state: ObjectRuntimeState,
-    spec: WindowSpec,
-) -> None:
-    finalize_object_window_step(
-        context=context,
-        object_states=object_states,
-        object_state=object_state,
-        spec=spec,
-        set_object_overlap_cache_fn=runtime_set_object_overlap_cache,
-        record_runtime_event_fn=_record_runtime_event,
-        record_task_state_snapshot_fn=_record_task_state_snapshot,
-    )
-

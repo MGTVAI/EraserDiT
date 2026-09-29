@@ -78,9 +78,6 @@ def update_window_state(
     context: EraseRuntimeContext,
     object_index: int,
     window_index: int,
-    *,
-    record_runtime_event_fn,
-    record_task_state_snapshot_fn,
     **payload: Any,
 ) -> None:
     key = (int(object_index), int(window_index))
@@ -103,7 +100,7 @@ def update_window_state(
         task_state = context.object_states[int(object_index)]
         if "scene_index" in payload and payload["scene_index"] is not None:
             task_state.scene_index = int(payload["scene_index"])
-        record_runtime_event_fn(
+        record_runtime_event(
             context,
             "window_state_update",
             task_state=task_state,
@@ -114,7 +111,7 @@ def update_window_state(
             commit_start=payload.get("commit_start"),
             commit_end=payload.get("commit_end"),
         )
-        record_task_state_snapshot_fn(
+        record_task_state_snapshot(
             context,
             task_state,
             phase=str(payload.get("status") or "window_state_update"),

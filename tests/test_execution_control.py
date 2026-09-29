@@ -69,6 +69,23 @@ class ExecutionControlTests(unittest.TestCase):
         self.assertIs(control.RequestCancelled, RequestCancelled)
         self.assertIs(control.service_checkpoint, service_checkpoint)
 
+    def test_window_boundary_preserves_errors_and_compatibility_exports(self):
+        from pipelines.runtime.windowing import commit_sync, sp_dispatch
+
+        self.assertIs(commit_sync.synchronize_window_runtime_boundary,
+                      sp_dispatch.synchronize_window_runtime_boundary)
+        args = SimpleNamespace(parallel_context=None)
+        sp_dispatch.synchronize_window_runtime_boundary(None, args)
+        error = RuntimeError('window failed')
+        with self.assertRaises(RuntimeError) as raised:
+            sp_dispatch.synchronize_window_runtime_boundary(error, args)
+        self.assertIs(raised.exception, error)
+        fatal = KeyboardInterrupt('cancel window')
+        with self.assertRaises(commit_sync.WindowCommitFatalError) as raised:
+            sp_dispatch.synchronize_window_runtime_boundary(fatal, args)
+        self.assertIs(raised.exception.__cause__, fatal)
+        self.assertEqual(raised.exception.original_type, 'KeyboardInterrupt')
+
 
 if __name__ == "__main__":
     unittest.main()

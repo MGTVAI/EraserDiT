@@ -281,3 +281,7 @@ def write_runtime_result_batch_extra(
         )
 
     batch.extra["runtime_final_video_shape"] = final_video_shape
+
+
+def window_cache_impl_name(cache) -> str:
+    return "none" if cache is None else type(cache).__name__

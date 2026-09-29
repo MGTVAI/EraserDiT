@@ -270,8 +270,8 @@ class CacheDitController:
         if front_output_hidden_states.shape != middle_output_hidden_states.shape:
             raise ValueError("Cache-DiT middle block output shape changed")
         assert state.pending_front_residual is not None
-        state.previous_front_residual = state.pending_front_residual
         state.cached_middle_residual = self._compute_residual(front_output_hidden_states, middle_output_hidden_states)
+        state.previous_front_residual = state.pending_front_residual
         state.previous_layout_signature = state.pending_layout_signature
         state.previous_computed_step = step
 
@@ -284,13 +284,17 @@ class CacheDitController:
         state = self._states[branch]
         if state.pending is None or state.pending_step != step:
             raise RuntimeError("Cache-DiT completion has no matching pending decision")
+        # A recorded compute promotes this decision's probe to the reference.
+        if (
+            not state.pending.should_reuse_middle
+            and state.previous_front_residual is not state.pending_front_residual
+        ):
+            raise RuntimeError("Cache-DiT compute result was not recorded")
         state.front_steps += 1
         if state.pending.should_reuse_middle:
             state.cached_middle_steps += 1
             state.continuous_cached_steps += 1
         else:
-            if state.cached_middle_residual is None:
-                raise RuntimeError("Cache-DiT compute result was not recorded")
             state.computed_middle_steps += 1
             state.continuous_cached_steps = 0
         if self.params.back_blocks:

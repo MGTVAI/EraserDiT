@@ -11,9 +11,26 @@ import torch
 from config.eraserdit import EraserDiTEraseSamplingParams
 from config.server_args import ServerArgs
 from nodes.schedule_batch import Req
+from pipelines.runtime.events import (
+    record_runtime_event,
+    record_task_state_snapshot,
+    update_window_state,
+)
+from pipelines.runtime.io.streaming import (
+    ensure_window_cache_loaded,
+    evict_cache_before,
+    flush_windowed_frames,
+    materialize_object_window_mask,
+    release_mask_frames,
+)
+from pipelines.runtime.tracks import _select_sequence_item
+from pipelines.runtime.windowing.cache_ops import set_object_overlap_cache
+from pipelines.runtime.windowing.commit_ops import (
+    commit_window_to_object_output,
+    record_skipped_object_window,
+)
 from pipelines.runtime.windowing.commit_sync import (
     release_window_commit_payload,
-    synchronize_window_runtime_boundary,
 )
 from pipelines.runtime.objects import (
     build_object_runtime_states,
@@ -23,6 +40,7 @@ from pipelines.runtime.metadata import (
     collect_window_transformer_cache_status,
     collect_window_vae_parallel_history,
     compute_runtime_final_video_shape,
+    window_cache_impl_name,
     write_runtime_history_batch_extra,
     write_runtime_mode_batch_extra,
     write_runtime_result_batch_extra,
@@ -37,6 +55,7 @@ from pipelines.runtime.windowing.sp_dispatch import (
     SPWindowCommandCode,
     dispatch_sp_window_command,
     resolve_active_window_commit_context,
+    synchronize_window_runtime_boundary,
 )
 from pipelines.runtime.windowing.materializer import (
     build_sp_peer_window_batch,
@@ -71,7 +90,6 @@ def prime_windowed_object_chain_inputs(
     *,
     context: EraseRuntimeContext,
     object_states: list[ObjectRuntimeState],
-    ensure_window_cache_loaded_fn,
 ) -> bool:
     if context.window_runtime_mode != "streaming":
         return False
@@ -89,7 +107,7 @@ def prime_windowed_object_chain_inputs(
         cache_end_before = context.video_frame_cache.end_index
         if cache_end_before >= spec.load_end:
             return False
-        ensure_window_cache_loaded_fn(context, spec)
+        ensure_window_cache_loaded(context, spec)
         return context.video_frame_cache.end_index > cache_end_before
     return False
 
@@ -97,15 +115,10 @@ def prime_windowed_object_chain_inputs(
 def finalize_object_window_step(
     *,
     context: EraseRuntimeContext,
-    object_states: list[ObjectRuntimeState],
     object_state: ObjectRuntimeState,
     spec: WindowSpec,
-    set_object_overlap_cache_fn,
-    record_runtime_event_fn,
-    record_task_state_snapshot_fn,
 ) -> None:
-    del object_states
-    record_runtime_event_fn(
+    record_runtime_event(
         context,
         "stage_end_begin",
         task_state=object_state,
@@ -117,12 +130,12 @@ def finalize_object_window_step(
     object_state.next_window_index += 1
     if object_state.next_window_index >= object_state.window_count:
         object_state.finished = True
-        set_object_overlap_cache_fn(
+        set_object_overlap_cache(
             object_state,
             start_frame=object_state.flush_frontier,
             frames=None,
         )
-        record_runtime_event_fn(
+        record_runtime_event(
             context,
             "task_finished",
             task_state=object_state,
@@ -131,7 +144,7 @@ def finalize_object_window_step(
     else:
         next_spec = object_state.window_specs[object_state.next_window_index]
         if next_spec.scene_index != current_scene_index:
-            set_object_overlap_cache_fn(
+            set_object_overlap_cache(
                 object_state,
                 start_frame=next_spec.load_start,
                 frames=None,
@@ -145,7 +158,7 @@ def finalize_object_window_step(
                 len(object_state.scenes or []),
                 next_scene,
             )
-            record_runtime_event_fn(
+            record_runtime_event(
                 context,
                 "scene_switch",
                 task_state=object_state,
@@ -156,7 +169,7 @@ def finalize_object_window_step(
                 overlap_reset=True,
             )
         object_state.scene_index = next_spec.scene_index
-    record_runtime_event_fn(
+    record_runtime_event(
         context,
         "stage_end_complete",
         task_state=object_state,
@@ -165,7 +178,7 @@ def finalize_object_window_step(
         finished=bool(object_state.finished),
         flush_frontier=int(object_state.flush_frontier),
     )
-    record_task_state_snapshot_fn(
+    record_task_state_snapshot(
         context,
         object_state,
         phase="window_step_finalized",
@@ -184,9 +197,6 @@ def compute_streaming_stable_end(
 def maybe_flush_streaming_runtime(
     *,
     context: EraseRuntimeContext,
-    evict_cache_before_fn,
-    release_mask_frames_fn,
-    flush_windowed_frames_fn,
 ) -> None:
     if context.window_runtime_mode != "streaming":
         return
@@ -195,14 +205,14 @@ def maybe_flush_streaming_runtime(
         if stable_end > context.next_write_index:
             context.next_write_index = stable_end
         if context.object_states:
-            evict_cache_before_fn(context, frame_index=stable_end)
-            release_mask_frames_fn(
+            evict_cache_before(context, frame_index=stable_end)
+            release_mask_frames(
                 context,
                 release_end=stable_end,
                 source="streaming_logical_flush_after_evict",
             )
         return
-    flush_windowed_frames_fn(context, flush_end=stable_end)
+    flush_windowed_frames(context, flush_end=stable_end)
 
 
 class _SPWriterCommandController:
@@ -365,18 +375,12 @@ def _run_writer_window_runtime(
     params: EraserDiTEraseSamplingParams,
     server_args: ServerArgs,
     logger,
-    handlers,
     command_controller: _SPWriterCommandController | None,
 ) -> Req:
     runtime_setup_start = time.perf_counter()
     object_states, total_windows = build_object_runtime_states(
         context=context,
         params=params,
-        create_empty_cache_like_fn=handlers.create_empty_cache_like,
-        register_runtime_task_chain_hooks_fn=handlers.register_runtime_task_chain_hooks,
-        record_runtime_event_fn=handlers.record_runtime_event,
-        record_task_state_snapshot_fn=handlers.record_task_state_snapshot,
-        window_cache_impl_name_fn=handlers.window_cache_impl_name,
     )
     batch.extra["runtime_object_state_count"] = context.object_count
     batch.extra["runtime_total_windows"] = total_windows
@@ -388,7 +392,7 @@ def _run_writer_window_runtime(
         context=context,
         params=params,
         object_count=object_count,
-        runtime_window_cache_impl=handlers.window_cache_impl_name(
+        runtime_window_cache_impl=window_cache_impl_name(
             context.video_frame_cache
         ),
     )
@@ -405,7 +409,7 @@ def _run_writer_window_runtime(
             context.requested_runtime_mode,
             context.effective_runtime_mode,
             context.runtime_window_backend,
-            handlers.window_cache_impl_name(context.video_frame_cache),
+            window_cache_impl_name(context.video_frame_cache),
             context.runtime_flush_policy,
             context.official_parallel_metadata.get(
                 "distributed_compute_mode", "entry_only"
@@ -435,7 +439,7 @@ def _run_writer_window_runtime(
             ]
         )
         for spec in state.window_specs:
-            handlers.update_window_state(
+            update_window_state(
                 context,
                 state.object_index,
                 spec.window_index,
@@ -475,7 +479,6 @@ def _run_writer_window_runtime(
             primed = prime_windowed_object_chain_inputs(
                 context=context,
                 object_states=object_states,
-                ensure_window_cache_loaded_fn=handlers.ensure_window_cache_loaded,
             )
             scheduler.record_event(
                 "scheduler_prime_source",
@@ -492,7 +495,7 @@ def _run_writer_window_runtime(
             )
 
         spec = ready_state.window_specs[ready_state.next_window_index]
-        handlers.update_window_state(
+        update_window_state(
             context,
             ready_state.object_index,
             spec.window_index,
@@ -518,7 +521,7 @@ def _run_writer_window_runtime(
             )
             window_mask = None
         else:
-            window_mask = handlers.materialize_object_window_mask(
+            window_mask = materialize_object_window_mask(
                 context, ready_state, spec
             )
             window_bbox = infer_window_bbox(
@@ -546,33 +549,26 @@ def _run_writer_window_runtime(
                 )
             lifecycle_error = None
             try:
-                handlers.record_skipped_object_window(
+                record_skipped_object_window(
                     context=context,
                     object_state=ready_state,
                     spec=spec,
                     reason="no_valid_bbox",
-                    prompt=handlers.select_sequence_item(
+                    prompt=_select_sequence_item(
                         ready_state.prompt_source, spec.scene_index
                     ),
-                    negative_prompt=handlers.select_sequence_item(
+                    negative_prompt=_select_sequence_item(
                         ready_state.negative_prompt_source,
                         spec.scene_index,
                     ),
                 )
                 finalize_object_window_step(
                     context=context,
-                    object_states=object_states,
                     object_state=ready_state,
                     spec=spec,
-                    set_object_overlap_cache_fn=handlers.set_object_overlap_cache,
-                    record_runtime_event_fn=handlers.record_runtime_event,
-                    record_task_state_snapshot_fn=handlers.record_task_state_snapshot,
                 )
                 maybe_flush_streaming_runtime(
                     context=context,
-                    evict_cache_before_fn=handlers.evict_cache_before,
-                    release_mask_frames_fn=handlers.release_mask_frames,
-                    flush_windowed_frames_fn=handlers.flush_windowed_frames,
                 )
             except BaseException as error:
                 lifecycle_error = error
@@ -586,7 +582,8 @@ def _run_writer_window_runtime(
                 command_controller.complete_boundary()
             completed_windows += 1
             if not batch.suppress_logs:
-                handlers.log_runtime_progress(
+                _log_runtime_progress(
+                logger=logger,
                     context=context,
                     completed_windows=completed_windows,
                     total_windows=total_windows,
@@ -626,7 +623,7 @@ def _run_writer_window_runtime(
             force_crop_align=bool(params.force_crop_align),
         )
         if window_mask is None:
-            window_mask = handlers.materialize_object_window_mask(
+            window_mask = materialize_object_window_mask(
                 context, ready_state, spec, crop_bbox=aligned_crop_bbox
             )
         elif isinstance(ready_state.input_cache, TensorFrameCache):
@@ -643,8 +640,6 @@ def _run_writer_window_runtime(
             spec=spec,
             object_index=ready_state.object_index,
             bbox_frames=object_bbox_frames,
-            ensure_window_cache_loaded_fn=handlers.ensure_window_cache_loaded,
-            record_runtime_event_fn=handlers.record_runtime_event,
             object_state=ready_state,
             video_cache=ready_state.input_cache,
             window_mask=window_mask,
@@ -745,31 +740,27 @@ def _run_writer_window_runtime(
                     prompt_attention_mask=window_batch.prompt_attention_mask,
                     negative_prompt_embeds=window_batch.negative_prompt_embeds,
                     negative_attention_mask=window_batch.negative_attention_mask,
-                    record_runtime_event_fn=handlers.record_runtime_event,
                 )
+            commit_started = time.perf_counter()
             try:
-                handlers.commit_window_to_object_output(
+                commit_window_to_object_output(
                     context=context,
                     object_state=ready_state,
                     spec=spec,
                     window_batch=window_batch,
                 )
             finally:
+                context.record_runtime_timing(
+                    "cache_commit", time.perf_counter() - commit_started
+                )
                 release_window_commit_payload(window_batch, server_args)
             finalize_object_window_step(
                 context=context,
-                object_states=object_states,
                 object_state=ready_state,
                 spec=spec,
-                set_object_overlap_cache_fn=handlers.set_object_overlap_cache,
-                record_runtime_event_fn=handlers.record_runtime_event,
-                record_task_state_snapshot_fn=handlers.record_task_state_snapshot,
             )
             maybe_flush_streaming_runtime(
                 context=context,
-                evict_cache_before_fn=handlers.evict_cache_before,
-                release_mask_frames_fn=handlers.release_mask_frames,
-                flush_windowed_frames_fn=handlers.flush_windowed_frames,
             )
         except BaseException as error:
             lifecycle_error = error
@@ -798,7 +789,8 @@ def _run_writer_window_runtime(
             command_controller.complete_boundary()
         completed_windows += 1
         if not batch.suppress_logs:
-            handlers.log_runtime_progress(
+            _log_runtime_progress(
+                logger=logger,
                 context=context,
                 completed_windows=completed_windows,
                 total_windows=total_windows,
@@ -839,9 +831,6 @@ def _run_writer_window_runtime(
     if context.window_runtime_mode == "streaming":
         maybe_flush_streaming_runtime(
             context=context,
-            evict_cache_before_fn=handlers.evict_cache_before,
-            release_mask_frames_fn=handlers.release_mask_frames,
-            flush_windowed_frames_fn=handlers.flush_windowed_frames,
         )
 
     if object_states:
@@ -873,7 +862,7 @@ def _run_writer_window_runtime(
         ),
         include_window_state_history=True,
         include_text_embedding_cache_keys=True,
-        object_chain_final_cache_impl=handlers.window_cache_impl_name(
+        object_chain_final_cache_impl=window_cache_impl_name(
             context.final_window_output_cache
         ),
     )
@@ -929,30 +918,6 @@ def _run_writer_window_runtime(
     return batch
 
 
-def run_legacy_window_runtime(
-    *,
-    executor,
-    stages,
-    batch: Req,
-    context: EraseRuntimeContext,
-    params: EraserDiTEraseSamplingParams,
-    server_args: ServerArgs,
-    logger,
-    handlers,
-) -> Req:
-    return _run_writer_window_runtime(
-        executor=executor,
-        stages=stages,
-        batch=batch,
-        context=context,
-        params=params,
-        server_args=server_args,
-        logger=logger,
-        handlers=handlers,
-        command_controller=None,
-    )
-
-
 def run_sp_writer_window_runtime(
     *,
     executor,
@@ -962,7 +927,6 @@ def run_sp_writer_window_runtime(
     params: EraserDiTEraseSamplingParams,
     server_args: ServerArgs,
     logger,
-    handlers,
 ) -> Req:
     controller = _SPWriterCommandController(
         server_args=server_args,
@@ -977,7 +941,6 @@ def run_sp_writer_window_runtime(
             params=params,
             server_args=server_args,
             logger=logger,
-            handlers=handlers,
             command_controller=controller,
         )
     except BaseException as error:
@@ -995,9 +958,8 @@ def run_sp_peer_window_runtime(
     params: EraserDiTEraseSamplingParams,
     server_args: ServerArgs,
     logger,
-    handlers,
 ) -> Req:
-    del logger, handlers
+    del logger
     while True:
         command = dispatch_sp_window_command(
             server_args,
@@ -1066,17 +1028,6 @@ def run_sp_peer_window_runtime(
         )
 
 
-def is_sp_writer_owned_window_runtime(
-    context: EraseRuntimeContext,
-    server_args: ServerArgs,
-) -> bool:
-    return bool(
-        context.sp_writer_owned_runtime
-        and context.effective_runtime_mode == "windowed_streaming"
-        and resolve_active_window_commit_context(server_args) is not None
-    )
-
-
 def run_windowed_runtime(
     *,
     executor,
@@ -1086,11 +1037,13 @@ def run_windowed_runtime(
     params: EraserDiTEraseSamplingParams,
     server_args: ServerArgs,
     logger,
-    handlers,
 ) -> Req:
-    if is_sp_writer_owned_window_runtime(context, server_args):
-        active = resolve_active_window_commit_context(server_args)
-        assert active is not None
+    active = (
+        resolve_active_window_commit_context(server_args)
+        if context.sp_writer_owned_runtime and context.effective_runtime_mode == "windowed_streaming"
+        else None
+    )
+    if active is not None:
         runtime_fn = (
             run_sp_writer_window_runtime
             if active.is_writer
@@ -1104,9 +1057,9 @@ def run_windowed_runtime(
             params=params,
             server_args=server_args,
             logger=logger,
-            handlers=handlers,
         )
-    return run_legacy_window_runtime(
+    return _run_writer_window_runtime(
+        command_controller=None,
         executor=executor,
         stages=stages,
         batch=batch,
@@ -1114,5 +1067,38 @@ def run_windowed_runtime(
         params=params,
         server_args=server_args,
         logger=logger,
-        handlers=handlers,
     )
+
+
+def _log_runtime_progress(
+    logger,
+    context: EraseRuntimeContext,
+    completed_windows: int,
+    total_windows: int,
+    current_object_index: int,
+    current_window_index: int,
+) -> None:
+    if total_windows <= 0:
+        return
+    elapsed = time.time() - context.pipeline_start_time
+    rate = elapsed / max(completed_windows, 1)
+    remaining = max(total_windows - completed_windows, 0) * rate
+    logger.info(
+        "Progress %d/%d %.1f%% object=%d window=%d elapsed=%.1fs eta=%.1fs",
+        completed_windows,
+        total_windows,
+        100.0 * completed_windows / max(total_windows, 1),
+        current_object_index + 1,
+        current_window_index + 1,
+        elapsed,
+        remaining,
+    )
+    if context.progress_state is not None:
+        context.progress_state.update_pipeline(
+            completed=completed_windows,
+            total=total_windows,
+            object_index=current_object_index,
+            object_count=context.object_count,
+            window_index=current_window_index,
+            window_count=len(context.window_specs),
+        )
