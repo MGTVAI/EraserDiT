@@ -35,13 +35,8 @@ class VAELoader(ComponentLoader):
             component_name
         ) or config.get("_class_name", "AutoencoderKLLTXVideo")
         model_cls, _ = ModelRegistry.resolve_model_cls(architecture)
-        vae, loading_info = model_cls.from_pretrained(
-            component_model_path,
-            torch_dtype=dtype,
-            low_cpu_mem_usage=True,
-            local_files_only=True,
-            output_loading_info=True,
-            trust_remote_code=server_args.trust_remote_code,
-            revision=server_args.revision,
+        from loader.meta_load import load_safetensors_model
+        vae, loading_info = load_safetensors_model(
+            lambda: model_cls.from_config(config), component_model_path, dtype=dtype,
         )
         return vae, loading_info

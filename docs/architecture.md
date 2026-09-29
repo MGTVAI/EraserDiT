@@ -67,3 +67,16 @@ CLI / HTTP worker → EraseSession → pipeline 装配
 当前仅注册 `EraserDiTErasePipeline`，CLI 与 HTTP 服务默认使用 EraserDiT。
 共享窗口运行时、会话、FlowMatch 调度器和缓存控制器独立于旧模型路径；
 TeaCache 的模型标识和校准策略由 EraserDiT 适配层显式提供。
+
+## 内存管理
+
+`memory/backends` 保存迁移的 SGLang 逐层和 FSDP 包装源码；
+`memory/adapters/sglang_memory_adapter.py` 管理阶段与进程组生命周期；
+`loader/meta_load.py` 负责本模型的 meta 初始化和严格权重物化。
+配置与当前组合边界见 [SGLang 内存管理](sglang_memory.md)。
+
+NCCL DiT 路径由 `pipelines/runtime/dit_executor.py` 管理常驻子进程；
+父进程保留 T5/VAE、scheduler 与 RNG，DiT worker 使用独立 NCCL world，避免替换父进程 T5 的 FSDP 组。
+`distributed/dit_groups.py` 只处理通用分组与通信，模型计算适配位于
+`models/adapters/eraserdit/nccl_runner.py` 和 `nccl_sequence.py`；TP Linear 位于 `layers/dit_tensor_parallel.py`。
+策略范围、进程边界成本和实测结果见 [NCCL 并行记录](distributed_parallel_20260928.md)。

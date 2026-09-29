@@ -6,12 +6,13 @@ from unittest.mock import patch
 
 import torch
 
+from config.server_args import ServerArgs
 from models.adapters.eraserdit.cfg import EraserDiTCFGWindow, validate_cfg_parallel
 
 
 class ConfigTests(unittest.TestCase):
     def test_incompatible_configs_fail_before_execution(self):
-        args = SimpleNamespace(device="cuda:0", resource_policy="fullgpu",
+        args = ServerArgs(device="cuda:0",
                                enable_torch_compile=False,
                                pipeline_config=SimpleNamespace(cfg_parallel_device="cuda:1"))
         with patch("torch.cuda.device_count", return_value=2):
@@ -27,7 +28,7 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_cfg_parallel(args)
             args.enable_torch_compile = False
-            args.resource_policy = "dynamic_offload"
+            args.dit_layerwise_offload = True
             with self.assertRaises(ValueError):
                 validate_cfg_parallel(args)
 

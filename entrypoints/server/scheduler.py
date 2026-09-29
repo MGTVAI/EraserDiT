@@ -270,6 +270,8 @@ class ServiceScheduler:
                         result.extra.get("transformer_cache_history", [])
                     ),
                     "torch_compile": result.extra.get("torch_compile"),
+                    "parallel_history": result.extra.get("parallel_history", []),
+                    "component_compile": result.extra.get("component_compile"),
                     "peak_memory": result.extra.get("service_peak_memory"),
                     "result_storage_seconds": storage_seconds,
                     "result_storage_mode": storage_outcome.mode,

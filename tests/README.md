@@ -18,6 +18,7 @@ CUDA_VISIBLE_DEVICES='' ERASERDIT_TEST_TWO_GPU=0 ERASERDIT_TEST_INT8=0 \
 
 | 文件 | 覆盖范围 |
 | --- | --- |
+| `test_block_compile_offload.py` | FFN 编译与图外融合；GPU 上权重反复卸载、形状切换、预热异常释放和重试 |
 | `test_architecture.py` | 单向依赖边界、取消机制独立导入 |
 | `test_execution_control.py` | 本地取消、对端取消传播、服务端兼容符号 |
 | `test_assembly_contracts.py` | EraserDiT 默认契约与旧模型拒绝、并行计划类型兼容及默认策略 |
@@ -25,13 +26,16 @@ CUDA_VISIBLE_DEVICES='' ERASERDIT_TEST_TWO_GPU=0 ERASERDIT_TEST_INT8=0 \
 | `test_parallel_compatibility.py` | 通用并行/算子独立导入、模型适配模块身份及 patch 契约 |
 | `test_runtime_boundaries.py` | 分布式状态与日志判断、资源策略回退、异步视频 IO 与编码契约 |
 | `test_prepost_boundaries.py` | EraserDiT 预/后处理导入契约、patch 行为、通用裁剪独立导入 |
+| `test_memory_lifetimes.py` | mask 分批与完整处理的 CPU/GPU 数值一致性、进入 VAE 前视频引用释放 |
+| `test_static_condition_reuse.py` | 请求内文本编码缓存失效和隔离、预计算 RoPE 的 CPU/GPU 数值一致性 |
+| `test_operator_fusion_precision.py` | QK RoPE、gated residual 舍入一致性，布局/梯度回退，完整 block 与文本缓存、逐层卸载组合 |
 | `test_service_api.py` | HTTP 契约、任务和产物；使用 scheduler stub，无权重 |
 | `test_component_offload.py` | 组件租约、异常清理；CUDA 可用时附加设备验证 |
-| `test_layerwise_offload.py` | 新 DiT 卸载的预取预算、跳层、布局、异常恢复、组件阶段和缓存一致性；CUDA 用例需 GPU |
-| `test_dynamic_offload.py` | 事件、预算、搬运回滚与恢复；部分测试需要 CUDA |
+| `test_layerwise_offload.py` | 迁移管理器的循环预取、布局、重复推理、T5 FSDP、异常清理；CUDA 用例需 GPU |
 | `test_cache.py` | CFG/窗口隔离、探针、FP32 残差、请求契约；部分测试需要 CUDA |
 | `test_cfg_parallel.py` | CFG 配置约束与显式双卡小模型检查 |
 | `test_mesh.py` | CPU 分组、非整除分片、通信、失败传播及 DP 分配 |
+| `test_nccl_dit.py` | 正交拓扑、真实 NCCL Ulysses/Ring/TP/FSDP/混合组、父进程组隔离及 worker 故障清理 |
 | `test_mesh_gpu.py` | 显式两/四卡 Transformer、异常恢复和可选真实 VAE |
 | `test_quantization.py` | 层覆盖及组合约束，显式 INT8 GPU 验证 |
 
@@ -57,17 +61,39 @@ CUDA_VISIBLE_DEVICES=0,1 ERASERDIT_TEST_TWO_GPU=1 \
 不设置 `ERASERDIT_TEST_MODEL` 会跳过真实 VAE checkpoint 测试。
 四卡检查沿用 `ERASERDIT_TEST_TWO_GPU=1`，暴露四张设备，运行 `test_mesh_gpu.py`；
 该文件根据可见设备数执行四卡组合。
+本轮新增大张量直写回归，使用 `ERASERDIT_TEST_MESH=1` 并暴露四卡启用，
+覆盖两组 CFG/SP 通信、非连续与不等长张量、源存储复用及大小张量分支。
 
 这些回归不替代完整视频质量与性能验证；端到端操作见 [测量与验证](../docs/validation.md)，
 验收口径见 [performance](../docs/performance.md#acceptance)。
 
-双卡组合回归（物理卡 6、7；不启动四卡测试）：
+迁移后的专项回归：
 
 ```bash
-CUDA_VISIBLE_DEVICES=6,7 ERASERDIT_TEST_TWO_GPU=1 ERASERDIT_TEST_INT8=1 \
-  python -m unittest tests.test_composable_gpu.ComposableTests tests.test_quantization -v
+CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 python -m unittest \
+  tests.test_layerwise_offload tests.test_component_offload tests.test_meta_load -v
 ```
 
-覆盖局部编译 + 逐层卸载 + CFG2 / Ulysses2 / Ring2、TeaCache / cache_dit 命中、
-缓存全局决策、CPU INT8 转换、异常后权重卸载与跨窗口副本复用。
-完整视频阈值验收见 `docs/composable_acceleration_validation_20260923.md`。
+`test_composable_gpu.py` 现在检查不支持的卸载组合在分配副本前拒绝。
+旧 extent 测试随已删除后端移除。真实模型结果见 `results/sglang_memory_20260924/`。
+
+完整 DiT 编译专项：`python -m unittest tests.test_transformer_compile`。
+双卡完整 DiT 编译：选择两张空闲卡，设置 `ERASERDIT_TEST_CFG_COMPILE=1`，
+运行 `tests.test_transformer_compile.TransformerCompileTests.test_two_gpu_cfg_inductor`。
+覆盖两卡 CFG 分支、跨窗口形状复用、编译副卡故障恢复与显式回退。
+加 `ERASERDIT_TEST_FULL_COMPILE=1` 并提供 CUDA 设备运行真实 Inductor 形状切换测试。
+
+辅助模型编译专项：`python -m unittest tests.test_component_compile`；
+设置 `ERASERDIT_TEST_COMPONENT_COMPILE=1` 验证 CUDA Inductor 与 VAE 权重 CPU/GPU 往返。
+
+NCCL DiT 专项（自启动独立进程池，至少两卡，四卡增加混合并行覆盖）：
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 ERASERDIT_TEST_DIT_NCCL=1 OMP_NUM_THREADS=1 \
+  python -m unittest tests.test_nccl_dit -v
+```
+
+包含不等长 Ulysses/Ring、TP 权重分片、FSDP、混合 USP、父进程组隔离和 worker 故障清理。
+严格 Flash 数值 profile 检查限定 A100 / PyTorch 2.6；跳过不代表其他设备已完成效果验收。
+无 GPU 时可设置 `ERASERDIT_TEST_DIT_PROCESSES=1` 运行 Gloo 小模型矩阵。
+整片 SSIM 与性能记录见 [NCCL 并行验收](../docs/distributed_parallel_20260928.md)。

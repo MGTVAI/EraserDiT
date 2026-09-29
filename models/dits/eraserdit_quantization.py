@@ -13,8 +13,8 @@ def validate_quantization(args, batch=None):
     c = args.pipeline_config
     if getattr(args, 'use_fsdp_inference', False):
         raise ValueError('EraserDiT INT8 cannot wrap FSDP models')
-    if args.operator_fusion_backend != 'disabled':
-        raise ValueError('EraserDiT INT8 requires operator fusion disabled')
+    if args.operator_fusion_backend != 'disabled' and getattr(c, 'sp_degree', 1) > 1:
+        raise ValueError('EraserDiT INT8 with SP requires operator fusion disabled')
     if c.cfg_parallel_device:
         raise ValueError('use cfg_degree for composable INT8 CFG')
 
@@ -36,7 +36,9 @@ def quantize_transformer(model, scope='blocks', *, execution_device=None):
         if existing['scope'] != scope:
             raise ValueError('model already quantized with a different scope')
         return existing
-    if getattr(model, '_layerwise_offload_manager', None) is not None or hasattr(model, '_block_compile_report'):
+    if (getattr(model, '_layerwise_offload_manager', None) is not None
+            or getattr(model, 'layerwise_offload_managers', None)
+            or hasattr(model, '_block_compile_report')):
         raise ValueError('quantize before registering offload or compile')
     if getattr(model,'peft_config',None):
         raise ValueError('INT8 conversion with LoRA adapters is not supported')

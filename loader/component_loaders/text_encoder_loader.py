@@ -53,13 +53,9 @@ class TextEncoderLoader(ComponentLoader):
         if component_name != "text_encoder":
             raise ValueError(f"Unsupported text component: {component_name}")
 
-        from transformers import T5EncoderModel
-
-        text_encoder, loading_info = T5EncoderModel.from_pretrained(
-            component_model_path,
-            torch_dtype=dtype,
-            low_cpu_mem_usage=True,
-            output_loading_info=True,
-            **common_kwargs,
+        from transformers import T5Config, T5EncoderModel
+        from loader.meta_load import load_safetensors_model
+        config = T5Config.from_pretrained(component_model_path, **common_kwargs)
+        return load_safetensors_model(
+            lambda: T5EncoderModel(config), component_model_path, dtype=dtype,
         )
-        return text_encoder, loading_info

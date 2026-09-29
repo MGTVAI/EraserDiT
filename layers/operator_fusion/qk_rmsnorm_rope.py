@@ -114,17 +114,17 @@ def apply_fused_qk_rmsnorm_rope(
         )
         return reference()
 
-    from .triton.qk_rmsnorm_rope import triton_qk_rmsnorm_rope
+    from .triton.qk_rmsnorm_rope import triton_qk_rope
 
     cos, sin = freqs
-    fused_query, fused_key = triton_qk_rmsnorm_rope(
-        query,
-        key,
-        query_norm.weight,
-        key_norm.weight,
+    # Preserve native reduction and BF16 rounding, including the boundary
+    # before the affine weight multiplication. The earlier joint reduction
+    # changed model numerics and failed the video quality gate.
+    fused_query, fused_key = triton_qk_rope(
+        query_norm(query).contiguous(),
+        key_norm(key).contiguous(),
         cos,
         sin,
-        epsilon=_EraserDiT_QK_NORM_EPS,
     )
     record_operator_fusion_call(
         QK_RMSNORM_ROPE_OP,

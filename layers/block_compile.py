@@ -5,6 +5,7 @@ and modulation outside this first boundary preserves their eager rounding and
 avoids capturing peer barriers or mutable cache dictionaries in Dynamo.
 """
 import os
+from contextlib import ExitStack
 from types import MethodType
 
 import torch
@@ -75,17 +76,20 @@ def prepare_block_compile(model, *, batch_size, sequence_length, device, dtype):
 
     FX tracing temporarily patches Module.__call__ process-wide in Torch 2.6.
     Serial preparation prevents another rank from entering that trace. No RNG
-    is consumed, no attention/collectives run, and weights obey the same budget.
+    is consumed and no attention/collectives run. Offloaded weights are borrowed
+    one block at a time; only FFN tensor compute is compiled, without CUDA graphs.
     """
-    from contextlib import nullcontext
     import time
     if not hasattr(model, '_block_compile_report'):
         return 0.0
     started = time.perf_counter()
     signature = (batch_size, sequence_length, str(device), str(dtype))
     width = model.config.num_attention_heads * model.config.attention_head_dim
-    manager = getattr(model, '_layerwise_offload_manager', None)
-    with torch.cuda.device(device), torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
+    managers = [m for m in getattr(model, 'layerwise_offload_managers', ())
+                if m.enabled and m.layers_attr_str == 'transformer_blocks']
+    with torch.cuda.device(device), torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16), ExitStack() as cleanup:
+        for manager in managers:
+            cleanup.callback(manager.release_all)
         value = None
         for index, block in enumerate(model.transformer_blocks):
             warmed = getattr(block.ff, '_compile_warmed_shapes', set())
@@ -93,11 +97,19 @@ def prepare_block_compile(model, *, batch_size, sequence_length, device, dtype):
                 continue
             if value is None:
                 value = torch.zeros(batch_size, sequence_length, width, device=device, dtype=dtype)
-            scope = manager.layer_residency(index) if manager else nullcontext()
-            with scope:
+            with ExitStack() as residency:
+                for manager in managers:
+                    residency.enter_context(manager.layer_residency(index))
                 block.ff(value)
             warmed.add(signature)
             block.ff._compile_warmed_shapes = warmed
         if value is not None:
             torch.cuda.current_stream(device).synchronize()
-    return time.perf_counter() - started
+    elapsed = time.perf_counter() - started
+    if value is not None:
+        report = model._block_compile_report
+        report['preparation_seconds_total'] = report.get('preparation_seconds_total', 0.0) + elapsed
+        report.setdefault('preparation_history', []).append(dict(
+            batch_size=batch_size, sequence_length=sequence_length,
+            device=str(device), dtype=str(dtype), seconds=elapsed))
+    return elapsed

@@ -319,19 +319,6 @@ def prepare_runtime_context(
                 **resource_policy_dict,
             }
         )
-        for reason in getattr(resource_policy, "fallback_reasons", ()):
-            batch.extra["runtime_resource_event_history"].append(
-                {
-                    "event": "resource_policy_fallback",
-                    "requested_policy": getattr(
-                        resource_policy, "requested_policy", None
-                    ),
-                    "selected_policy": getattr(
-                        resource_policy, "selected_policy", None
-                    ),
-                    "reason": reason,
-                }
-            )
         batch.extra["_runtime_resource_policy_selected_logged"] = True
 
     if not isinstance(params.runtime_state, dict):

@@ -22,6 +22,7 @@ from nodes.schedule_batch import Req
 from nodes.stages.base import PipelineStage
 from pipelines.stages.eraserdit_erase._common import (
     NEW_FRAMES_KEY,
+    MODEL_FRAMES_KEY,
     ORIG_SIZE_KEY,
     PREFIX_LEN_KEY,
     STYLE_MASK_KEY,
@@ -44,9 +45,9 @@ class EraserDiTEraseWindowPostprocessStage(PipelineStage):
         prefix_len = int(batch.extra[PREFIX_LEN_KEY])
         new_frames = int(batch.extra[NEW_FRAMES_KEY])
         orig_h, orig_w = batch.extra[ORIG_SIZE_KEY]
-        style_video = batch.extra[STYLE_VIDEO_KEY]
-        style_mask = batch.extra[STYLE_MASK_KEY]
-        input_len = int(batch.padded_video.shape[2])
+        style_video = batch.extra.pop(STYLE_VIDEO_KEY)
+        style_mask = batch.extra.pop(STYLE_MASK_KEY)
+        input_len = int(batch.extra[MODEL_FRAMES_KEY])
 
         # [1, C, F, H, W] -> [F, C, H, W] cropped to the original frame extent.
         decoded_frames = decoded[0].permute(1, 0, 2, 3).to(torch.float32)
@@ -76,8 +77,8 @@ class EraserDiTEraseWindowPostprocessStage(PipelineStage):
 
         aligned = eraser_dit_window_output(
             generated,
-            style_video.to(device=generated.device, dtype=torch.float32) / 255.0,
-            style_mask.to(device=generated.device, dtype=torch.float32),
+            style_video.to(dtype=torch.float32) / 255.0,
+            style_mask.to(dtype=torch.float32),
             colorfix_type=str(batch.colorfix_type),
             per_channel=bool(batch.colorfix_per_channel),
         )

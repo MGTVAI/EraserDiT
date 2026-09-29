@@ -16,7 +16,7 @@ def validate_cfg_parallel(server_args, batch=None):
     primary_index = primary.index if primary.index is not None else torch.cuda.current_device()
     if secondary.index == primary_index or secondary.index >= torch.cuda.device_count():
         raise ValueError("CFG parallel requires two distinct visible CUDA devices")
-    if server_args.resource_policy != "fullgpu" or server_args.enable_torch_compile:
+    if server_args.resolve_resource_policy().enabled or server_args.enable_torch_compile:
         raise ValueError("CFG parallel currently requires fullgpu and torch.compile disabled")
     if batch is not None and (
         getattr(batch, "transformer_cache_mode", "off") != "off"

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .config import (
+    GATED_RESIDUAL_OP,
     QK_RMSNORM_ROPE_OP,
     RMSNORM_ADALN_OP,
     normalize_operator_fusion_backend,
@@ -40,10 +41,15 @@ class OperatorFusionDecision:
         }
 
 
-# Stage 1 and stage 2 passed formal 1080p acceptance on SP1/SP2/SP4.  ``auto``
-# may therefore select both by default on those signed topologies while the
-# global backend default remains ``disabled``.
+# Topologies supported by the local tensor contracts. This is not a claim that
+# every backend/topology combination has passed end-to-end video acceptance.
+# Runtime checks still enforce layout, dtype, width and device requirements;
+# the global backend default remains ``disabled``.
 _REGISTRY = {
+    GATED_RESIDUAL_OP: OperatorFusionRegistration(
+        name=GATED_RESIDUAL_OP,
+        signed_sp_degrees=frozenset({1}),
+    ),
     QK_RMSNORM_ROPE_OP: OperatorFusionRegistration(
         name=QK_RMSNORM_ROPE_OP,
         signed_sp_degrees=frozenset({1, 2, 4}),
@@ -78,13 +84,12 @@ def resolve_operator_fusion_decision(server_args: Any) -> OperatorFusionDecision
         getattr(server_args, "operator_fusion_ops", None)
     )
     sp_degree = _resolve_sp_degree(server_args)
-    compile_enabled = bool(getattr(server_args, "enable_torch_compile", False))
-
-    if backend == "triton" and compile_enabled:
-        raise ValueError(
-            "operator_fusion_backend='triton' cannot be combined with "
-            "enable_torch_compile=True"
-        )
+    # Compilation is confined to block.ff. Attention, AdaLN and residual
+    # fusion execute outside that region. Only the single-GPU combination has
+    # been validated here; retain the existing restriction for SP compilation.
+    compile_sp = bool(getattr(server_args, "enable_torch_compile", False)) and sp_degree > 1
+    if backend == "triton" and compile_sp:
+        raise ValueError("forced operator fusion with SP torch.compile is unsupported")
 
     if backend == "disabled":
         return OperatorFusionDecision(
@@ -118,14 +123,11 @@ def resolve_operator_fusion_decision(server_args: Any) -> OperatorFusionDecision
             forced=True,
         )
 
-    if compile_enabled:
+    if compile_sp:
         return OperatorFusionDecision(
-            requested_backend=backend,
-            requested_ops=requested_ops,
-            effective_ops=(),
-            fallback_reasons=("torch_compile_active",),
-            sp_degree=sp_degree,
-            forced=False,
+            requested_backend=backend, requested_ops=requested_ops,
+            effective_ops=(), fallback_reasons=("torch_compile_active",),
+            sp_degree=sp_degree, forced=False,
         )
 
     effective_ops: list[str] = []

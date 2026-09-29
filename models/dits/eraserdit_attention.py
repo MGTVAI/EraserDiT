@@ -173,6 +173,7 @@ class EraserDiTAttentionProcessor:
             auto_backends=ERASERDIT_AUTO_BACKENDS,
         )
         self._latest_selection = selection
+        self._selection_cache[self._selection_key(self.attention_backend, capability)] = selection
         backend_cls = _BACKEND_CLASSES[selection.selected]
         impl = backend_cls.get_impl_cls()(
             num_heads=num_heads,

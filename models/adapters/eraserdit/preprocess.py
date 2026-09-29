@@ -1,6 +1,6 @@
 """EraserDiT window preprocessing.
 
-Verbatim port of ``VideoInpaintPre`` (``utils/pre.py``) from the frozen baseline
+Semantics-preserving port of ``VideoInpaintPre`` (``utils/pre.py``) from the frozen baseline
 at commit ``9944867``: 32-pixel edge alignment, the mirrored tail padding rule and
 the ``mask_video_nchw`` combination of video masking and mask compression.
 
@@ -27,6 +27,7 @@ from utils.eraserdit_mask import (
 __all__ = [
     "EraserDiTWindowPreprocess",
     "align_nchw",
+    "compact_tail_infer_len",
     "expand_mask_channels",
     "pad_window_frames",
     "preprocess_eraserdit_window",
@@ -85,6 +86,18 @@ def window_pad_plan(
     return int(batch_size), int(num_frames_padded)
 
 
+def compact_tail_infer_len(num_new_frames: int, *, head_batch: bool, infer_len: int,
+                           overlap: int) -> int:
+    """Keep real frames and the overlap; remove only excess mirrored context.
+
+    The first/full windows retain their original shape. A non-head window adds
+    an 8-aligned number of new frames to its 8k+1 overlap prefix.
+    """
+    if head_batch:
+        return infer_len
+    return min(infer_len, overlap + max(8, ((num_new_frames + 7) // 8) * 8))
+
+
 def pad_window_frames(
     video: torch.Tensor,
     mask: torch.Tensor,
@@ -133,6 +146,7 @@ def preprocess_eraserdit_window(
     dilate_iter: int = 9,
     threshold: float = 0.039,
     enable_approximate: bool = True,
+    mask_chunk_frames: int = 8,
 ) -> EraserDiTWindowPreprocess:
     """Align, mirror-pad, dilate and compress one window's newly-loaded frames.
 
@@ -140,15 +154,19 @@ def preprocess_eraserdit_window(
     (the baseline's ``/255`` already applied) and the mask is the raw mask binarised
     to ``{0, 1}``.  ``head_batch`` selects the first-window branch of the baseline's
     frame accounting.
+
+    ``mask_chunk_frames`` bounds spatial morphology and masking temporaries;
+    temporal compression still runs on the complete padded sequence.
     """
     if video.ndim != 4 or mask.ndim != 4:
         raise ValueError("video and mask must be 4D [N,C,H,W]")
     if video.shape[0] != mask.shape[0]:
         raise ValueError("video and mask frame counts differ")
+    if mask_chunk_frames < 1:
+        raise ValueError("mask_chunk_frames must be positive")
 
     video = align_nchw(video, align_h, align_w)
     mask = align_nchw(mask, align_w=align_w, align_h=align_h)
-    mask = expand_mask_channels(mask)
 
     _, num_frames_padded = window_pad_plan(
         video.shape[0], head_batch=head_batch, infer_len=infer_len, shift_alpha=shift_alpha
@@ -164,14 +182,24 @@ def preprocess_eraserdit_window(
 
     # The baseline keeps the mask in raw 0..255 so that the binarisation threshold
     # ``255/2*0.039`` is meaningful; the runtime delivers {0, 1}.
-    dilated = binarize_and_dilate(
-        mask * 255.0,
-        ksize=ksize,
-        dilate_iter=dilate_iter,
-        threshold=threshold,
-        enable_approximate=enable_approximate,
+    # Spatial morphology is independent for each frame. Bound convolution and
+    # threshold temporaries while preserving RGB grey-compression semantics.
+    dilated = torch.empty(
+        (len(mask), ERASERDIT_MASK_CHANNELS, *mask.shape[-2:]),
+        dtype=torch.uint8, device=mask.device,
     )
-    masked_video = video * (1 - dilated.to(video.dtype))
+    masked_video = torch.empty_like(video)
+    for start in range(0, len(mask), mask_chunk_frames):
+        stop = start + mask_chunk_frames
+        chunk = binarize_and_dilate(
+            expand_mask_channels(mask[start:stop]) * 255.0,
+            ksize=ksize,
+            dilate_iter=dilate_iter,
+            threshold=threshold,
+            enable_approximate=enable_approximate,
+        )
+        dilated[start:stop].copy_(chunk)
+        masked_video[start:stop].copy_(video[start:stop] * (1 - chunk.to(video.dtype)))
 
     compressed = compress_mask_temporal(dilated, head_batch=head_batch)
     mask_latents = gray_normalize_mask(compressed)

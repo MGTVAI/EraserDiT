@@ -27,15 +27,22 @@
 
 | 方向 | 实现 |
 | --- | --- |
-| **显存优化** | 整组件分阶段卸载；DiT 逐层卸载、pinned CPU 权重、独立 CUDA stream 预取与权重预算；阶段边界回收空闲显存缓存 | 
-| **视频内存** | 按窗口执行与帧缓存释放；可选流式读取、VAE 分块 | 
-| **单卡计算** | SDPA / FlashAttention / SageAttention 后端；`torch.compile`；Triton RMSNorm + AdaLN、QK RMSNorm + RoPE 融合；文本投影复用 | 
-| **多卡单任务** | CFG 正负分支并行、SP 序列并行、VAE 编解码并行及 CFG × SP 组合 | 
-| **多卡多任务** | DP dispatcher 将独立视频分配给不同 worker | 
-| **TeaCache / CacheDiT** | 根据步间变化复用 Transformer 残差；按窗口和 CFG 分支隔离缓存；预热、末步保护与连续跳步限制 | 
+| **显存优化** | SGLang 源码迁移：DiT 循环预取、T5 FSDP CPU offload、VAE 组件卸载；无字节预算 |
+| **视频内存** | 按窗口执行与帧缓存释放；可选流式读取、VAE 分块、尾窗口减填充（近似，默认关闭） |
+| **单卡计算** | SDPA / FlashAttention / SageAttention 后端；`torch.compile`；保留原生 RMSNorm 的 Triton AdaLN / QK RoPE 融合；文本投影复用 |
+| **多卡单任务** | CFG、SP/Ulysses/Ring/USP、TP、FSDP/HSDP 与组合；独立 NCCL DiT 后端见[验收记录](docs/distributed_parallel_20260928.md)，保留 VAE 编解码并行 |
+| **多卡多任务** | DP dispatcher 将独立视频分配给不同 worker |
+| **TeaCache / CacheDiT** | 根据步间变化复用 Transformer 残差；按窗口和 CFG 分支隔离缓存；预热、末步保护与连续跳步限制 |
 | **实验性量化** | DiT Linear 的 INT8 W8A8，支持 blocks / FFN 范围 |
 
 ### 实测结果
+
+最新单卡编译与注意力筛选见 [SSIM 0.98 目标验证](docs/quality98_optimization_20260927.md)，
+后续见 [双卡并行、缓存与量化](docs/multi_gpu_cache_quant_20260927.md)、
+[四卡验证](docs/four_gpu_optimization_20260927.md) 和
+[参考 SGLang 的下一步方案](docs/next_optimization_plan_20260927.md)。
+
+以下为迁移前历史数据，旧卸载组合不代表当前支持范围。当前实现见 [SGLang 内存管理](docs/sglang_memory.md)，迁移后实测见 [迁移验证](docs/sglang_memory_validation_20260924.md)。
 
 A100 80GB，1920 × 1080、121 帧，BF16、seed=42、50 步、strength=0.8；一个窗口执行 40 个去噪步。
 
@@ -90,12 +97,12 @@ CUDA_VISIBLE_DEVICES=0 HF_HUB_OFFLINE=1 uv run --no-project python -m entrypoint
   --output-path outputs/result.mp4 \
   --prompt "There is a rooftop terrace overlooking the city at sunset." \
   --attention-backend sdpa \
-  --resource-policy dynamic_offload
+  --dit-layerwise-offload --text-encoder-cpu-offload --vae-cpu-offload
 ```
 
 ## 常用优化配置
 
-双卡推荐组合（需安装 SageAttention，允许缓存近似）：
+双卡全驻留组合（需安装 SageAttention，允许缓存近似；关闭迁移卸载）：
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 HF_HUB_OFFLINE=1 uv run --no-project python -m entrypoints.cli.erase_eraserdit \
@@ -103,7 +110,7 @@ CUDA_VISIBLE_DEVICES=0,1 HF_HUB_OFFLINE=1 uv run --no-project python -m entrypoi
   --video-input data/113000356.mp4 --mask-input data/113000356_mask.mp4 \
   --output-path outputs/result_cfg2.mp4 \
   --prompt "There is a rooftop terrace overlooking the city at sunset." \
-  --attention-backend sage_attn --resource-policy dynamic_offload \
+  --attention-backend sage_attn --no-dit-layerwise-offload --no-text-encoder-cpu-offload --no-vae-cpu-offload \
   --cfg-degree 2 --enable-torch-compile \
   --transformer-cache-mode teacache --teacache-threshold 0.3 --cache-text-projections
 ```
@@ -127,7 +134,7 @@ CUDA_VISIBLE_DEVICES=0 HF_HUB_OFFLINE=1 uv run --no-project python -m entrypoint
 | [性能配置](docs/performance.md) | 注意力、编译、卸载、缓存、并行与量化 |
 | [配置说明](config/README.md) | 模型、服务与运行配置 |
 | [代码架构](docs/architecture.md) | 模块职责、执行流程与依赖边界 |
-| [逐层卸载](docs/layerwise_offload.md) | CPU/GPU 权重存储、异步预取与预算管理 |
+| [逐层卸载](docs/layerwise_offload.md) | SGLang 源码迁移、预取和组件管理 |
 
 ## 下一步工作
 

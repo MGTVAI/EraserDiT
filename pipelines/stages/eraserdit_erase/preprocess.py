@@ -23,6 +23,7 @@ from nodes.schedule_batch import Req
 from nodes.stages.base import PipelineStage
 from pipelines.stages.eraserdit_erase._common import (
     NEW_FRAMES_KEY,
+    MODEL_FRAMES_KEY,
     ORIG_SIZE_KEY,
     PREFIX_LEN_KEY,
     STYLE_MASK_KEY,
@@ -30,7 +31,7 @@ from pipelines.stages.eraserdit_erase._common import (
     field_summary,
     get_task_state,
 )
-from models.adapters.eraserdit.preprocess import preprocess_eraserdit_window
+from models.adapters.eraserdit.preprocess import preprocess_eraserdit_window, compact_tail_infer_len
 from utils.windowing import infer_latent_frames
 
 
@@ -57,11 +58,21 @@ class EraserDiTErasePreprocessStage(PipelineStage):
         source_mask = mask[prefix_len:]
         orig_h, orig_w = int(source_video.shape[-2]), int(source_video.shape[-1])
 
+        model_infer_len = int(batch.infer_len)
+        if getattr(batch, 'compact_tail_padding', False) and prefix_len == int(batch.overlap):
+            model_infer_len = compact_tail_infer_len(
+                int(new_frames), head_batch=head_batch, infer_len=model_infer_len,
+                overlap=int(batch.overlap),
+            )
+        batch.extra['temporal_padding'] = dict(
+            requested_infer_len=int(batch.infer_len), effective_infer_len=model_infer_len,
+            compact_tail_padding=bool(getattr(batch, 'compact_tail_padding', False)),
+        )
         result = preprocess_eraserdit_window(
             source_video,
             source_mask,
             head_batch=head_batch,
-            infer_len=int(batch.infer_len),
+            infer_len=model_infer_len,
             shift_alpha=int(batch.overlap),
             align_h=int(batch.align_h),
             align_w=int(batch.align_w),
@@ -124,6 +135,7 @@ class EraserDiTErasePreprocessStage(PipelineStage):
 
         # Framework layout is [B, C, F, H, W] for both.
         batch.padded_video = model_video.permute(1, 0, 2, 3).unsqueeze(0)
+        batch.extra[MODEL_FRAMES_KEY] = int(model_video.shape[0])
         batch.padded_mask = mask_latents.permute(1, 0, 2, 3).unsqueeze(0)
         # Whole-frame erase (plan §4.7): the crop bbox is the full frame, so the
         # runtime's crop/paste degenerates to identity and its overlap cache holds
@@ -137,16 +149,17 @@ class EraserDiTErasePreprocessStage(PipelineStage):
         batch.crop_video = batch.video
         batch.crop_mask = batch.mask
         batch.masked_video = batch.padded_video
-        # Kept as uint8 on the device rather than float32: the colour fix needs
-        # exact source samples, and 8-bit storage is a quarter of the footprint.
+        # Colour correction consumes CPU tensors. Keep only compact CPU source
+        # samples between stages, rather than retaining them on the accelerator.
         batch.extra[STYLE_VIDEO_KEY] = (
-            (source_video[..., :orig_h, :orig_w] * 255.0).round().to(torch.uint8)
+            (source_video[..., :orig_h, :orig_w] * 255.0).round().to(torch.uint8).cpu()
         )
         batch.extra[STYLE_MASK_KEY] = (
             (source_mask[..., :orig_h, :orig_w] * 255.0)
             .round()
             .to(torch.uint8)
-            .repeat(1, 3, 1, 1)
+            .cpu()
+            .expand(-1, 3, -1, -1)
         )
         batch.extra[NEW_FRAMES_KEY] = int(new_frames)
         batch.extra[PREFIX_LEN_KEY] = int(prefix_len)

@@ -92,23 +92,13 @@ for name in ('config', 'distributed', 'parallel', 'models', 'memory', 'nodes', '
         legacy = importlib.import_module("utils.resource_policy")
         self.assertIs(legacy.resolve_runtime_resource_policy, resolve_runtime_resource_policy)
         self.assertIs(legacy.module_device, module_device)
-        args = ServerArgs(resource_policy="dynamic_offload", pin_memory=True)
+        from memory.validation import validate_memory_config
+        args = ServerArgs(dit_layerwise_offload=True, device="cuda:0")
         with patch("torch.cuda.is_available", return_value=False):
-            policy = args.resolve_resource_policy()
-        self.assertTrue(policy.requested_dynamic_offload)
-        self.assertTrue(policy.requested_pin_memory)
-        self.assertFalse(policy.dynamic_offload)
-        self.assertFalse(policy.pin_memory)
-        self.assertEqual(policy.fallback_reasons, (
-            "pin_memory_disabled_without_cuda", "dynamic_offload_disabled_without_cuda",
-        ))
-        module = torch.nn.Linear(2, 2)
-        weight = module.weight
-        self.assertFalse(move_module_to_device(module, torch.device("cpu")))
-        self.assertIs(module.weight, weight)
-        self.assertIs(maybe_pin_tensor(weight, enable=False), weight)
+            with self.assertRaisesRegex(ValueError, "available CUDA"):
+                validate_memory_config(args)
+        self.assertTrue(args.resolve_resource_policy().dit_layerwise_offload)
 
-    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg unavailable")
     def test_async_video_writer_flushes_in_order_and_keeps_profile(self):
         with tempfile.TemporaryDirectory() as directory:
             path = str(Path(directory) / "output.mp4")

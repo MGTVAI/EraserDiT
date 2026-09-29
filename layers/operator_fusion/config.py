@@ -6,9 +6,11 @@ from collections.abc import Iterable
 
 QK_RMSNORM_ROPE_OP = "qk_rmsnorm_rope"
 RMSNORM_ADALN_OP = "rmsnorm_adaln"
+GATED_RESIDUAL_OP = "gated_residual"
 
 OPERATOR_FUSION_BACKENDS = ("disabled", "auto", "triton")
-OPERATOR_FUSION_OPS = (QK_RMSNORM_ROPE_OP, RMSNORM_ADALN_OP)
+DEFAULT_OPERATOR_FUSION_OPS = (QK_RMSNORM_ROPE_OP, RMSNORM_ADALN_OP)
+OPERATOR_FUSION_OPS = (*DEFAULT_OPERATOR_FUSION_OPS, GATED_RESIDUAL_OP)
 
 
 def normalize_operator_fusion_backend(value: object) -> str:
@@ -24,10 +26,10 @@ def normalize_operator_fusion_backend(value: object) -> str:
 def normalize_operator_fusion_ops(
     value: str | Iterable[str] | None,
 ) -> tuple[str, ...]:
-    """Normalize an op selection; only an unset selection means every known op."""
+    """Normalize explicit selections; unset uses the validated default sites."""
 
     if value is None:
-        requested = OPERATOR_FUSION_OPS
+        requested = DEFAULT_OPERATOR_FUSION_OPS
     elif isinstance(value, str):
         requested = tuple(part.strip() for part in value.split(",") if part.strip())
         if not requested:

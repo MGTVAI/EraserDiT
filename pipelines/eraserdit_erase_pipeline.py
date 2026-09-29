@@ -15,8 +15,6 @@ import torch
 
 from config.eraserdit import EraserDiTEraseSamplingParams, EraserDiTPipelineConfig
 from config.server_args import ServerArgs
-from memory.adapters.model_memory_adapter import ModelMemoryAdapter
-from memory.adapters.eraserdit_memory_adapter import EraserDiTMemoryAdapter
 from pipelines.base import ComposedPipelineBase
 from nodes.schedule_batch import Req
 from pipelines.stages.eraserdit_erase import (
@@ -129,12 +127,8 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
         from models.adapters.eraserdit.mesh import resolve_mesh
         resolve_mesh(server_args)
         policy = server_args.resolve_resource_policy()
-        if policy.requested_dynamic_offload and (
-            torch.device(server_args.device).type != "cuda" or not torch.cuda.is_available()
-        ):
-            raise ValueError("EraserDiT dynamic_offload requires an available CUDA device")
-        if policy.dynamic_offload and server_args.use_fsdp_inference:
-            raise ValueError("EraserDiT layerwise offload cannot be combined with FSDP")
+        from memory.validation import validate_memory_config
+        validate_memory_config(server_args)
         from memory.telemetry import memory_observation
         self._initialization_memory = {
             "before_loading": memory_observation(server_args.device),
@@ -143,7 +137,7 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
         # Preloaded components bypass the component loaders' target-device logic.
         for name, enabled in (
             ("text_encoder", policy.text_encoder_cpu_offload),
-            ("transformer", policy.dit_cpu_offload),
+            ("transformer", policy.dit_cpu_offload or policy.dit_layerwise_offload),
             ("vae", policy.vae_cpu_offload),
         ):
             if enabled:
@@ -158,6 +152,12 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
         return modules
 
     def create_pipeline_stages(self, server_args: ServerArgs) -> None:
+        self._component_compile = None
+        if server_args.compile_components:
+            from layers.component_compile import ComponentCompileManager
+            from nodes.stages.denoising import resolve_torch_compile_mode
+            self._component_compile = ComponentCompileManager(
+                self.modules, server_args.compile_components, mode=resolve_torch_compile_mode())
         self.add_stages(
             [
                 EraserDiTEraseWindowValidationStage(),
@@ -191,23 +191,8 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
 
     def initialize_pipeline(self, server_args: ServerArgs) -> None:
         self._closed = False
-        policy = server_args.resolve_resource_policy()
-        if policy.dynamic_offload:
-            from memory.adapters.layerwise_memory_adapter import LayerwiseMemoryAdapter
-            self._memory_adapter = LayerwiseMemoryAdapter(
-                prefetch_size=server_args.dit_offload_prefetch_size,
-            )
-        else:
-            self._memory_adapter = self._build_memory_adapter()
-        if policy.dynamic_offload or policy.pin_memory:
-            self._memory_adapter.register(
-                modules=self.modules,
-                device=torch.device(server_args.device),
-                dynamic_offload=policy.dynamic_offload,
-                pin_memory=policy.pin_memory,
-                max_weight_usage=policy.max_weight_usage,
-                rank=0,
-            )
+        from memory.adapters.sglang_memory_adapter import SGLangMemoryAdapter
+        self._memory_adapter = SGLangMemoryAdapter(self.modules, server_args)
         self.memory_registration_summary = self._memory_adapter.snapshot()
         self.memory_registration_summary["resource_policy"] = (
             server_args.resolve_resource_policy().as_dict()
@@ -250,22 +235,30 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
         server_args.attention_backend_report = dict(self.attention_backend_report)
         logger.info("Attention backend preflight: %s", self.attention_backend_report)
 
-    def _build_memory_adapter(self) -> ModelMemoryAdapter:
-        return EraserDiTMemoryAdapter()
-
     def close(self, *, terminal: bool = False) -> dict[str, object]:
         if getattr(self, "_closed", False):
             return dict(getattr(self, "_memory_adapter_shutdown_snapshot", None) or {})
-        for stage in self.stages:
-            close = getattr(stage, "close", None)
-            if callable(close):
-                close()
-        memory_adapter = getattr(self, "_memory_adapter", None)
-        snapshot = (
-            memory_adapter.shutdown(terminal=terminal) if memory_adapter else {}
-        )
-        self._memory_adapter_shutdown_snapshot = snapshot
-        self._closed = True
+        snapshot = {}
+        try:
+            for stage in self.stages:
+                close = getattr(stage, "close", None)
+                if callable(close):
+                    close()
+        finally:
+            try:
+                component_compile = getattr(self, "_component_compile", None)
+                if component_compile is not None:
+                    component_compile.close()
+                memory_adapter = getattr(self, "_memory_adapter", None)
+                snapshot = memory_adapter.shutdown(terminal=terminal) if memory_adapter else {}
+            finally:
+                self._memory_adapter_shutdown_snapshot = snapshot
+                self._closed = True
+                # Sessions own these references; do not retain closed FSDP models,
+                # CUDA modules or stage-held encoders in a reusable service object.
+                self._stages.clear()
+                self._stage_name_mapping.clear()
+                self.modules.clear()
         return dict(snapshot)
 
     def _prepare_global_context(
@@ -473,6 +466,8 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
             raise RuntimeError("EraserDiTErasePipeline is closed")
         params = _as_eraserdit_params(batch)
         batch.modules = self.modules if not batch.modules else batch.modules
+        from memory.validation import validate_memory_config
+        validate_memory_config(server_args, batch)
         from config.eraserdit_cache import resolve_eraserdit_cache_params
         resolve_eraserdit_cache_params(
             params, enable_torch_compile=server_args.enable_torch_compile,
@@ -514,6 +509,8 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
                 time.perf_counter() - output_finalize_start,
             )
             result.extra["quantization"] = runtime_report(batch.modules["transformer"])
+            manager = getattr(self, "_component_compile", None)
+            result.extra["component_compile"] = manager.snapshot() if manager else {}
             return result
         finally:
             try:

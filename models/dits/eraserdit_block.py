@@ -1,9 +1,8 @@
-"""EraserDiT transformer block with the two AdaLN sites routed through the
-operator-fusion dispatcher.
+"""EraserDiT block with optional AdaLN and gated-residual fusion.
 
 The block body is a verbatim copy of
 ``models/dits/eraserdit_transformer.py::LTXVideoTransformerBlock.forward`` with
-``norm * (1 + scale) + shift`` replaced by ``apply_fused_rmsnorm_adaln``.  When
+AdaLN modulation and gated residuals routed through dispatchers. When
 fusion is disabled the dispatcher evaluates exactly the original expression, so
 the two paths are numerically identical by construction.
 
@@ -22,6 +21,7 @@ import torch
 
 from layers.operator_fusion.registry import OperatorFusionDecision
 from layers.operator_fusion.rmsnorm_adaln import apply_fused_rmsnorm_adaln
+from layers.operator_fusion.gated_residual import apply_fused_gated_residual
 
 __all__ = ["forward_eraserdit_block"]
 
@@ -61,7 +61,9 @@ def forward_eraserdit_block(
         encoder_hidden_states=None,
         image_rotary_emb=image_rotary_emb,
     )
-    hidden_states = hidden_states + attn_hidden_states * gate_msa
+    hidden_states = apply_fused_gated_residual(
+        hidden_states, attn_hidden_states, gate_msa, decision=decision,
+    )
 
     attn_hidden_states = block.attn2(
         hidden_states,
@@ -83,5 +85,7 @@ def forward_eraserdit_block(
     )
 
     ff_output = block.ff(norm_hidden_states)
-    hidden_states = hidden_states + ff_output * gate_mlp
+    hidden_states = apply_fused_gated_residual(
+        hidden_states, ff_output, gate_mlp, decision=decision,
+    )
     return hidden_states

@@ -2,7 +2,6 @@
 
 from config.resource_policy import (
     RuntimeResourcePolicy,
-    normalize_resource_policy_name,
     resolve_runtime_resource_policy,
 )
 from memory.tensor_ops import (

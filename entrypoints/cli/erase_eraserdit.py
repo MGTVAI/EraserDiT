@@ -21,6 +21,7 @@ from config.eraserdit import (
     EraserDiTEraseSamplingParams,
     EraserDiTPipelineConfig,
 )
+from config.resource_policy import memory_arguments
 from config.server_args import ServerArgs
 from entrypoints.erase_runner import resolve_output_file_name
 from parallel.runtime import destroy_runtime_distributed
@@ -47,6 +48,7 @@ _PARAM_FIELDS = {
     "strength",
     "infer_len",
     "overlap",
+    "compact_tail_padding",
     "frame_rate",
     "decode_timestep",
     "decode_noise_scale",
@@ -80,6 +82,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--strength", type=float, default=0.8)
     parser.add_argument("--infer-len", type=int, default=121)
     parser.add_argument("--overlap", type=int, default=9)
+    parser.add_argument("--compact-tail-padding", action=argparse.BooleanOptionalAction, default=False,
+                        help="approximate: shorten mirrored padding of partial non-head windows")
     parser.add_argument("--frame-rate", type=int, default=25)
     parser.add_argument("--fps", type=int, default=25)
     parser.add_argument("--max-sequence-length", type=int, default=128)
@@ -99,6 +103,16 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cfg-parallel-device", default=None,
                         help="secondary local CUDA device for negative CFG, e.g. cuda:1")
     parser.add_argument("--sp-degree", type=int, default=1)
+    parser.add_argument('--dit-parallel-backend', choices=['peer', 'nccl'], default='peer')
+    parser.add_argument('--tp-degree', type=int, default=1)
+    parser.add_argument('--tp-linear-mode', choices=['reference', 'sharded', 'aligned'], default='reference',
+                        help='reference preserves GEMM width; aligned protects sensitive projections; sharded needs quality validation')
+    parser.add_argument('--ulysses-degree', type=int, default=None)
+    parser.add_argument('--ring-degree', type=int, default=1)
+    parser.add_argument('--ring-attention-mode', choices=['reference', 'online', 'streaming'], default='reference',
+                        help='reference gathers full KV; streaming keeps FP32 state; online is an experimental rounded-output merge')
+    parser.add_argument('--dit-fsdp-shard-degree', type=int, default=1)
+    parser.add_argument('--dit-fsdp-replicate-degree', type=int, default=1)
     parser.add_argument("--sp-linear-mode", choices=["reference", "sharded"], default="reference",
                         help="reference preserves full GEMM shape; sharded is experimental BF16 numerics")
     parser.add_argument("--sp-attention-mode", choices=["ulysses", "ring"], default="ulysses")
@@ -119,17 +133,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "windowed_streaming uses bf16 caches and is only for very long inputs",
     )
     parser.add_argument("--runtime-workdir", type=str, default=None)
-    parser.add_argument("--dit-offload-prefetch-size", type=int, default=1,
-                        help="DiT lookahead blocks; 0 disables prefetch; bounded by weight budget")
-    parser.add_argument("--max-weight-usage", type=int, default=2 * 1024**3,
-                        help="DiT block weight budget in bytes, including in-flight copies; excludes other weights and activations")
-    parser.add_argument("--pin-memory", action=argparse.BooleanOptionalAction, default=False,
-                        help="pin weights in resident modes; dynamic DiT blocks always use pinned CPU storage")
-    parser.add_argument(
-        "--resource-policy", default="dynamic_offload",
-        choices=["fullgpu", "fullgpu_pin_memory", "dynamic_offload", "component_offload"],
-        help="component_offload keeps only the current compute component on GPU",
-    )
+    from config.resource_policy import add_memory_arguments
+    add_memory_arguments(parser)
     parser.add_argument(
         "--attention-backend",
         type=str,
@@ -139,6 +144,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--enable-torch-compile", action=argparse.BooleanOptionalAction, default=False
     )
+    parser.add_argument("--torch-compile-scope", choices=["ffn", "transformer"], default="ffn",
+                        help="Compile FFNs or the complete resident single-GPU DiT forward")
+    parser.add_argument("--compile-components", default="",
+                        help="Comma-separated auxiliary models: text_encoder,vae_encoder,vae_decoder; independent of DiT compile")
     parser.add_argument(
         "--operator-fusion-backend",
         type=str,
@@ -173,6 +182,11 @@ def _build_server_args(args: argparse.Namespace) -> ServerArgs:
         text_encoder_precision=args.dtype,
         cfg_parallel_device=args.cfg_parallel_device,
         sp_degree=args.sp_degree, cfg_degree=args.cfg_degree, vae_degree=args.vae_degree,
+        dit_parallel_backend=args.dit_parallel_backend, tp_degree=args.tp_degree, tp_linear_mode=args.tp_linear_mode,
+        ulysses_degree=args.ulysses_degree, ring_degree=args.ring_degree,
+        ring_attention_mode=args.ring_attention_mode,
+        dit_fsdp_shard_degree=args.dit_fsdp_shard_degree,
+        dit_fsdp_replicate_degree=args.dit_fsdp_replicate_degree,
         sp_attention_mode=args.sp_attention_mode,
         sp_linear_mode=args.sp_linear_mode,
         parallel_devices=args.parallel_devices, vae_tiling=args.vae_tiling,
@@ -184,14 +198,13 @@ def _build_server_args(args: argparse.Namespace) -> ServerArgs:
         device=args.device,
         transformer_quantization=args.transformer_quantization,
         weight_dtype=args.dtype,
-        resource_policy=args.resource_policy,
-        max_weight_usage=args.max_weight_usage,
-        dit_offload_prefetch_size=args.dit_offload_prefetch_size,
-        pin_memory=args.pin_memory,
+        **memory_arguments(args),
         pipeline_config=pipeline_config,
         component_architectures=dict(pipeline_config.component_architectures),
         attention_backend=args.attention_backend,
         enable_torch_compile=bool(args.enable_torch_compile),
+        torch_compile_scope=getattr(args, "torch_compile_scope", "ffn"),
+        compile_components=getattr(args, "compile_components", ""),
         operator_fusion_backend=args.operator_fusion_backend,
         operator_fusion_ops=args.operator_fusion_ops,
         warmup=bool(args.warmup),
@@ -237,6 +250,7 @@ def _task_to_sampling_params(
         strength=overrides.pop("strength", defaults.strength),
         infer_len=overrides.pop("infer_len", defaults.infer_len),
         overlap=overrides.pop("overlap", defaults.overlap),
+        compact_tail_padding=overrides.pop("compact_tail_padding", defaults.compact_tail_padding),
         frame_rate=overrides.pop("frame_rate", defaults.frame_rate),
         max_sequence_length=overrides.pop(
             "max_sequence_length", defaults.max_sequence_length
@@ -286,6 +300,8 @@ def main() -> None:
     server_args = _build_server_args(args)
     task_params = [_task_to_sampling_params(task, args) for task in tasks]
     for params in task_params:
+        from config.torch_compile import validate_transformer_compile
+        validate_transformer_compile(server_args, params)
         resolve_eraserdit_cache_params(params, enable_torch_compile=server_args.enable_torch_compile)
         validate_cfg_parallel(server_args, params)
         resolve_mesh(server_args, params)
@@ -360,6 +376,7 @@ def main() -> None:
                         result.metrics,
                         extra={
                             "torch_compile": result.extra.get("torch_compile"),
+                            "component_compile": result.extra.get("component_compile"),
                             "attention_backend": result.extra.get(
                                 "attention_backend"
                             ),

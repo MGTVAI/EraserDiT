@@ -18,7 +18,7 @@ class TransformerLoader(ComponentLoader):
     expected_library = "diffusers"
 
     def should_offload(self, server_args: ServerArgs) -> bool:
-        return server_args.resolve_resource_policy().dit_cpu_offload
+        return server_args.dit_cpu_offload or server_args.dit_layerwise_offload
 
     def load_component(
         self,
@@ -35,14 +35,9 @@ class TransformerLoader(ComponentLoader):
             component_name
         ) or config.get("_class_name", "LTXVideoTransformer3DModel")
         model_cls, _ = ModelRegistry.resolve_model_cls(architecture)
-        model, loading_info = model_cls.from_pretrained(
-            component_model_path,
-            torch_dtype=dtype,
-            low_cpu_mem_usage=True,
-            local_files_only=True,
-            output_loading_info=True,
-            trust_remote_code=server_args.trust_remote_code,
-            revision=server_args.revision,
+        from loader.meta_load import load_safetensors_model
+        model, loading_info = load_safetensors_model(
+            lambda: model_cls.from_config(config), component_model_path, dtype=dtype,
         )
         addition_config = load_json_dict(
             os.path.join(component_model_path, "addition_config.json")

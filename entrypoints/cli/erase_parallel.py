@@ -5,6 +5,7 @@ worker can itself use CFG/SP and VAE parallelism; DP never splits video windows.
 """
 import json
 import os
+import signal
 from pathlib import Path
 import subprocess
 import sys
@@ -29,9 +30,11 @@ def main():
         parser.error("set an explicit, unique CUDA_VISIBLE_DEVICES pool")
     if args.parallel_devices is not None or args.device not in ("cuda", "cuda:0"):
         parser.error("DP assigns worker-local devices; use default --device and --parallel-devices")
-    size = max(args.sp_degree * args.cfg_degree, args.vae_degree, 2 if args.cfg_parallel_device else 1)
+    size = max(args.sp_degree * args.cfg_degree * args.tp_degree,
+               args.dit_fsdp_shard_degree * args.dit_fsdp_replicate_degree,
+               args.vae_degree, 2 if args.cfg_parallel_device else 1)
     if args.dp_degree < 1 or len(visible) != args.dp_degree * size:
-        parser.error("visible GPU count must equal dp_degree * max(sp_degree*cfg_degree, vae_degree)")
+        parser.error("visible GPU count must equal dp_degree * max(CFG*SP*TP, FSDP_shard*FSDP_replicate, VAE, legacy_CFG)")
     tasks = _load_tasks(args)
     paths = []
     for index, task in enumerate(tasks):
@@ -70,7 +73,8 @@ def main():
             log = (directory / f"worker{rank}.log").open("w")
             logs.append(log)
             env = dict(os.environ, CUDA_VISIBLE_DEVICES=",".join(devices), HF_HUB_OFFLINE="1")
-            worker = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT)
+            worker = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT,
+                                      start_new_session=True)
             workers.append(worker)
             report["workers"].append({"rank": rank, "devices": devices, "pid": worker.pid,
                                       "task_ids": [t["id"] for t in group], "command": command})
@@ -83,13 +87,18 @@ def main():
         report["passed"] = True
     finally:
         for worker in workers:
-            if worker.poll() is None:
-                worker.terminate()
+            if not report['passed']:
+                # Include nested DiT workers, even if their pipeline owner
+                # already exited. These process groups belong to this run.
+                try:
+                    os.killpg(worker.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
         for worker in workers:
             try:
                 worker.wait(timeout=15)
             except subprocess.TimeoutExpired:
-                worker.kill()
+                os.killpg(worker.pid, signal.SIGKILL)
                 worker.wait()
         for entry, worker in zip(report["workers"], workers):
             entry["exit_code"] = worker.returncode

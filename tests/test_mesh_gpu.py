@@ -135,5 +135,37 @@ class GPUParallelTests(unittest.TestCase):
             torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
+@unittest.skipUnless(os.environ.get('ERASERDIT_TEST_MESH') == '1' and torch.cuda.device_count() >= 4,
+                     'requires opt-in and four visible CUDA GPUs')
+class PeerExchangeGpuTests(unittest.TestCase):
+    def test_strided_uneven_shards_and_reused_source_storage(self):
+        # Two independent CFG groups and one SP4 group reuse source storage.
+        # Large QKV -> sequence gather and strided head gather exercise direct
+        # writes; the next small shape must return to the cat path.
+        for degree, length in ((2, 32769), (2, 101), (4, 32769), (4, 101)):
+            groups = [PeerExchange(degree) for _ in range(4 // degree)]
+            def worker(index):
+                with torch.cuda.device(index), torch.no_grad():
+                    rank, group = index % degree, groups[index // degree]
+                    heads = 32 // degree
+                    start, end = length * rank // degree, length * (rank + 1) // degree
+                    values = tuple(torch.empty((1, end-start, 32, 64), dtype=torch.bfloat16,
+                                               device=f'cuda:{index}') for _ in range(3))
+                    for generation in range(3):
+                        for k, value in enumerate(values):
+                            value.fill_(index + generation * 8 + k / 4)
+                        parts = group.exchange(rank, values, lambda x: x[:, :, rank*heads:(rank+1)*heads], 1)
+                        for k, value in enumerate(parts):
+                            for peer in range(degree):
+                                a, b = length*peer//degree, length*(peer+1)//degree
+                                self.assertTrue(torch.all(value[:, a:b] == index-rank + peer + generation*8 + k/4).item())
+                        result = group.exchange(rank, (parts[0],), lambda x: x[:, start:end], 2)[0]
+                        torch.testing.assert_close(result, values[0], rtol=0, atol=0)
+                    self.assertEqual(group.calls[rank], 6)
+                    self.assertEqual(group.direct_copies[rank], 12 if length > 1000 else 0)
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                list(pool.map(worker, range(4)))
+
+
 if __name__ == "__main__":
     unittest.main()

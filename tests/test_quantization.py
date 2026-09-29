@@ -28,16 +28,17 @@ class QuantizationPolicyTests(unittest.TestCase):
     def test_reject_incompatible_modes(self):
         c=SimpleNamespace(sp_degree=1,cfg_degree=1,vae_degree=1,cfg_parallel_device=None)
         args=SimpleNamespace(transformer_quantization='int8_w8a8_native',pipeline_config=c,
-            resource_policy='fullgpu',enable_torch_compile=False,operator_fusion_backend='disabled')
+            enable_torch_compile=False,operator_fusion_backend='disabled')
         validate_quantization(args)
         c.sp_degree=2
         validate_quantization(args)
-        args.resource_policy = "dynamic_offload"
         args.enable_torch_compile = True
         validate_quantization(args,SimpleNamespace(transformer_cache_mode="teacache",cache_text_projections=False))
         args.operator_fusion_backend = "triton"
         with self.assertRaises(ValueError):
             validate_quantization(args)
+        c.sp_degree = 1
+        validate_quantization(args)
 
 
 @unittest.skipUnless(os.environ.get('ERASERDIT_TEST_INT8')=='1','single GPU opt-in')
@@ -73,6 +74,10 @@ class Int8KernelTests(unittest.TestCase):
         model=EraserDiTLTXVideoTransformer3DModel(in_channels=3,out_channels=1,
             num_attention_heads=2,attention_head_dim=16,cross_attention_dim=32,
             num_layers=2,caption_channels=16).to(device='cuda',dtype=torch.bfloat16).eval()
+        model.layerwise_offload_managers = [object()]
+        with self.assertRaisesRegex(ValueError, 'before registering offload'):
+            quantize_transformer(model)
+        model.layerwise_offload_managers = []
         from config.eraserdit import EraserDiTPipelineConfig
         from pipelines.eraserdit_erase_pipeline import EraserDiTErasePipeline
         from pipelines.base import ComposedPipelineBase

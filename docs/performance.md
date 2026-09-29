@@ -1,13 +1,48 @@
 # 性能配置
 
+[双卡 CFG + 完整 DiT 编译](cfg_compile_20260928.md)：预热后两次为 142.994 / 143.726 秒，
+相比同会话无融合 eager 请求减少约 11.9%；相比补测的手工融合预热结果减少约 5.0%。
+整段 SSIM 0.982309，三次编译输出 RGB 一致；首次请求 253.567 秒，SP>1 仍不支持完整编译。
+
+[完整 DiT + VAE decoder 原片验证](decoder_full_validation_20260928.md)：
+组合整段 SSIM 0.982273；重复请求 224.084 秒，对照仅 DiT 为 224.128 秒，
+新增 decoder 编译没有证明有效端到端收益。
+
+新增 [T5 与 VAE 组件编译](component_compile_20260928.md)，可独立选择编译目标。
+
+新增 [完整 DiT 编译](full_transformer_compile_20260928.md)：显式 transformer 范围，
+真实权重 forward 耗时减少约 17%–30%，原片整段 SSIM 0.982325；
+首次请求包含编译成本，为 310.927 秒，未优于此前单卡方案。限制与详细记录见报告。
+
+最新 [四卡 CFG×SP 验证](four_gpu_optimization_20260927.md)：无缓存约 96 秒，TeaCache 两次约 59 秒；
+后续见 [参考 SGLang 的优化方案](next_optimization_plan_20260927.md)。
+
+当前整段质量目标更新为 [RGB SSIM ≥ 0.98](quality98_optimization_20260927.md)，
+记录编译与单卡卸载适配、FlashAttention / SageAttention 的组合筛选。
+此前 [0.985 验证](quality985_optimization_20260927.md) 保留当时判定。
+后续 [双卡 CFG、TeaCache、CacheDiT 与 INT8](multi_gpu_cache_quant_20260927.md)：
+并行仍验证 0.98；按用户后续要求，缓存与量化以基本擦除效果验收，SSIM 仅作诊断。
+
+此前 [SSIM ≥ 0.99 的单卡优化验证](quality99_optimization_20260927.md) 接入可选尾窗口减填充和
+TeaCache 的限定层卸载计划。前者在示例整段达标，后者所测阈值未达标，均不默认开启。
+
+最新显存优化与静态条件复用见 [2026-09-27 验证](memory_optimization_20260927.md)。
+
+后续 [DiT 融合优化](performance_optimization_20260927.md) 修正了 QK/RoPE 数值边界。
+单卡 BF16 eager + 当前逐层卸载可增加 `--operator-fusion-backend auto` 启用；
+真实形状逐层 DiT forward 五次交替测量中位数减少 7.7%，原片 50 步相对本轮基线逐像素一致。
+默认仍关闭融合。局部 FFN compile 已支持单卡逐层卸载和图外融合，INT8 组合限制保持原样。
+
+下一阶段见 [单卡优化方案](single_gpu_optimization_plan.md)：先验证文本投影缓存和精确融合，
+再按实测推进局部编译；残差缓存与卸载协同作为独立的可选路线。
+
+[本轮实施与筛选](single_gpu_optimization_20260927.md) 新增显式 `gated_residual` 融合，
+并验证文本投影缓存、局部 FFN 编译；当前结果不支持将这些实验候选加入默认配置。
+
 [CLI](cli.md) · [服务 API](service_api.md) · [测量步骤](validation.md) · [测试](../tests/README.md)
 
-CLI 默认使用 SDPA、BF16、单 GPU 和 `dynamic_offload`（2 GiB DiT block 权重预算）；
-性能对照应显式指定 `--resource-policy fullgpu`。根据显存与吞吐需求选择下列配置，
-每次只改变一个选项，并使用实际素材检查画面和耗时。
-
-最新组合实现与验收见 [2026-09-23 可组合加速](composable_acceleration_validation_20260923.md)。
-下面的 2026-09-22 表格保留为历史对照，旧组合限制不再代表当前代码。
+当前内存管理已迁移为 SGLang 源码方案，配置见 [内存管理](sglang_memory.md)。
+下面 2026-09-22 / 23 的数据属于迁移前实现；其中旧参数和卸载组合不能直接复跑。
 
 ## 实测性能总结（2026-09-22）
 
@@ -86,145 +121,41 @@ bash results/cache_threshold_03_20260922/command.sh
 原始汇总为 [44 项 JSON](../results/optimization_validation_20260922/summary_with_sp2.json)和
 [缓存 0.3 JSON](../results/cache_threshold_03_20260922/summary.json)；`results/` 产物保留在本机，不随 Git 分发。
 
-## 配置选择
+## 当前配置
 
-| 目的 | 配置 | 组合限制 |
-| --- | --- | --- |
-| 单卡注意力加速 | `--attention-backend sage_attn` | 先安装可选注意力依赖 |
-| 编译加速 | `--enable-torch-compile` | EraserDiT 编译 FFN，CUDA graph 关闭；可叠加卸载、缓存和 CFG/SP |
-| 节省权重显存 | `--resource-policy dynamic_offload` | 每 rank 独立预算；预算不包含激活和其他组件 |
-| 双卡单任务 | `--cfg-degree 2` 或 `--sp-degree 2` | 持久化副本；可叠加卸载、编译及二选一缓存 |
-| 残差复用 | TeaCache / CacheDiT | 二选一；SP 组内同步决定；检查画面变化 |
-| INT8 量化 | `--transformer-quantization int8_w8a8_native` | BF16 输入；手工算子融合关闭；支持 CPU 转换和卸载 |
-| 实验 Ring | `--sp-degree 2 --sp-attention-mode ring --attention-backend sdpa` | 本轮只验证双卡，不代表四卡混合 USP 验收 |
-
-
-以下参数片段添加到[完整 CLI 命令](cli.md#单视频)使用。具体支持范围由启动校验决定。
-
-<a id="single-gpu"></a>
-## 注意力与编译
-
-```bash
---attention-backend sage_attn --enable-torch-compile --warmup
-```
-
-SageAttention / FlashAttention 安装见[可选依赖](setup.md#可选依赖)。
-编译和预热有一次性成本，常驻会话内的重复请求更适合测量稳态收益。
-`--warmup` 仅为首个任务预热，输入形状变化可能再次触发编译。
-双卡执行前串行准备各 rank 的 FFN 图，避免 Torch 2.6 的 FX tracing 全局 hook 干扰另一个线程。
-`compile_preparation_seconds` 记录这项成本；后续窗口复用相同形状的图。
-默认 `MGERASE_COMPILE_LINEAR_BACKEND=native` 保留 GEMM 的 BF16 bias 舍入；
-`inductor` 允许编译器重写 GEMM，但目前测得的无缓存组合未过 SSIM 门槛。
-更换 GPU 或 Torch 版本后在目标环境重新生成编译产物，并检查输出质量。
+CLI/服务默认开启单卡 DiT 逐层卸载、T5 FSDP CPU offload 和 VAE 组件卸载。
+无字节预算。预取参数 0 表示一层；完整说明见 [SGLang 内存管理](sglang_memory.md)。
 
 <a id="offload"></a>
-## 权重卸载
-
-`fullgpu` 保持组件驻留 GPU；`fullgpu_pin_memory` 额外使用 pinned CPU 内存。
-`component_offload` 按文本编码、VAE 编解码和去噪阶段搬运整个组件。
-`dynamic_offload` 使用参考 SGLang 实现的 DiT 逐层卸载：CPU 保存 pinned 权重，
-独立 CUDA stream 预取后续 blocks，计算后释放 GPU 副本。Text Encoder、VAE 编码器和
-解码器按阶段整体加载；不会跨组件预取。阶段边界清理空闲 CUDA allocator 缓存，
-不在 block 之间清理。该模式不再使用旧的通用 extent 调度器。
+卸载支持局部 FFN compile，CUDA graphs 关闭；DiT 的 INT8/多卡权重卸载暂不支持。
+CFG/SP 常驻 DiT 可保留主卡 T5/VAE CPU 卸载，INT8 常驻 DiT 也可搭配主卡组件卸载。
+逐层卸载支持显式 TeaCache，仍拒绝 cache_dit；缓存与 compile 的组合限制仍按缓存配置校验。
+使用上述加速路径先关闭卸载：
 
 ```bash
---resource-policy dynamic_offload --max-weight-usage 2147483648 --dit-offload-prefetch-size 1
+--no-dit-layerwise-offload --no-dit-cpu-offload \
+--no-text-encoder-cpu-offload --no-vae-cpu-offload
 ```
 
-`--dit-offload-prefetch-size` 是向前预取的 block 数，默认 1；0 关闭预取，仍按层加载。
-`--max-weight-usage` 只限制 DiT blocks 的在途、使用中和待释放权重，预算不足时减少
-预取或等待释放；小于最大单个 block 时拒绝初始化。它不包含 Text Encoder、VAE、
-DiT 非 block 层、TeaCache 小探针参数、激活、缓存、workspace 或 allocator reserved。
-Text Encoder、VAE 需要能在其各自阶段容纳完整活动组件，不能沿用旧版的小显存承诺。
-
-初始化直接加载到 CPU，显式启用低 CPU 内存加载，再按 block 建立 pinned 存储，
-不会先把完整 DiT 搬到 GPU，也不在初始化时预取 blocks。当前仍经由库的
-`from_pretrained` 加载；尚未实现 checkpoint 直接写入最终 pinned 存储。
-DiT blocks 始终使用 pinned CPU 权重；Text Encoder、VAE 不额外 pin。
-卸载不消除 VAE 激活峰值；不能保证任意 GPU 都能处理原尺寸视频。
-
-支持局部编译、TeaCache、cache_dit、文本投影缓存和 CFG/SP。预取限于实际执行区间，
-TeaCache 小探针不触发首层完整搬运；缓存复用区间不搬运跳过的 blocks。
-INT8 可在 CPU 转换后注册卸载。多卡 VAE 暂要求 fullgpu；单卡 tiling 可与卸载组合。
-
-CLI 的 `memory_registration.initialization_memory` 记录加载前、加载后和注册后的
-CPU RSS、CPU 峰值 RSS、CUDA allocated/reserved 及峰值，并记录副本初始化后的各卡观测。CUDA 峰值口径为最近一次外部
-reset 后累计，不把采样点误称为独立阶段峰值；新进程中可用于观察初始化峰值。
-`memory_runtime` 中的 `resident_bytes`/`peak_resident_bytes` 只统计受管 DiT 权重；
-其他组件字节数另列 `component_resident_bytes`/`component_weight_bytes`。
-`h2d_bytes`、`h2d_count`、`budget_waits` 按会话累计，组件搬运历史只保留最近 64 条。
-请求的总峰值显存仍看 CLI timing 的 allocated/reserved；服务也返回内存运行信息。
-
-上方 2026-09-22 动态卸载性能属于旧 extent 后端，不能直接当作本实现的测试结果。
-新后端的实测、峰值口径和覆盖范围见 [2026-09-23 验证](layerwise_offload_validation_20260923.md)。
-
+<a id="single-gpu"></a>
 <a id="cache"></a>
-## Transformer 缓存
-
-默认 `--transformer-cache-mode off`，支持 `teacache` 和 `cache_dit`。
-缓存按 CFG 分支及窗口隔离，正常和异常退出时清理。
-文本投影默认随残差缓存开启；单独复用文本投影可使用：
-
-```bash
---transformer-cache-mode off --cache-text-projections
-```
-
-残差缓存示例：
-
-```bash
---transformer-cache-mode teacache --teacache-threshold 0.3
-# 或
---transformer-cache-mode cache_dit --cache-dit-residual-diff-threshold 0.3
-```
-
-TeaCache 根据调制输入变化判断复用；CacheDiT 保留前段探针与中段残差。
-TeaCache 和 CacheDiT 默认阈值均为 `0.3`。默认 warmup=4、末步保护=1、最多连续复用一步；残差以 FP32 保存和恢复。
-完整原片的耗时、复用率和复跑命令见[阈值 0.3 验证](cache_threshold_03_validation_20260922.md)。
-`--cache-residual-predictor linear` 增加变化率预测及显存占用，默认 `none`。
-阈值控制复用频率和画面误差，需结合素材调节；通过 `transformer_cache_history` 检查实际命中。
-
 <a id="parallel"></a>
-## CFG / SP / VAE / DP 并行
-
-CFG 将正负分支分配到两卡，SP 分配序列计算，VAE 在编解码阶段使用多卡，
-DP 将独立视频任务分给不同 worker。
-
-| 组合 | CLI 参数 | 可见 GPU 数 |
-| --- | --- | ---: |
-| CFG | `--cfg-degree 2` | 2 |
-| SP | `--sp-degree 2` 或 `4` | 2 / 4 |
-| CFG × SP | `--cfg-degree 2 --sp-degree 2` | 4 |
-| VAE 空间分片 | `--vae-degree 2` 或 `4` | 2 / 4 |
-| DP × CFG / SP | dispatcher `--dp-degree 2` 加 `--cfg-degree 2` 或 `--sp-degree 2` | 4 |
-
-单任务 mesh 最多四卡，设备数为 `max(cfg_degree × sp_degree, vae_degree)`。
-`--cfg-parallel-device` 与 mesh 参数不能混用。
-SP 默认 `--sp-linear-mode reference` 保持完整矩阵形状；`sharded` 改变计算布局，需检查数值差异。
-VAE 默认保留完整空间上下文；`--vae-tiling` 启用近似分块，需要单独检查画面。
-多卡收益取决于通信开销、素材大小和设备占用，DP 主要提高多任务吞吐。
-完整命令见 [CLI](cli.md#加速与多卡)。
-
 <a id="quantization"></a>
-## INT8 W8A8
-
-`int8_w8a8_native` 使用按输出通道权重量化、按 token 激活量化及 FP32 scale，
-通过 Triton 和 `torch._int_mm` 执行，输出 BF16。
-默认 `--quantization-scope blocks`，也可选 `ffn`；文本编码器、VAE 和输入输出投影保持原精度。
-量化在加载后执行，不修改 checkpoint。卸载模式下直接在 CPU 逐层转换，无完整 GPU BF16 权重副本。私有整数接口依赖 Torch 版本，升级后需复验。
-量化不保证提速；应分别记录转换成本、稳态耗时、显存和画面变化。
+全驻留可使用注意力后端、局部 FFN compile、二选一残差缓存、文本投影缓存及 CFG/SP。
+历史测试数据不构成迁移后所有组合的验收。具体参数见 [CLI](cli.md)。
 
 <a id="acceptance"></a>
 ## 质量与性能验证
 
-非缓存、非量化优化需同时满足 **RGB SSIM ≥ 0.985、MSE ≤ 36、MAE ≤ 6**。
+当前单卡近似优化按用户指定的整段 RGB SSIM ≥ 0.98 验收，同时报告 MSE、MAE、最低帧和时序误差。
 固定输入、权重、提示词、seed、采样和窗口配置，与未优化输出比较。
-解码 RGB 范围为 0–255；MSE/MAE 在所有帧、像素、通道平均；SSIM 使用
-11×11 Gaussian 窗口、sigma=1.5、reflect 边界，并按通道和帧平均。
-帧数、尺寸和帧率必须一致，FFmpeg 默认 SSIM 或 Y 通道指标不能替代上述定义。
+RGB 范围为 0–255，SSIM 使用 11×11 Gaussian 窗口、sigma=1.5、reflect 边界。
+帧数、尺寸和帧率必须一致。缓存、量化和 VAE tiling 需记录并检查画面差异。
 
-缓存与量化允许有损，不以上述非缓存、非量化数值门槛判定失败；数值指标用于记录损失。
-需要进行感知验收时，完整播放检查擦除区域、结构、颜色及闪烁。
-同卡同配置至少测量五次，记录中位数、离散度、GPU 占用及 allocated/reserved 峰值。
-加载、转换、编译和预热单列，区分冷启动与稳态。具体操作见[测量与验证](validation.md)。
+性能至少五次同条件重复，加载与推理分开统计，记录中位数、波动和其他进程占用。
+allocated/reserved 是本进程 PyTorch 指标，不代表整卡占用。
 
-本机非量化优化测试的命令、覆盖范围与结果见[2026-09-22 优化验证](optimization_validation_20260922.md)。
+2026-09-28 的 NCCL DiT 并行任务使用更新后的 **整片 RGB SSIM ≥0.985** 门槛。
+历史 0.98 门槛下的编译/缓存结果不能直接作为本轮合格配置。
+DP、CFG、Ulysses、流式 Ring/USP、TP、FSDP/HSDP 的实现边界与新测量见
+[NCCL 并行实施与验收](distributed_parallel_20260928.md)。

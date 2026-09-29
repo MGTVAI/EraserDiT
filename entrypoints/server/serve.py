@@ -15,6 +15,7 @@ from typing import Any
 
 import uvicorn
 
+from config.resource_policy import memory_arguments
 from config.server_args import ServerArgs
 from config.service_args import ServiceArgs
 from entrypoints.http_server import create_http_server_app
@@ -56,18 +57,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--result-storage-key-prefix", default="mgerase/results")
     parser.add_argument("--dtype", default="bf16", choices=["bf16", "fp16", "fp32"])
     parser.add_argument("--device", default="cuda")
-    parser.add_argument(
-        "--resource-policy",
-        default="fullgpu",
-        choices=["fullgpu", "fullgpu_pin_memory", "dynamic_offload", "component_offload"],
-    )
+    from config.resource_policy import add_memory_arguments
+    add_memory_arguments(parser)
     parser.add_argument("--runtime-mode", default=None)
-    parser.add_argument("--dit-offload-prefetch-size", type=int, default=1,
-                        help="DiT lookahead blocks; 0 disables prefetch; bounded by weight budget")
-    parser.add_argument("--max-weight-usage", type=int, default=2 * 1024**3,
-                        help="DiT block weight budget in bytes, including in-flight copies; excludes other weights and activations")
-    parser.add_argument("--pin-memory", action=argparse.BooleanOptionalAction, default=False,
-                        help="pin weights in resident modes; dynamic DiT blocks always use pinned CPU storage")
     parser.add_argument(
         "--attention-backend",
         default="sdpa",
@@ -76,12 +68,24 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--enable-torch-compile", action=argparse.BooleanOptionalAction, default=False
     )
+    parser.add_argument("--torch-compile-scope", choices=["ffn", "transformer"], default="ffn",
+                        help="Compile FFNs or the complete resident single-GPU DiT forward")
+    parser.add_argument("--compile-components", default="",
+                        help="Comma-separated auxiliary models: text_encoder,vae_encoder,vae_decoder; independent of DiT compile")
     parser.add_argument(
         "--operator-fusion-backend",
         default="disabled",
         choices=["disabled", "auto", "triton"],
     )
     parser.add_argument('--sp-degree', type=int, default=None)
+    parser.add_argument('--dit-parallel-backend', choices=['peer', 'nccl'], default=None)
+    parser.add_argument('--tp-degree', type=int, default=None)
+    parser.add_argument('--tp-linear-mode', choices=['reference', 'sharded', 'aligned'], default=None)
+    parser.add_argument('--ulysses-degree', type=int, default=None)
+    parser.add_argument('--ring-degree', type=int, default=None)
+    parser.add_argument('--ring-attention-mode', choices=['reference', 'online', 'streaming'], default=None)
+    parser.add_argument('--dit-fsdp-shard-degree', type=int, default=None)
+    parser.add_argument('--dit-fsdp-replicate-degree', type=int, default=None)
     parser.add_argument('--cfg-degree', type=int, default=None)
     parser.add_argument('--sp-linear-mode', choices=['reference', 'sharded'], default=None)
     parser.add_argument('--sp-attention-mode', choices=['ulysses', 'ring'], default=None)
@@ -127,6 +131,8 @@ def _default_runtime_mode(pipeline_cls: type) -> str:
 def _build_server_args(args: argparse.Namespace, pipeline_cls: type) -> ServerArgs:
     config, architectures = _resolve_pipeline_config(pipeline_cls, args.dtype)
     for name in ('sp_degree', 'cfg_degree', 'sp_linear_mode', 'sp_attention_mode',
+                 'dit_parallel_backend', 'tp_degree', 'tp_linear_mode', 'ulysses_degree', 'ring_degree',
+                 'ring_attention_mode', 'dit_fsdp_shard_degree', 'dit_fsdp_replicate_degree',
                  'parallel_devices', 'vae_degree', 'vae_tiling', 'vae_tile_size', 'vae_tile_stride',
                  'quantization_scope'):
         value = getattr(args, name, None)
@@ -139,15 +145,14 @@ def _build_server_args(args: argparse.Namespace, pipeline_cls: type) -> ServerAr
         pipeline_class_name=args.pipeline_name,
         device=args.device,
         weight_dtype=args.dtype,
-        resource_policy=args.resource_policy,
-        max_weight_usage=args.max_weight_usage,
-        dit_offload_prefetch_size=args.dit_offload_prefetch_size,
-        pin_memory=args.pin_memory,
+        **memory_arguments(args),
         pipeline_config=config,
         component_architectures=architectures,
         attention_backend=args.attention_backend,
         transformer_quantization=getattr(args, "transformer_quantization", "none"),
         enable_torch_compile=bool(args.enable_torch_compile),
+        torch_compile_scope=getattr(args, "torch_compile_scope", "ffn"),
+        compile_components=getattr(args, "compile_components", ""),
         operator_fusion_backend=args.operator_fusion_backend,
         operator_fusion_ops=args.operator_fusion_ops,
     )
@@ -189,6 +194,8 @@ def _effective_acceleration(
     attention = dict(getattr(pipeline, "attention_backend_report", {}) or {})
     decision = getattr(server_args, "operator_fusion_decision", None)
     fusion = decision.as_dict() if hasattr(decision, "as_dict") else {}
+    config = server_args.pipeline_config
+    nccl = getattr(config, 'dit_parallel_backend', 'peer') == 'nccl'
     return {
         "resource_policy": server_args.resolve_resource_policy().as_dict(),
         "memory_runtime": (
@@ -203,15 +210,21 @@ def _effective_acceleration(
         "transformer_cache": {
             "scope": "request",
             "default": "off",
-            "supported_modes": ["off", "teacache", "cache_dit"],
+            "supported_modes": ["off"] if nccl else ["off", "teacache", "cache_dit"],
             "experimental": True,
             "compatible_with_torch_compile": False,
             "effective_report": "task.metrics.transformer_cache_history",
         },
         "operator_fusion": fusion,
+        "dit_parallel": {name: getattr(config, name, None) for name in (
+            'dit_parallel_backend', 'cfg_degree', 'sp_degree', 'tp_degree', 'tp_linear_mode',
+            'ulysses_degree', 'ring_degree', 'ring_attention_mode',
+            'dit_fsdp_shard_degree', 'dit_fsdp_replicate_degree')},
+        "compile_components": list(getattr(server_args, "compile_components", ())),
         "torch_compile": {
             "requested": bool(server_args.enable_torch_compile),
             "active": bool(getattr(server_args, "enable_torch_compile", False)),
+            "scope": getattr(server_args, "torch_compile_scope", "ffn"),
         },
         "notes": (
             "values are captured after the resident session is built; entries are "
@@ -284,7 +297,7 @@ def main() -> None:
                 "runtime_mode": runtime_mode,
                 "dtype": args.dtype,
                 "device": args.device,
-                "resource_policy": args.resource_policy,
+                "memory_config": memory_arguments(args),
                 "attention_backend": args.attention_backend,
                 "torch_compile": bool(args.enable_torch_compile),
                 "operator_fusion_backend": args.operator_fusion_backend,

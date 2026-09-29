@@ -8,6 +8,7 @@ from pathlib import Path
 import tempfile
 
 import torch
+from config.server_args import ServerArgs
 
 from models.adapters.eraserdit.mesh import PeerExchange, SequenceRank, resolve_mesh, EraserDiTMeshWindow
 from entrypoints.cli.erase_parallel import partition_tasks
@@ -21,6 +22,38 @@ class Attention:
 
 
 class MeshTests(unittest.TestCase):
+    def test_cfg_first_step_and_window_rope_lifecycle(self):
+        from contextlib import nullcontext, ExitStack
+        from config.server_args import ServerArgs, set_global_server_args
+        from models.dits.eraserdit_transformer import EraserDiTLTXVideoTransformer3DModel
+        set_global_server_args(ServerArgs(device='cpu', attention_backend='sdpa'))
+        model = EraserDiTLTXVideoTransformer3DModel(
+            in_channels=3, out_channels=1, num_attention_heads=2, attention_head_dim=16,
+            cross_attention_dim=32, num_layers=1, caption_channels=16).eval()
+        with torch.no_grad(), patch('torch.cuda.device', return_value=nullcontext()), \
+                patch('torch.cuda.current_stream'), patch('torch.cuda.synchronize'), \
+                patch('torch.autocast', side_effect=lambda *a, **k: nullcontext()):
+            for frames in (2, 1):
+                hidden = torch.randn(1, 1, frames, 2, 3)
+                values = dict(hidden_states=hidden, cond_latents=torch.randn_like(hidden),
+                              mask_values=torch.ones_like(hidden), encoder_hidden_states=torch.randn(1, 4, 16),
+                              encoder_attention_mask=torch.ones(1, 4), timestep=torch.ones(1),
+                              num_frames=frames, height=2, width=3, return_dict=False)
+                negative = dict(values, encoder_hidden_states=values['encoder_hidden_states'] + .7)
+                expected = model(**values)[0], model(**negative)[0]
+                with EraserDiTMeshWindow(model, dict(sp=1, cfg=2, devices=[torch.device('cpu')]*2)) as mesh:
+                    neg, pos = mesh.predict(negative, values)
+                    torch.testing.assert_close(pos, expected[0], rtol=0, atol=0)
+                    torch.testing.assert_close(neg, expected[1], rtol=0, atol=0)
+                    with ExitStack() as patches:
+                        for rank_model in mesh.models:
+                            patches.enter_context(patch.object(rank_model.rope, 'forward',
+                                side_effect=AssertionError('RoPE recomputed')))
+                        neg, pos = mesh.predict(negative, values)
+                        torch.testing.assert_close(pos, expected[0], rtol=0, atol=0)
+                        torch.testing.assert_close(neg, expected[1], rtol=0, atol=0)
+                self.assertFalse(mesh.rotary)
+
     def test_four_logical_ranks_cfg_sp_with_real_cpu_transformer(self):
         from contextlib import nullcontext
         from config.server_args import ServerArgs, set_global_server_args
@@ -46,6 +79,16 @@ class MeshTests(unittest.TestCase):
                 torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
                 torch.testing.assert_close(actual_neg, expected_neg, rtol=1e-5, atol=1e-6)
                 self.assertEqual(len(mesh.groups), 2)
+                from contextlib import ExitStack
+                with ExitStack() as patches:
+                    for rank_model in mesh.models:
+                        patches.enter_context(patch.object(rank_model.rope, 'forward',
+                            side_effect=AssertionError('mesh recomputed static RoPE')))
+                    again_neg, again = mesh.predict(negative, values)
+                    torch.testing.assert_close(again, actual, rtol=0, atol=0)
+                    torch.testing.assert_close(again_neg, actual_neg, rtol=0, atol=0)
+                self.assertEqual(mesh.report()['rotary_cache_entries'], 4)
+            self.assertEqual(mesh.rotary, [])
 
     def test_ulysses_two_and_four_ranks_uneven_sequence(self):
         torch.manual_seed(42)
@@ -92,8 +135,7 @@ class MeshTests(unittest.TestCase):
 
     def test_composable_mesh_and_ring_validation(self):
         from config.eraserdit import EraserDiTPipelineConfig
-        from config.server_args import ServerArgs
-        args = ServerArgs(device='cuda:0', resource_policy='dynamic_offload', enable_torch_compile=True,
+        args = ServerArgs(device='cuda:0', enable_torch_compile=True,
                           pipeline_config=EraserDiTPipelineConfig(sp_degree=2, sp_attention_mode='ring'))
         with patch('torch.cuda.device_count', return_value=2):
             self.assertEqual(resolve_mesh(args)['attention_mode'], 'ring')
@@ -106,13 +148,14 @@ class MeshTests(unittest.TestCase):
                 resolve_mesh(args)
             args.pipeline_config.sp_attention_mode = 'ulysses'
             args.pipeline_config.vae_degree = 2
-            with self.assertRaisesRegex(ValueError, 'parallel VAE'):
+            args.dit_layerwise_offload = True
+            with self.assertRaisesRegex(ValueError, 'single-GPU'):
                 resolve_mesh(args)
 
     def test_configuration_and_mesh_cardinality(self):
         config = SimpleNamespace(sp_degree=2, cfg_degree=2, vae_degree=4, vae_tiling=True,
                                  parallel_devices=(0, 1, 2, 3), cfg_parallel_device=None)
-        args = SimpleNamespace(pipeline_config=config, device="cuda:0", resource_policy="fullgpu",
+        args = ServerArgs(pipeline_config=config, device="cuda:0",
                                enable_torch_compile=False)
         with patch("torch.cuda.device_count", return_value=4):
             self.assertEqual(len(resolve_mesh(args)["devices"]), 4)
@@ -138,7 +181,7 @@ class MeshTests(unittest.TestCase):
         value = torch.zeros(1, 3, 1, 480, 32)
         vae = SimpleNamespace(spatial_compression_ratio=32, config=SimpleNamespace(decoder_inject_noise=()),
                               encoder=lambda x: torch.cat([x, x], dim=1))
-        args = SimpleNamespace(device="cuda:0", resource_policy="fullgpu", enable_torch_compile=False,
+        args = ServerArgs(device="cuda:0", enable_torch_compile=False,
                                pipeline_config=EraserDiTPipelineConfig(vae_degree=2, vae_tiling=True))
         batch = SimpleNamespace(extra={})
         with patch("torch.cuda.device_count", return_value=2):
@@ -148,6 +191,7 @@ class MeshTests(unittest.TestCase):
 
     def test_dispatcher_cancels_owned_peers_after_failure(self):
         from entrypoints.cli.erase_parallel import main
+        import signal
         class Worker:
             def __init__(self, code, pid):
                 self.returncode, self.pid, self.terminated = code, pid, False
@@ -158,6 +202,10 @@ class MeshTests(unittest.TestCase):
             def wait(self, timeout=None):
                 return self.returncode
         failed, peer = Worker(1, 100), Worker(None, 101)
+        def kill_group(pid, sig):
+            self.assertEqual(sig, signal.SIGTERM)
+            if pid == peer.pid:
+                peer.terminate()
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
             tasks = root / "tasks.json"
@@ -166,9 +214,12 @@ class MeshTests(unittest.TestCase):
             argv = ["erase_parallel", "--dp-degree", "2", "--parallel-run-dir", str(root / "run"),
                     "--task-file", str(tasks), "--model-path", str(root / "model")]
             with patch("sys.argv", argv), patch.dict("os.environ", {"CUDA_VISIBLE_DEVICES": "2,3"}), \
-                 patch("subprocess.Popen", side_effect=[failed, peer]):
+                 patch("subprocess.Popen", side_effect=[failed, peer]) as start, \
+                 patch("os.killpg", side_effect=kill_group) as terminate_group:
                 with self.assertRaisesRegex(RuntimeError, "worker failed"):
                     main()
+                self.assertEqual([c.args[0] for c in terminate_group.call_args_list], [100, 101])
+                self.assertTrue(all(c.kwargs['start_new_session'] for c in start.call_args_list))
             self.assertTrue(peer.terminated)
             report = json.loads((root / "run/report.json").read_text())
             self.assertFalse(report["passed"])

@@ -8,6 +8,7 @@
 | `service_args.py` | HTTP 服务、队列、输入路径和结果存储 |
 | `service_contract.py` / `service_contracts/` | 模型请求 schema、采样参数构造与 capability |
 | `parallel.py` | 并行配置和计划类型 |
+| `dit_parallel.py` | NCCL DiT 正交拓扑、TP/Ulysses/Ring/CFG/FSDP 度数与组合校验 |
 | `resource_policy.py` | 权重驻留和卸载策略 |
 | `eraserdit_cache.py` / `transformer_cache.py` | Transformer 缓存参数与校验 |
 
@@ -20,3 +21,8 @@ uv run --no-project python -m entrypoints.server.serve --help
 ```
 
 使用示例见[CLI](../docs/cli.md)和[服务 API](../docs/service_api.md)。
+
+内存配置使用 `ServerArgs` 的 `dit_layerwise_offload`、`dit_cpu_offload`、
+`text_encoder_cpu_offload`、`vae_cpu_offload`、`pin_cpu_memory` 和 `dit_offload_prefetch_size`。
+旧 `resource_policy`、`dynamic_offload`、`max_weight_usage`、`pin_memory` 参数已删除。
+默认值及互斥约束见 [内存管理](../docs/sglang_memory.md)。

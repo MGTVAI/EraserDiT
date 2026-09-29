@@ -118,3 +118,11 @@ curl -fsS http://127.0.0.1:30000/v1/models
 
 模型或权重变更后应重新验收。接口验收不判断画面质量，需另按
 [质量标准](performance.md#acceptance) 对照输出视频。
+
+服务默认开启单卡 SGLang 源码卸载；开关与 CLI 一致，见 [内存管理](sglang_memory.md)。
+
+NCCL DiT 多进程服务通过启动参数 `--dit-parallel-backend nccl` 选择；
+CFG、SP/Ulysses/Ring、TP 与 FSDP/HSDP 的度数在启动时固定，不能按请求改变通信拓扑。
+当前要求 BF16、SDPA、DiT 常驻、关闭编译/量化/缓存；不支持的请求会提前拒绝。
+响应指标中的 `parallel_history` 记录各窗口的实际后端、rank 参数字节、通信次数与显存峰值。
+策略参数、整片质量和性能证据见 [NCCL 并行验收](distributed_parallel_20260928.md)。

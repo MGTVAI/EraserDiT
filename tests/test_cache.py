@@ -14,6 +14,57 @@ def batch(mode, **options):
 
 
 class CacheTests(unittest.TestCase):
+    @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
+    def test_teacache_layerwise_matches_resident_across_windows_and_branches(self):
+        import copy
+        from contextlib import ExitStack
+        from config.server_args import ServerArgs, set_global_server_args
+        from models.dits.eraserdit_transformer import EraserDiTLTXVideoTransformer3DModel
+        from memory.backends.layerwise_offload import LayerwiseOffloadManager
+        set_global_server_args(ServerArgs(device='cuda', attention_backend='sdpa'))
+        torch.manual_seed(231)
+        resident = EraserDiTLTXVideoTransformer3DModel(
+            in_channels=3, out_channels=1, num_attention_heads=2, attention_head_dim=16,
+            cross_attention_dim=32, num_layers=3, caption_channels=16,
+        ).cuda().bfloat16().eval()
+        offloaded = copy.deepcopy(resident)
+        manager = LayerwiseOffloadManager(offloaded, layers_attr_str='transformer_blocks',
+                                          num_layers=3, enabled=True, prefetch_size=2)
+        offloaded.layerwise_offload_managers = [manager]
+        values = dict(hidden_states=torch.randn(1, 1, 1, 2, 2, device='cuda', dtype=torch.bfloat16),
+                      cond_latents=torch.randn(1, 1, 1, 2, 2, device='cuda', dtype=torch.bfloat16),
+                      mask_values=torch.ones(1, 1, 1, 2, 2, device='cuda', dtype=torch.bfloat16),
+                      encoder_attention_mask=torch.ones(1, 4, device='cuda'),
+                      timestep=torch.ones(1, device='cuda'), num_frames=1, height=2, width=2,
+                      return_dict=False)
+        prompts = {b: torch.randn(1, 4, 16, device='cuda', dtype=torch.bfloat16)
+                   for b in ('positive', 'negative')}
+        try:
+            with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
+                for force in (True, False, False):
+                    requests = [batch('teacache', transformer_cache_force_compute=force,
+                                      teacache_threshold=1., teacache_warmup_steps=1,
+                                      cache_text_projections=True) for _ in range(2)]
+                    with ExitStack() as stack:
+                        windows = [stack.enter_context(EraserDiTCacheWindow(b, total_steps=6, num_blocks=3))
+                                   for b in requests]
+                        for step in range(6):
+                            for branch, prompt in prompts.items():
+                                ref = resident(**values, encoder_hidden_states=prompt,
+                                               **windows[0].kwargs(branch, step))[0]
+                                actual = offloaded(**values, encoder_hidden_states=prompt,
+                                                   **windows[1].kwargs(branch, step))[0]
+                                torch.testing.assert_close(actual, ref, rtol=0, atol=0)
+                                self.assertFalse(manager._gpu_layers)
+                    self.assertEqual(requests[0].extra['transformer_cache']['total'],
+                                     requests[1].extra['transformer_cache']['total'])
+                    skipped = requests[1].extra['transformer_cache']['total']['skip_steps']
+                    self.assertEqual(skipped, 0 if force else 4)
+        finally:
+            manager.release_all()
+            torch.cuda.synchronize()
+            manager.remove_forward_hooks()
+
     def test_cache_dit_front_probe_subtracts_before_bf16_rounding(self):
         from cache.base import CacheBranch
         b = batch('cache_dit')

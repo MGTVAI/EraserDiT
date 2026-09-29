@@ -31,6 +31,7 @@ class EraserDiTVideoRequest(BaseModel):
     strength: float = Field(default=0.8, gt=0.0, le=1.0)
     infer_len: int = Field(default=121, ge=9)
     overlap: int = Field(default=9, ge=0)
+    compact_tail_padding: bool = False
     max_sequence_length: int = Field(default=128, ge=1, le=512)
     mask_dilate_iter: int = Field(default=9, ge=0)
     mask_ksize: int = Field(default=9, ge=1)
@@ -55,6 +56,8 @@ class EraserDiTVideoRequest(BaseModel):
     def validate_cross_fields(self) -> "EraserDiTVideoRequest":
         if self.overlap >= self.infer_len:
             raise ValueError("overlap must be smaller than infer_len")
+        if self.compact_tail_padding and (self.overlap % 8 != 1 or self.infer_len % 8 != 1):
+            raise ValueError('compact_tail_padding requires 8k+1 infer_len/overlap')
         if self.mask_ksize % 2 == 0:
             raise ValueError("mask_ksize must be odd")
         from config.eraserdit_cache import resolve_eraserdit_cache_params
@@ -93,6 +96,10 @@ def build_eraserdit_sampling_params(payload: dict[str, Any], *, runtime_mode: st
 
 
 def _validate_eraserdit_request(payload: dict[str, Any], server_args: Any) -> None:
+    from config.dit_parallel import validate_nccl_dit
+    validate_nccl_dit(server_args, payload['sampling'])
+    from config.torch_compile import validate_transformer_compile
+    validate_transformer_compile(server_args, payload["sampling"])
     from config.eraserdit_cache import resolve_eraserdit_cache_params
     resolve_eraserdit_cache_params(
         payload["sampling"], enable_torch_compile=server_args.enable_torch_compile,

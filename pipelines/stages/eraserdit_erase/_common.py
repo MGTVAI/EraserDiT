@@ -28,6 +28,7 @@ __all__ = [
     "NEW_FRAMES_KEY",
     "PREFIX_LEN_KEY",
     "ORIG_SIZE_KEY",
+    "MODEL_FRAMES_KEY",
 ]
 
 TASK_STATE_KEY = "eraserdit_task_state"
@@ -36,6 +37,7 @@ STYLE_MASK_KEY = "eraserdit_style_mask"
 NEW_FRAMES_KEY = "eraserdit_new_frames"
 PREFIX_LEN_KEY = "eraserdit_prefix_len"
 ORIG_SIZE_KEY = "eraserdit_orig_size"
+MODEL_FRAMES_KEY = "eraserdit_model_frames"
 
 
 @dataclass

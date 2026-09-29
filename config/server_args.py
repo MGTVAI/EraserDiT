@@ -35,14 +35,12 @@ class ServerArgs:
     # Adapters may declare their component class names explicitly instead of
     # relying on the checkpoint's ``_class_name`` (plan §4.1).
     component_architectures: dict[str, str] = field(default_factory=dict)
-    resource_policy: str = "fullgpu"
-    dynamic_offload: bool = False
-    pin_memory: bool = False
-    max_weight_usage: int = 2 * 1024**3
-    dit_offload_prefetch_size: int = 1
-    vae_cpu_offload: bool = False
     dit_cpu_offload: bool = False
+    dit_layerwise_offload: bool = False
+    dit_offload_prefetch_size: float = 0.0
     text_encoder_cpu_offload: bool = False
+    vae_cpu_offload: bool = False
+    pin_cpu_memory: bool = True
     comfyui_mode: bool = False
     transformer_weights_path: str | None = None
     use_fsdp_inference: bool = False
@@ -74,6 +72,8 @@ class ServerArgs:
     effective_text_encoder_quantization: str = field(default="none", init=False)
     text_encoder_quantization_report: dict[str, Any] | None = field(default=None, init=False, repr=False)
     enable_torch_compile: bool = False
+    torch_compile_scope: str = "ffn"
+    compile_components: str | tuple[str, ...] = ()
     warmup: bool = False
     warmup_steps: int = 1
     operator_fusion_backend: str = "disabled"
@@ -81,8 +81,22 @@ class ServerArgs:
     operator_fusion_decision: Any | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        if type(self.dit_offload_prefetch_size) is not int or self.dit_offload_prefetch_size < 0:
-            raise ValueError("dit_offload_prefetch_size must be a non-negative integer")
+        import math
+        from config.dit_parallel import validate_nccl_dit
+        validate_nccl_dit(self)
+        if self.torch_compile_scope not in ("ffn", "transformer"):
+            raise ValueError("torch_compile_scope must be ffn or transformer")
+        from config.torch_compile import validate_transformer_compile
+        validate_transformer_compile(self)
+        from config.torch_compile import validate_component_compile
+        self.compile_components = validate_component_compile(self)
+        if (isinstance(self.dit_offload_prefetch_size, bool)
+                or not isinstance(self.dit_offload_prefetch_size, (int, float))
+                or not math.isfinite(self.dit_offload_prefetch_size)
+                or self.dit_offload_prefetch_size < 0):
+            raise ValueError("dit_offload_prefetch_size must be finite and non-negative")
+        if self.dit_layerwise_offload and (self.dit_cpu_offload or self.use_fsdp_inference):
+            raise ValueError("dit_layerwise_offload is incompatible with dit_cpu_offload/FSDP DiT")
         self.transformer_quantization = str(
             self.transformer_quantization
         ).strip().lower()

@@ -16,6 +16,21 @@ from models.adapters.eraserdit.mesh import resolve_mesh
 def tiled_vae(vae, inputs, args, batch, *, operation, temb=None):
     plan = resolve_mesh(args, batch)
     config = args.pipeline_config
+    if plan is not None and plan["vae"] == 1 and config.vae_tiling:
+        # SGLang's LTX path uses the model's native overlapping-tile methods.
+        # Do not instantiate the old peer/thread tile scheduler for a single GPU.
+        vae.enable_tiling(tile_sample_min_height=config.vae_tile_size,
+                          tile_sample_min_width=config.vae_tile_size,
+                          tile_sample_stride_height=config.vae_tile_stride,
+                          tile_sample_stride_width=config.vae_tile_stride)
+        batch.extra[f"vae_parallel_{operation}"] = {
+            "requested_degree": 1, "effective_degree": 1,
+            "algorithm": "native_spatial_tiling", "tile_size": config.vae_tile_size,
+            "tile_stride": config.vae_tile_stride,
+        }
+        if operation == "encode":
+            return vae.encode(inputs).latent_dist
+        return vae.decode(inputs, temb, return_dict=False)[0]
     if plan is not None and plan["vae"] > 1 and not config.vae_tiling:
         from models.adapters.eraserdit.vae_spatial import spatial_vae
         return spatial_vae(vae, inputs, plan, batch, operation=operation, temb=temb)

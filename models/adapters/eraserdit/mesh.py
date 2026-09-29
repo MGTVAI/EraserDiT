@@ -11,10 +11,26 @@ import time
 import sys
 
 import torch
+from torch.utils._pytree import tree_map
 
 
 def resolve_mesh(args, batch=None):
     config = args.pipeline_config
+    from config.dit_parallel import validate_nccl_dit
+    topology = validate_nccl_dit(args, batch)
+    if topology is not None:
+        size = max(topology.world_size, config.vae_degree)
+        primary = torch.device(args.device)
+        if primary.type != 'cuda':
+            raise ValueError('NCCL DiT requires CUDA')
+        index = primary.index if primary.index is not None else torch.cuda.current_device()
+        indexes = tuple(range(size)) if config.parallel_devices is None else config.parallel_devices
+        if (len(indexes) != size or len(set(indexes)) != size or indexes[0] != index
+                or any(type(i) is not int or not 0 <= i < torch.cuda.device_count() for i in indexes)):
+            raise ValueError('parallel_devices must match the topology and start with the primary CUDA device')
+        return dict(sp=topology.sp, cfg=topology.cfg, vae=config.vae_degree,
+                    topology=topology, backend='nccl', ring_attention_mode=config.ring_attention_mode,
+                    devices=[torch.device('cuda', i) for i in indexes], linear_mode=config.sp_linear_mode)
     sp = getattr(config, "sp_degree", 1)
     cfg = getattr(config, "cfg_degree", 1)
     vae = getattr(config, "vae_degree", 1)
@@ -41,9 +57,9 @@ def resolve_mesh(args, batch=None):
         raise ValueError("use cfg_degree instead of cfg_parallel_device with a mesh")
     if getattr(args, "use_fsdp_inference", False):
         raise ValueError("EraserDiT peer mesh cannot wrap FSDP models")
-    if vae > 1 and (args.resource_policy != "fullgpu" or getattr(args, "dynamic_offload", False)
-                    or getattr(args, "vae_cpu_offload", False)):
-        raise ValueError("parallel VAE currently requires fullgpu; DiT SP/CFG supports offload")
+    memory = args.resolve_resource_policy()
+    if size > 1 and memory.enabled and (memory.dit_cpu_offload or memory.dit_layerwise_offload or vae > 1):
+        raise ValueError("DiT/VAE parallel offload currently requires single-GPU EraserDiT; disable DiT offload for CFG/SP mesh")
     tile = getattr(config, "vae_tile_size", 512)
     stride = getattr(config, "vae_tile_stride", 448)
     if tile < 64 or stride < 32 or stride >= tile or tile % 32 or stride % 32:
@@ -69,6 +85,7 @@ class PeerExchange:
         self.barrier = Barrier(degree, timeout=timeout)
         self.slots = [None] * degree
         self.calls = [0] * degree
+        self.direct_copies = [0] * degree
 
     def abort(self):
         self.barrier.abort()
@@ -79,12 +96,30 @@ class PeerExchange:
             torch.cuda.current_stream(device).synchronize()
             self.slots[rank] = values
             self.barrier.wait()
-            result = tuple(torch.cat([select(peer[k]).to(device) for peer in self.slots], dim=dim)
-                           for k in range(len(values)))
+            result = []
+            for k in range(len(values)):
+                parts = [select(peer[k]) for peer in self.slots]
+                # Large transfers can write directly into the final tensor,
+                # avoiding destination temporaries followed by another cat.
+                # Small transfers retain cat: strided copy launch overhead
+                # outweighed the saved bandwidth on the short-window benchmark.
+                size = sum(part.numel() * part.element_size() for part in parts)
+                if device.type == 'cuda' and size >= 32 * 1024**2:
+                    shape = list(parts[0].shape)
+                    shape[dim] = sum(part.shape[dim] for part in parts)
+                    output = torch.empty(shape, dtype=parts[0].dtype, device=device)
+                    offset = 0
+                    for part in parts:
+                        output.narrow(dim, offset, part.shape[dim]).copy_(part, non_blocking=True)
+                        offset += part.shape[dim]
+                    result.append(output)
+                    self.direct_copies[rank] += 1
+                else:
+                    result.append(torch.cat([part.to(device) for part in parts], dim=dim))
             torch.cuda.current_stream(device).synchronize()
             self.barrier.wait()
             self.calls[rank] += 1
-            return result
+            return tuple(result)
         except BaseException:
             self.abort()
             raise
@@ -198,6 +233,7 @@ class EraserDiTMeshWindow:
         self.caches = []
         self.cache_batches = []
         self.models, self.groups, self.ranks, self.static = [], [], [], []
+        self.rotary = []
         self.executor = None
         self.setup_seconds = 0.0
         self.steps = 0
@@ -240,6 +276,7 @@ class EraserDiTMeshWindow:
                     self.caches.append(cache)
                     cache.__enter__()
             self.static = [{} for _ in self.models]
+            self.rotary = [None for _ in self.models]
             self.executor = ThreadPoolExecutor(max_workers=sp * cfg, thread_name_prefix="eraserdit-mesh")
             self.setup_seconds = time.perf_counter() - started
         except BaseException:
@@ -252,19 +289,30 @@ class EraserDiTMeshWindow:
         model, rank = self.models[index], self.ranks[index]
         try:
             with torch.cuda.device(device), torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+                hidden_states = kwargs['hidden_states'].to(device)
                 if branch not in self.static[index]:
-                    self.static[index][branch] = {
-                        k: v.to(device) if isinstance(v, torch.Tensor) else v
-                        for k, v in kwargs.items() if k not in ("hidden_states", "timestep", "cache_adapter", "text_cache")
-                    }
+                    self.static[index][branch] = tree_map(
+                        lambda value: value.to(device) if isinstance(value, torch.Tensor) else value,
+                        {k: v for k, v in kwargs.items()
+                         if k not in ("hidden_states", "timestep", "cache_adapter", "text_cache")})
+                    if 'image_rotary_emb' not in self.static[index][branch]:
+                        if self.rotary[index] is None:
+                            self.rotary[index] = model.rope(
+                                hidden_states, kwargs['num_frames'], kwargs['height'], kwargs['width'],
+                                kwargs.get('rope_interpolation_scale'), kwargs.get('video_coords'))
+                        self.static[index][branch]['image_rotary_emb'] = self.rotary[index]
                 for block in model.transformer_blocks:
                     block.attn1.processor.sequence_parallel = rank
                 from contextlib import nullcontext
                 scope = rank.linear_scope(model, self.plan.get("linear_mode", "reference")) if rank else nullcontext()
                 cache_kwargs = self.caches[index].kwargs(branch, self.steps) if self.caches else {}
+                # The pool owns one persistent compiled callable per device.
+                # Transfers, CFG scheduling and all mesh state stay eager.
+                compiled = getattr(self.pool, 'compiled_forwards', ())
+                forward = compiled[index] if compiled else model
                 with scope:
-                    output = model(**self.static[index][branch], **cache_kwargs,
-                                   hidden_states=kwargs["hidden_states"].to(device),
+                    output = forward(**self.static[index][branch], **cache_kwargs,
+                                   hidden_states=hidden_states,
                                    timestep=kwargs["timestep"].to(device), sequence_parallel=rank)[0]
                 torch.cuda.current_stream(device).synchronize()
                 return output
@@ -293,9 +341,16 @@ class EraserDiTMeshWindow:
                     batch_size=positive['hidden_states'].shape[0], sequence_length=length,
                     device=self.plan['devices'][index], dtype=positive['hidden_states'].dtype)
         if cfg == 2:
-            futures = [self.executor.submit(self._forward, i, "positive" if i < sp else "negative",
-                                           positive if i < sp else negative) for i in range(2 * sp)]
-            outputs = [f.result() for f in futures]
+            if sp == 1 and self.steps == 0:
+                # Initialize lazy kernels/device handles serially for each new
+                # window shape. These are real first-step outputs, not dummy
+                # cache updates. Later CFG steps execute concurrently.
+                outputs = [self._forward(0, 'positive', positive),
+                           self._forward(1, 'negative', negative)]
+            else:
+                futures = [self.executor.submit(self._forward, i, "positive" if i < sp else "negative",
+                                               positive if i < sp else negative) for i in range(2 * sp)]
+                outputs = [f.result() for f in futures]
             pos, neg = outputs[:sp], outputs[sp:]
         else:
             neg = [f.result() for f in [self.executor.submit(self._forward, i, "negative", negative)
@@ -320,9 +375,12 @@ class EraserDiTMeshWindow:
                 "steps": self.steps, "replica_setup_seconds": self.setup_seconds,
                 "compile_preparation_seconds": self.compile_preparation_seconds,
                 "collectives_per_rank": [g.calls[:] for g in self.groups],
+                "direct_copy_tensors_per_rank": [g.direct_copies[:] for g in self.groups],
                 "linear_mode": self.plan.get("linear_mode", "reference"),
                 "transport": "peer_copy_" + self.plan.get("attention_mode", "ulysses"),
                 "persistent_replicas": self.pool is not None,
+                "rotary_cache_entries": sum(value is not None for value in self.rotary),
+                "serial_first_cfg_step": self.plan['sp'] == 1 and self.plan['cfg'] == 2,
                 "rank_attention": [m.transformer_blocks[0].attn1.processor.attention_backend_report()
                                    for m in self.models],
                 "rank_memory": [memory_observation(d) for d in self.plan["devices"][:len(self.models)]],
@@ -351,6 +409,7 @@ class EraserDiTMeshWindow:
             finally:
                 self.models.clear()
                 self.static.clear()
+                self.rotary.clear()
                 for group in self.groups:
                     group.slots.clear()
         return False

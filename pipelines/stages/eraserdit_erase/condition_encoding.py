@@ -39,10 +39,15 @@ class EraserDiTEraseConditionEncodingStage(PipelineStage):
         vae_input = (batch.padded_video * 2 - 1).to(
             device=module_device(vae), dtype=module_dtype(vae)
         )
+        # Downstream stages use frame metadata, not these full-resolution pixels.
+        # Drop both aliases before VAE activations are allocated.
+        batch.padded_video = None
+        batch.masked_video = None
         with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
             from models.adapters.eraserdit.vae import tiled_vae
             posterior = tiled_vae(vae, vae_input, server_args, batch, operation="encode")
             cond_latents = posterior.sample(state.generator)
+        del vae_input, posterior
         cond_latents = cond_latents.to(torch.float32)
         batch.cond_latents = normalize_latents(
             cond_latents,
@@ -65,6 +70,7 @@ class EraserDiTEraseConditionEncodingStage(PipelineStage):
             .to(device=batch.cond_latents.device, dtype=batch.cond_latents.dtype)
         )
         batch.latent_shape = tuple(batch.cond_latents.shape)
+        batch.padded_mask = None
         self.log_info(
             "%s | %s",
             field_summary("cond_latents", batch.cond_latents),

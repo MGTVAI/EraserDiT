@@ -69,8 +69,14 @@ class ComposedPipelineBase(ABC):
 
     def __post_init__(self) -> None:
         assert self.server_args is not None
-        self.initialize_pipeline(self.server_args)
-        self.create_pipeline_stages(self.server_args)
+        try:
+            self.initialize_pipeline(self.server_args)
+            self.create_pipeline_stages(self.server_args)
+        except BaseException:
+            close = getattr(self, "close", None)
+            if callable(close):
+                close(terminal=True)
+            raise
 
     def get_module(self, module_name: str, default_value: Any = None) -> Any:
         return self.modules.get(module_name, default_value)

@@ -14,7 +14,7 @@ from config.server_args import ServerArgs
 from memory.policies.component_offload import offload_component
 from nodes.schedule_batch import Req
 from nodes.stages.base import PipelineStage
-from pipelines.stages.eraserdit_erase._common import field_summary
+from pipelines.stages.eraserdit_erase._common import field_summary, get_task_state
 from utils.logging_utils import init_logger
 from memory.tensor_ops import module_device
 
@@ -76,6 +76,19 @@ class EraserDiTEraseTextEncodingStage(PipelineStage):
 
         prompt = batch.prompt or ""
         negative_prompt = batch.negative_prompt or ""
+        state = get_task_state(batch)
+        signature = (prompt, negative_prompt, max_sequence_length, dtype,
+                     id(text_encoder), id(self._tokenizer))
+        cached = state.extra.get("text_encoding")
+        if cached is not None and cached[0] == signature:
+            (batch.prompt_embeds, batch.prompt_attention_mask,
+             batch.negative_prompt_embeds, batch.negative_attention_mask) = (
+                value.to(device, copy=True) for value in cached[1]
+            )
+            batch.max_sequence_length = max_sequence_length
+            if batch.metrics is not None:
+                batch.metrics.record_operation("text_encoding_cache_hit")
+            return batch
 
         # The baseline calls ``encode_prompt`` inside ``autocast(bf16)``; the T5
         # layer norms are in autocast's fp32 category, so this changes their
@@ -99,6 +112,14 @@ class EraserDiTEraseTextEncodingStage(PipelineStage):
         batch.negative_prompt_embeds = negative_prompt_embeds
         batch.negative_attention_mask = negative_prompt_attention_mask
         batch.max_sequence_length = max_sequence_length
+        # Request-owned, bounded to one prompt pair. CPU storage avoids keeping
+        # encoder outputs on the GPU during subsequent windows' preprocessing.
+        state.extra["text_encoding"] = (signature, tuple(
+            value.detach().cpu().clone() for value in (
+                prompt_embeds, prompt_attention_mask,
+                negative_prompt_embeds, negative_prompt_attention_mask,
+            )
+        ))
         self.log_info(
             "%s | %s",
             field_summary("prompt_embeds", prompt_embeds),

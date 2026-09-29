@@ -1,298 +1,680 @@
-"""Inference-only DiT offload, following SGLang's per-layer/dtype CPU storage.
-
-Unlike SGLang's cyclic hook scheduler, lookahead is bounded by the actual
-execution range. Initialization never allocates GPU weights. CPU views preserve
-parameter shapes; retired GPU buffers stay owned until compute completes.
-"""
-from collections import defaultdict, deque
-from contextlib import contextmanager
+# SPDX-License-Identifier: Apache-2.0
+# Migrated from sglang/python/sglang/multimodal_gen/runtime/utils/layerwise_offload.py
+# Upstream commit: cdd427a588037dc8a8eb860ac17654bb2e55e752
+# Local changes: dependency imports, bounded cache plans and FFN warmup residency.
+import re
+from contextlib import contextmanager, ExitStack
+from itertools import chain
+from typing import Any, Dict, List, Set, Tuple
 
 import torch
 
+from utils.platform import current_platform
+from config.server_args import ServerArgs
+from utils.logging_utils import init_logger
 
+logger = init_logger(__name__)
+
+
+def _empty_cpu_tensor(
+    shape: tuple[int, ...], dtype: torch.dtype, pin_memory: bool
+) -> torch.Tensor:
+    try:
+        return torch.empty(shape, dtype=dtype, pin_memory=pin_memory)
+    except (RuntimeError, TypeError):
+        if not pin_memory:
+            raise
+        return torch.empty(shape, dtype=dtype)
+
+
+def _empty_strided_cpu_tensor(
+    shape: tuple[int, ...],
+    stride: tuple[int, ...],
+    dtype: torch.dtype,
+    pin_memory: bool,
+) -> torch.Tensor:
+    try:
+        return torch.empty_strided(
+            shape, stride, dtype=dtype, device="cpu", pin_memory=pin_memory
+        )
+    except (RuntimeError, TypeError):
+        if not pin_memory:
+            raise
+        return torch.empty_strided(shape, stride, dtype=dtype, device="cpu")
+
+
+def _empty_strided_device_tensor(
+    shape: tuple[int, ...],
+    stride: tuple[int, ...],
+    dtype: torch.dtype,
+    device: torch.device,
+) -> torch.Tensor:
+    return torch.empty_strided(shape, stride, dtype=dtype, device=device)
+
+
+# Adapted from skywork AI Infra diffusion optimize
 class LayerwiseOffloadManager:
-    def __init__(self, model, *, device, max_weight_usage, prefetch_size=1,
-                 layers_attr='transformer_blocks', pin_memory=True,
-                 resident_names=()):
-        self.device = torch.device(device)
-        if self.device.type != 'cuda' or not torch.cuda.is_available():
-            raise ValueError('layerwise offload requires CUDA')
-        if self.device.index is None:
-            self.device = torch.device('cuda', torch.cuda.current_device())
-        if type(prefetch_size) is not int or prefetch_size < 0:
-            raise ValueError('prefetch_size must be a non-negative integer')
-        self.budget = int(max_weight_usage)
-        if self.budget <= 0:
-            raise ValueError('max_weight_usage must be positive')
+    """A lightweight layerwise CPU offload manager.
+
+    This utility offloads per-layer parameters/buffers from GPU to CPU, and
+    supports async H2D prefetch using a dedicated CUDA stream.
+
+    Typical usage:
+    - Construct the manager with the target model and the list-like module
+      attribute that represents transformer blocks (e.g. ``blocks``).
+    - Call :meth:`initialize` once to offload weights and prefetch layer 0.
+    - During forward, call :meth:`prefetch_layer` for the next layer and
+      :meth:`release_layer` for the finished layer.
+    """
+
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        *,
+        layers_attr_str: str,
+        num_layers: int,
+        enabled: bool,
+        pin_cpu_memory: bool = True,
+        prefetch_size: int = 1,
+    ) -> None:
         self.model = model
-        self.layers = getattr(model, layers_attr)
-        self.prefetch_size = prefetch_size
-        self.copy_stream = torch.cuda.Stream(device=self.device)
-        self.cpu = {}
-        self.targets = {}
-        self.sizes = {}
-        self.live = {}
-        self.retired = deque()
-        self.hooks = []
-        self.used = self.peak = self.h2d_bytes = self.h2d_count = 0
-        self.budget_waits = 0
-        self.active = False
-        self.closed = False
-        self.range_end = len(self.layers)
-        self.managed_ids = set()
-        excluded = set(resident_names)
-        # Validate aliases and CPU placement before changing any tensor storage.
-        owners = {}
-        groups = {}
-        for i, layer in enumerate(self.layers):
-            tensors = dict(layer.named_parameters()) | dict(layer.named_buffers())
-            groups[i] = {n: t for n, t in tensors.items()
-                         if f'{layers_attr}.{i}.{n}' not in excluded}
-        for name, t in list(model.named_parameters(remove_duplicate=False)) + list(model.named_buffers(remove_duplicate=False)):
-            if t.device.type != 'cpu':
-                raise ValueError('initialize layerwise offload from CPU weights')
-            # A tied tensor crossing a layer or the resident remainder cannot
-            # have two independent residency owners.
-            path_owner = next((i for i in groups if name.startswith(f'{layers_attr}.{i}.')), None)
-            actual = path_owner if name not in excluded else None
-            key = (t.untyped_storage().data_ptr(), t.untyped_storage().nbytes())
-            if t.numel() and key in owners and owners[key] != actual:
-                raise ValueError(f'cross-layer/shared resident storage: {name}')
-            if t.numel():
-                owners[key] = actual
-        # Nonidentical overlapping views are rejected rather than silently untied.
-        for i, tensors in groups.items():
-            seen = defaultdict(list)
-            unique = {}
-            for name, t in tensors.items():
-                key = (t.untyped_storage().data_ptr(), t.untyped_storage().nbytes())
-                if t.numel():
-                    start = t.storage_offset() * t.element_size()
-                    end = start + (1 + sum((s-1)*d for s, d in zip(t.shape, t.stride()))) * t.element_size()
-                    for other, lo, hi in seen[key]:
-                        if other is not t and start < hi and lo < end:
-                            raise ValueError(f'overlapping tensor views in layer {i}: {name}')
-                    seen[key].append((t, start, end))
-                if id(t) not in unique:
-                    unique[id(t)] = (name, t)
-            groups[i] = dict(unique.values())
-            self.sizes[i] = sum((t.numel() if t.is_contiguous() else
-                                (0 if not t.numel() else 1 + sum((s-1)*d for s, d in zip(t.shape, t.stride()))))
-                               * t.element_size() for t in groups[i].values())
-            if self.sizes[i] > self.budget:
-                raise ValueError(f'block {i} requires {self.sizes[i]} bytes; budget={self.budget}')
-        try:
-            for i, tensors in groups.items():
-                self.cpu[i] = {}
-                self.targets[i] = tensors
-                by_dtype = defaultdict(list)
-                for name, t in tensors.items():
-                    by_dtype[t.dtype].append((name, t))
-                for dtype, entries in by_dtype.items():
-                    contiguous = [(n, t) for n, t in entries if t.is_contiguous()]
-                    flat = torch.empty(sum(t.numel() for _, t in contiguous), dtype=dtype,
-                                       device='cpu', pin_memory=pin_memory)
-                    offset = 0
-                    for name, t in contiguous:
-                        view = flat[offset:offset+t.numel()].view(t.shape)
-                        view.copy_(t.detach())
-                        self.cpu[i][name] = view
-                        t.data = view
-                        offset += t.numel()
-                    for name, t in entries:
-                        if name in self.cpu[i]:
-                            continue
-                        view = torch.empty_strided(t.shape, t.stride(), dtype=dtype,
-                                                   device='cpu', pin_memory=pin_memory)
-                        view.copy_(t.detach())
-                        self.cpu[i][name] = view
-                        t.data = view
-                self.managed_ids.update(id(t) for t in tensors.values())
-            for i, layer in enumerate(self.layers):
-                self.hooks.append(layer.register_forward_pre_hook(self._pre(i)))
-                self.hooks.append(layer.register_forward_hook(self._post(i), always_call=True))
-        except BaseException:
-            for hook in self.hooks:
-                hook.remove()
-            raise
-
-    def _reap(self, wait=False):
-        while self.retired:
-            event, buffers, size = self.retired[0]
-            if wait:
-                event.synchronize()
-            elif not event.query():
-                break
-            self.retired.popleft()
-            self.used -= size
-            del buffers
-            if wait:
-                break
-
-    @torch.compiler.disable
-    def prefetch_layer(self, i, *, required=False):
-        if i in self.live:
-            return True
-        self._reap()
-        size = self.sizes[i]
-        if required and self.used + size > self.budget:
-            # Unused lookahead from a previous execution range is expendable.
-            for other in list(self.live):
-                self.release_layer(other)
-        while self.used + size > self.budget:
-            if not required:
-                return False
-            if not self.retired:
-                raise RuntimeError('layerwise budget cannot make progress')
-            self.budget_waits += 1
-            self._reap(wait=True)
-        buffers = []
-        views = {}
-        try:
-            with torch.cuda.stream(self.copy_stream):
-                # Copy each consolidated storage once, then recover its views.
-                copied = {}
-                for name, cpu in self.cpu[i].items():
-                    storage = cpu.untyped_storage()
-                    key = (storage.data_ptr(), cpu.dtype)
-                    if key not in copied:
-                        host = torch.empty(0, dtype=cpu.dtype, device='cpu').set_(storage, 0, (storage.nbytes() // cpu.element_size(),))
-                        gpu = torch.empty_like(host, device=self.device)
-                        gpu.copy_(host, non_blocking=True)
-                        copied[key] = gpu
-                        buffers.append(gpu)
-                    views[name] = copied[key].as_strided(cpu.shape, cpu.stride(), cpu.storage_offset())
-                ready = torch.cuda.Event()
-                ready.record(self.copy_stream)
-            for name, view in views.items():
-                self.targets[i][name].data = view
-        except BaseException:
-            self.copy_stream.synchronize()
-            for name, cpu in self.cpu[i].items():
-                self.targets[i][name].data = cpu
-            raise
-        self.live[i] = (ready, buffers)
-        self.used += size
-        self.peak = max(self.peak, self.used)
-        self.h2d_bytes += size
-        self.h2d_count += 1
-        return True
-
-    @torch.compiler.disable
-    def release_layer(self, i):
-        item = self.live.pop(i, None)
-        if item is None:
+        self.layers_attr_str = layers_attr_str
+        self.num_layers = num_layers
+        self.pin_cpu_memory = pin_cpu_memory
+        self.prefetch_size = min(max(1, prefetch_size), self.num_layers)
+        self.enabled = bool(enabled and torch.get_device_module().is_available())
+        if not self.enabled:
             return
-        ready, buffers = item
-        stream = torch.cuda.current_stream(self.device)
-        stream.wait_event(ready)
-        done = torch.cuda.Event()
-        done.record(stream)
-        for name, cpu in self.cpu[i].items():
-            self.targets[i][name].data = cpu
-        # Retain allocations (and account for them) until compute completes.
-        self.retired.append((done, buffers, self.sizes[i]))
+        self.device = torch.device(
+            current_platform.device_type, torch.get_device_module().current_device()
+        )
+        self.copy_stream = torch.get_device_module().Stream()
 
-    def _pre(self, i):
-        def hook(module, inputs):
-            if not self.active or self.closed:
-                raise RuntimeError('DiT block called outside active offload phase')
-            if torch.is_grad_enabled():
-                raise RuntimeError('layerwise offload is inference-only')
-            self.prefetch_layer(i, required=True)
-            stream = torch.cuda.current_stream(self.device)
-            stream.wait_event(self.live[i][0])
-            # record_stream also protects against allocator reuse after an error.
-            for buffer in self.live[i][1]:
-                buffer.record_stream(stream)
-            for j in range(i+1, min(self.range_end, i+1+self.prefetch_size)):
-                if not self.prefetch_layer(j):
-                    break
-        return hook
+        self._layer_name_re = re.compile(
+            rf"(^|\.){re.escape(layers_attr_str)}\.(\d+)(\.|$)"
+        )
 
-    def _post(self, i):
-        def hook(module, inputs, output):
-            self.release_layer(i)
-        return hook
+        # layer_idx -> {dtype: consolidated_pinned_cpu_tensor}
+        # stores the consolidated weight from a same layer, of same dtype
+        self._consolidated_cpu_weights: Dict[int, Dict[torch.dtype, torch.Tensor]] = {}
+        # layer_idx -> {name: layout-preserving CPU tensor}
+        # stores tensors whose stride must be preserved (e.g. FP8 column-major weights)
+        self._strided_cpu_weights: Dict[int, Dict[str, torch.Tensor]] = {}
+        # layer_idx -> {name: {dtype, offset, numel, shape, stride, storage}}
+        # stores the offset and numel of each weight in flat storage, or the
+        # layout metadata for stride-preserving storage.
+        self._weight_metadata: Dict[int, Dict[str, Dict[str, Any]]] = {}
+        # layer indices that are already in gpu
+        self._gpu_layers: Set[int] = set()
+        self._execution_plan = None
+        # layer_idx -> torch.get_device_module().Event for fine-grained sync, to make sure the weight is resident in pre-hook
+        self._prefetch_events: Dict[int, torch.get_device_module().Event] = {}
+
+        self._named_parameters: Dict[str, torch.nn.Parameter] = {}
+        self._named_buffers: Dict[str, torch.Tensor] = {}
+        self._offload_placeholders: Dict[torch.dtype, torch.Tensor] = {}
+        # Store forward hooks for removal
+        self._forward_hooks: List[Any] = []
+
+        self._initialize()
+
+    def _match_layer_idx(self, name: str) -> int | None:
+        m = self._layer_name_re.search(name)
+        if not m:
+            return None
+        try:
+            return int(m.group(2))
+        except Exception:
+            return None
+
+    def _get_shared_empty_tensor(self, dtype: torch.dtype) -> torch.Tensor:
+        placeholder = self._offload_placeholders.get(dtype)
+        if placeholder is None:
+            placeholder = torch.empty((1,), device=self.device, dtype=dtype)
+            self._offload_placeholders[dtype] = placeholder
+        return placeholder
+
+    @torch.compiler.disable
+    def _initialize(self) -> None:
+        if not self.enabled:
+            return
+
+        self._named_parameters = dict(self.model.named_parameters())
+        self._named_buffers = dict(self.model.named_buffers())
+
+        # 1. collect and group tensors by layer and dtype
+        layer_groups: Dict[int, Dict[torch.dtype, List[Tuple[str, torch.Tensor]]]] = {}
+        all_tensors = chain(self._named_parameters.items(), self._named_buffers.items())
+        for name, tensor in all_tensors:
+            layer_idx = self._match_layer_idx(name)
+            if layer_idx is None or layer_idx >= self.num_layers:
+                continue
+            layer_groups.setdefault(layer_idx, {}).setdefault(tensor.dtype, []).append(
+                (name, tensor)
+            )
+
+        # 2. concat and offload (in pinned memory)
+        for layer_idx, dtype_to_params in layer_groups.items():
+            self._consolidated_cpu_weights[layer_idx] = {}
+            self._strided_cpu_weights[layer_idx] = {}
+            self._weight_metadata[layer_idx] = {}
+
+            for dtype, weights in dtype_to_params.items():
+                flat_weights = [(name, t) for name, t in weights if t.is_contiguous()]
+                strided_weights = [
+                    (name, t) for name, t in weights if not t.is_contiguous()
+                ]
+
+                cpu_buffer = None
+                if flat_weights:
+                    total_numel = sum(t.numel() for _, t in flat_weights)
+                    # create concatenated CPU buffer (in pinned memory)
+                    cpu_buffer = _empty_cpu_tensor(
+                        (total_numel,), dtype=dtype, pin_memory=self.pin_cpu_memory
+                    )
+
+                # offload weights to the buffer
+                current_offset = 0
+                for name, weight in flat_weights:
+                    assert cpu_buffer is not None
+                    numel = weight.numel()
+                    cpu_buffer[current_offset : current_offset + numel].copy_(
+                        weight.flatten()
+                    )
+                    self._weight_metadata[layer_idx][name] = {
+                        "dtype": dtype,
+                        "offset": current_offset,
+                        "numel": numel,
+                        "shape": tuple(weight.shape),
+                        "stride": tuple(weight.stride()),
+                        "storage": "flat",
+                    }
+
+                    weight.data = self._get_shared_empty_tensor(dtype)
+
+                    current_offset += numel
+
+                if cpu_buffer is not None:
+                    self._consolidated_cpu_weights[layer_idx][dtype] = cpu_buffer
+
+                for name, weight in strided_weights:
+                    shape = tuple(weight.shape)
+                    stride = tuple(weight.stride())
+                    cpu_weight = _empty_strided_cpu_tensor(
+                        shape, stride, dtype=dtype, pin_memory=self.pin_cpu_memory
+                    )
+                    cpu_weight.copy_(weight)
+                    self._strided_cpu_weights[layer_idx][name] = cpu_weight
+                    self._weight_metadata[layer_idx][name] = {
+                        "dtype": dtype,
+                        "offset": None,
+                        "numel": weight.numel(),
+                        "shape": shape,
+                        "stride": stride,
+                        "storage": "strided",
+                    }
+
+                    weight.data = self._get_shared_empty_tensor(dtype)
+
+        # prefetch the first layer for warm-up
+        self.prepare_for_next_req(non_blocking=False)
+
+        self.register_forward_hooks()
+        logger.info(
+            f"LayerwiseOffloadManager initialized with num prefetched layer: {self.prefetch_size}, total num layers: {self.num_layers}"
+        )
+
+    def prepare_for_next_req(self, non_blocking=True):
+        """
+        Prepare for the next round of denoising loop with prefetching the necessary layers
+        """
+        for i in range(self.prefetch_size):
+            self.prefetch_layer(i, non_blocking=non_blocking)
+        if not non_blocking and self.copy_stream is not None:
+            torch.get_device_module().current_stream().wait_stream(self.copy_stream)
+
+    def get_target_with_name(self, name: str) -> torch.Tensor:
+        """get the target model weight/buffer to be replaced"""
+        if name in self._named_parameters:
+            target = self._named_parameters[name]
+        else:
+            target = self._named_buffers[name]
+        return target
+
+    @torch.compiler.disable
+    def prefetch_layer(self, layer_idx: int, non_blocking: bool = True) -> None:
+        """
+        idempotent
+        """
+        if not self.enabled or self.device is None or self.copy_stream is None:
+            return
+        if layer_idx < 0 or layer_idx >= self.num_layers:
+            return
+        if layer_idx in self._gpu_layers:
+            return
+        if (
+            layer_idx not in self._consolidated_cpu_weights
+            and layer_idx not in self._strided_cpu_weights
+        ):
+            return
+        self.copy_stream.wait_stream(torch.get_device_module().current_stream())
+
+        # create gpu buffer and load from CPU buffer
+        gpu_buffers: Dict[torch.dtype, torch.Tensor] = {}
+        strided_gpu_weights: Dict[str, torch.Tensor] = {}
+        with torch.get_device_module().stream(self.copy_stream):
+            for dtype, cpu_buffer in self._consolidated_cpu_weights.get(
+                layer_idx, {}
+            ).items():
+                gpu_buffer = torch.empty(
+                    cpu_buffer.shape, dtype=dtype, device=self.device
+                )
+                gpu_buffer.copy_(cpu_buffer, non_blocking=non_blocking)
+                gpu_buffers[dtype] = gpu_buffer
+            for name, cpu_weight in self._strided_cpu_weights.get(
+                layer_idx, {}
+            ).items():
+                meta = self._weight_metadata[layer_idx][name]
+                gpu_weight = _empty_strided_device_tensor(
+                    meta["shape"], meta["stride"], meta["dtype"], self.device
+                )
+                gpu_weight.copy_(cpu_weight, non_blocking=non_blocking)
+                strided_gpu_weights[name] = gpu_weight
+
+        # record the prefetch event of this layer
+        event = torch.get_device_module().Event()
+        event.record(self.copy_stream)
+        self._prefetch_events[layer_idx] = event
+
+        # restore model's weights by their metadata using gpu buffer
+        for name, meta in self._weight_metadata[layer_idx].items():
+            target = self.get_target_with_name(name)
+            if meta["storage"] == "flat":
+                dtype = meta["dtype"]
+                gpu_buffer = gpu_buffers[dtype]
+                # map the parameter's data to the correct slice of the GPU buffer
+                target.data = gpu_buffer[
+                    meta["offset"] : meta["offset"] + meta["numel"]
+                ].view(meta["shape"])
+            else:
+                target.data = strided_gpu_weights[name]
+
+        self._gpu_layers.add(layer_idx)
+
+    @torch.compiler.disable
+    def release_layer(self, layer_idx: int) -> None:
+        """
+        lightweight release layer weights
+        Basically set the reference count to the gpu weight tensor to zero. The weights on cpu is untouched
+        """
+        if not self.enabled or self.device is None:
+            return
+
+        # clear prefetch event, since it's useless and needs to be reset
+        self._prefetch_events.pop(layer_idx, None)
+
+        if layer_idx not in self._gpu_layers:
+            return
+
+        for name, meta in self._weight_metadata.get(layer_idx, {}).items():
+            target = self.get_target_with_name(name)
+            # Wraparound prefetch will reload the layer when it is needed again
+            target.data = self._get_shared_empty_tensor(meta["dtype"])
+
+        self._gpu_layers.discard(layer_idx)
+
+    @torch.compiler.disable
+    def release_all(self) -> None:
+        if not self.enabled or self.device is None:
+            return
+        if self.copy_stream is not None:
+            torch.get_device_module().current_stream().wait_stream(self.copy_stream)
+
+        for layer_idx in list(self._gpu_layers):
+            self.release_layer(layer_idx)
+
+    @torch.compiler.disable
+    def load_all_layers(self) -> None:
+        """Load all layers from CPU to GPU."""
+        if not self.enabled or self.device is None:
+            return
+        if self.copy_stream is not None:
+            torch.get_device_module().current_stream().wait_stream(self.copy_stream)
+
+        for layer_idx in range(self.num_layers):
+            if layer_idx not in self._gpu_layers:
+                self.prefetch_layer(layer_idx, non_blocking=False)
+
+    @torch.compiler.disable
+    def sync_layer_to_cpu(self, layer_idx: int) -> None:
+        """Sync a layer's weights from GPU back to CPU."""
+        if not self.enabled or layer_idx not in self._gpu_layers:
+            return
+        if (
+            layer_idx not in self._consolidated_cpu_weights
+            and layer_idx not in self._strided_cpu_weights
+        ):
+            return
+
+        if self.copy_stream is not None:
+            torch.get_device_module().current_stream().wait_stream(self.copy_stream)
+
+        # Collect current GPU weights and write back to CPU buffer
+        for name, meta in self._weight_metadata.get(layer_idx, {}).items():
+            target = self.get_target_with_name(name)
+            if meta["storage"] == "flat":
+                gpu_weight = target.data.flatten().cpu()
+                dtype = meta["dtype"]
+                cpu_buffer = self._consolidated_cpu_weights[layer_idx][dtype]
+                offset = meta["offset"]
+                numel = meta["numel"]
+                cpu_buffer[offset : offset + numel].copy_(gpu_weight)
+            else:
+                self._strided_cpu_weights[layer_idx][name].copy_(
+                    target.data.detach().cpu()
+                )
+
+    @torch.compiler.disable
+    def sync_all_layers_to_cpu(self) -> None:
+        """Sync all loaded layers' weights from GPU back to CPU."""
+        if not self.enabled or self.device is None:
+            return
+        if self.copy_stream is not None:
+            torch.get_device_module().current_stream().wait_stream(self.copy_stream)
+
+        for layer_idx in list(self._gpu_layers):
+            self.sync_layer_to_cpu(layer_idx)
+
+    @torch.compiler.disable
+    def update_cpu_weights(
+        self, weight_dict: Dict[str, torch.Tensor]
+    ) -> Set[str] | None:
+        """Update consolidated CPU buffers with new weights.
+
+        When layerwise offload (--dit-layerwise-offload) is enabled, the
+        offload manager replaces GPU parameters with small torch.empty((1,))
+        placeholders while real weights live in consolidated pinned CPU
+        buffers.
+
+        The refit process writes new weights directly into the CPU buffers,
+        bypassing the placeholders.  For any layer that happens to be resident
+        on the GPU at update time, the live GPU tensor is also updated.
+
+        Args:
+            weight_dict: Mapping of parameter name to new weight tensor.
+
+        Returns:
+            Set of parameter names that were successfully updated.
+
+        Raises:
+            ValueError: If a weight's shape does not match the recorded
+                metadata (i.e., the real shape, not the placeholder shape).
+        """
+        if not self.enabled:
+            return None
+
+        updated_names: Set[str] = set()
+        for name, loaded_weight in weight_dict.items():
+            layer_idx = self._match_layer_idx(name)
+            if layer_idx is None:
+                continue
+            meta_layer = self._weight_metadata.get(layer_idx)
+            if meta_layer is None or name not in meta_layer:
+                continue
+
+            meta = meta_layer[name]
+            if tuple(meta["shape"]) != tuple(loaded_weight.shape):
+                raise ValueError(
+                    f"Shape mismatch for {name}: "
+                    f"expected={tuple(meta['shape'])}, "
+                    f"loaded={tuple(loaded_weight.shape)}"
+                )
+
+            dtype = meta["dtype"]
+            if meta["storage"] == "flat":
+                offset = meta["offset"]
+                numel = meta["numel"]
+                cpu_buffer = self._consolidated_cpu_weights[layer_idx][dtype]
+                cpu_buffer[offset : offset + numel].copy_(
+                    loaded_weight.to(dtype=dtype).flatten()
+                )
+            else:
+                self._strided_cpu_weights[layer_idx][name].copy_(
+                    loaded_weight.to(dtype=dtype)
+                )
+
+            # If this layer is currently on GPU, update the live parameter.
+            if layer_idx in self._gpu_layers:
+                target = self.get_target_with_name(name)
+                target.data.copy_(loaded_weight.to(dtype=target.dtype))
+
+            updated_names.add(name)
+
+        return updated_names
+
+    def iter_cpu_weights(self):
+        """Yield (name, tensor) pairs from consolidated CPU buffers.
+
+        This reconstructs the original weight tensors (with correct shapes)
+        from the flat CPU buffers using stored metadata.  Unlike
+        model.named_parameters(), which returns (1,) placeholders
+        when offload is enabled, this method returns the real weights and
+        can be used for checksum computation.
+        """
+        for layer_idx in sorted(self._weight_metadata):
+            for name, meta in self._weight_metadata[layer_idx].items():
+                if meta["storage"] == "flat":
+                    dtype = meta["dtype"]
+                    offset = meta["offset"]
+                    numel = meta["numel"]
+                    shape = meta["shape"]
+                    cpu_buffer = self._consolidated_cpu_weights[layer_idx][dtype]
+                    yield name, cpu_buffer[offset : offset + numel].reshape(shape)
+                else:
+                    yield name, self._strided_cpu_weights[layer_idx][name]
 
     @contextmanager
-    def execution_range(self, start, end):
-        previous = self.range_end
-        self.range_end = end
+    def execution_plan(self, indices):
+        """Bound prefetch to blocks actually executed; release on skip/failure.
+
+        Cache probes and full computations use separate plans. No wraparound
+        prefetch is issued at the end of a plan, including a single-block probe.
+        """
+        if not self.enabled:
+            yield
+            return
+        indices = tuple(indices)
+        if self._execution_plan is not None:
+            raise RuntimeError('nested layerwise execution plans are unsupported')
+        if len(set(indices)) != len(indices) or any(i < 0 or i >= self.num_layers for i in indices):
+            raise ValueError('invalid layerwise execution plan')
+        self.release_all()
+        self._execution_plan = indices
         try:
-            for i in list(self.live):
-                if not start <= i < end:
-                    self.release_layer(i)
             yield
         finally:
-            self.range_end = previous
+            try:
+                self.release_all()
+            finally:
+                self._execution_plan = None
 
     @contextmanager
-    def layer_residency(self, index):
-        """Scoped local compute (e.g. FFN compile warmup) with ordinary ownership."""
-        with self.execution_range(index, index + 1):
-            try:
-                self._pre(index)(self.layers[index], ())
-                yield
-            finally:
-                self.release_layer(index)
-
-    def begin(self):
-        if self.closed or self.active:
-            raise RuntimeError('offload manager is closed or already active')
-        self.active = True
-
-    def release_all(self):
-        for i in list(self.live):
-            self.release_layer(i)
-        while self.retired:
-            self._reap(wait=True)
-        self.copy_stream.synchronize()
-
-    def end(self):
-        try:
-            self.release_all()
-        finally:
-            self.active = False
-
-    def snapshot(self):
-        return dict(backend='sglang_layerwise', weight_budget_scope='dit_blocks_only',
-                    max_weight_usage=self.budget, prefetch_size=self.prefetch_size,
-                    managed_weight_bytes=sum(self.sizes.values()),
-                    largest_block_bytes=max(self.sizes.values(), default=0),
-                    resident_bytes=self.used, peak_resident_bytes=self.peak,
-                    live_layers=len(self.live), pending_releases=len(self.retired),
-                    h2d_bytes=self.h2d_bytes, h2d_count=self.h2d_count,
-                    budget_waits=self.budget_waits,
-                    pinned_cpu_bytes=sum(self.sizes.values()) if any(
-                        t.is_pinned() for tensors in self.cpu.values() for t in tensors.values()) else 0)
-
-    def close(self, *, terminal=False):
-        if self.closed:
+    def layer_residency(self, layer_idx):
+        """Borrow one block's weights for local FFN warmup outside block hooks."""
+        if not self.enabled:
+            yield
             return
-        self.end()
-        for hook in self.hooks:
-            hook.remove()
-        self.hooks.clear()
-        # Drop pinned mirrors on shutdown. A nonterminal close restores ordinary
-        # CPU views, allowing the caller to use/save the model without hooks.
-        for i, tensors in self.cpu.items():
-            restored = {}
-            for name, cpu in tensors.items():
-                if terminal:
-                    value = torch.empty(0, dtype=cpu.dtype, device='cpu')
-                else:
-                    storage = cpu.untyped_storage()
-                    key = (storage.data_ptr(), cpu.dtype)
-                    if key not in restored:
-                        host = torch.empty(0, dtype=cpu.dtype, device='cpu').set_(
-                            storage, 0, (storage.nbytes() // cpu.element_size(),))
-                        ordinary = torch.empty(host.shape, dtype=host.dtype, device='cpu')
-                        ordinary.copy_(host)
-                        restored[key] = ordinary
-                    value = restored[key].as_strided(cpu.shape, cpu.stride(), cpu.storage_offset())
-                self.targets[i][name].data = value
-            tensors.clear()
-        self.cpu.clear()
-        self.targets.clear()
-        self.closed = True
+        if not 0 <= layer_idx < self.num_layers:
+            raise ValueError('invalid layer index')
+        try:
+            self.prefetch_layer(layer_idx)
+            stream = torch.get_device_module().current_stream()
+            if layer_idx in self._prefetch_events:
+                stream.wait_event(self._prefetch_events[layer_idx])
+            for name in self._weight_metadata.get(layer_idx, {}):
+                self.get_target_with_name(name).data.record_stream(stream)
+            yield
+        finally:
+            self.release_layer(layer_idx)
+
+    def register_forward_hooks(self) -> None:
+        if not self.enabled:
+            return
+
+        layers = getattr(self.model, self.layers_attr_str)
+
+        def make_pre_hook(i):
+            def hook(module, input):
+                if self._execution_plan is not None:
+                    plan = self._execution_plan
+                    if i not in plan:
+                        raise RuntimeError(f'layer {i} is outside the execution plan')
+                    position = plan.index(i)
+                    self.prefetch_layer(i)
+                    stream = torch.get_device_module().current_stream()
+                    if i in self._prefetch_events:
+                        stream.wait_event(self._prefetch_events[i])
+                    # Storage was allocated on copy_stream and used on compute.
+                    # Retain it until queued compute completes, also on errors.
+                    for name in self._weight_metadata.get(i, {}):
+                        self.get_target_with_name(name).data.record_stream(stream)
+                    for upcoming in plan[position + 1:position + 1 + self.prefetch_size]:
+                        self.prefetch_layer(upcoming)
+                    return
+                # wait only for the current layer if it's being prefetched
+                if i == 0:
+                    self.prepare_for_next_req(non_blocking=False)
+                if i in self._prefetch_events:
+                    torch.get_device_module().current_stream().wait_event(
+                        self._prefetch_events[i]
+                    )
+
+                # trigger batch prefetch (i + prefetch_size ~ i + 2 * prefetch_size) if needed
+                if i % self.prefetch_size == 0:
+                    for j in range(i + self.prefetch_size, i + 2 * self.prefetch_size):
+                        layer_to_prefetch = j % self.num_layers
+                        self.prefetch_layer(layer_to_prefetch, non_blocking=True)
+
+            return hook
+
+        def make_post_hook(i):
+            def hook(module, input, output):
+                # previous, we wait here, until the copy stream for next layer is finished,
+                # now with any prefetch_size, only wait for the copy stream, when the copy stream is for the next layer
+                self.release_layer(i)
+
+            return hook
+
+        # register prefetch & release hooks for each layer
+        self._forward_hooks.clear()
+        for i, layer in enumerate(layers):
+            pre_hook_handle = layer.register_forward_pre_hook(make_pre_hook(i))
+            post_hook_handle = layer.register_forward_hook(make_post_hook(i))
+            self._forward_hooks.extend([pre_hook_handle, post_hook_handle])
+
+    def remove_forward_hooks(self) -> None:
+        """Remove all registered forward hooks."""
+        for hook_handle in self._forward_hooks:
+            hook_handle.remove()
+        self._forward_hooks.clear()
+
+
+class OffloadableDiTMixin:
+    """
+    A mixin that registers forward hooks for a DiT to enable layerwise offload
+    """
+
+    # the list of names of a DiT's layers/blocks
+    layer_names: List[str]
+    layerwise_offload_managers: list[LayerwiseOffloadManager] = []
+
+    @contextmanager
+    def layerwise_execution_plan(self, indices):
+        with ExitStack() as stack:
+            for manager in self.layerwise_offload_managers or ():
+                stack.enter_context(manager.execution_plan(indices))
+            yield
+
+    def configure_layerwise_offload(self, server_args: ServerArgs):
+        self.layerwise_offload_managers = []
+        for layer_name in self.layer_names:
+            # a manager per layer-list
+            module_list = getattr(self, layer_name, None)
+            if module_list is None or not isinstance(module_list, torch.nn.ModuleList):
+                continue
+
+            num_layers = len(module_list)
+            if server_args.dit_offload_prefetch_size < 1.0:
+                prefetch_size = 1 + int(
+                    round(server_args.dit_offload_prefetch_size * (num_layers - 1))
+                )
+            else:
+                prefetch_size = int(server_args.dit_offload_prefetch_size)
+
+            manager = LayerwiseOffloadManager(
+                model=self,
+                layers_attr_str=layer_name,
+                num_layers=num_layers,
+                enabled=True,
+                pin_cpu_memory=server_args.pin_cpu_memory,
+                prefetch_size=prefetch_size,
+            )
+            self.layerwise_offload_managers.append(manager)
+
+        logger.info(
+            f"Enabled layerwise offload for {self.__class__.__name__} on modules: {self.layer_names}"
+        )
+
+    def prepare_for_next_req(self):
+        if self.layerwise_offload_managers is None:
+            return
+        for manager in self.layerwise_offload_managers:
+            manager.prepare_for_next_req(non_blocking=True)
+
+    def disable_offload(self) -> None:
+        """Disable layerwise offload: load all layers to GPU and remove hooks."""
+        if self.layerwise_offload_managers is None:
+            return
+        for manager in self.layerwise_offload_managers:
+            if manager.enabled:
+                manager.remove_forward_hooks()
+                manager.load_all_layers()
+
+    def enable_offload(self) -> None:
+        """Re-enable layerwise offload: sync weights to CPU, release layers, and restore hooks."""
+        if self.layerwise_offload_managers is None:
+            return
+        for manager in self.layerwise_offload_managers:
+            if manager.enabled:
+                manager.sync_all_layers_to_cpu()
+                manager.release_all()
+                manager.register_forward_hooks()
+
+
+def iter_materialized_weights(module: torch.nn.Module):
+    """Yield (name, tensor) pairs with materialized weights, even under offload.
+
+    When layerwise offload is active, module.named_parameters() returns
+    (1,) placeholders for offloaded layers.  This function reads the
+    actual data from the offload manager's CPU buffers and chains it with
+    the non-offloaded parameters.
+    """
+    offload_managers: list = []
+    if isinstance(module, OffloadableDiTMixin) and module.layerwise_offload_managers:
+        offload_managers = [m for m in module.layerwise_offload_managers if m.enabled]
+
+    if not offload_managers:
+        yield from module.named_parameters()
+        return
+
+    # Collect offloaded names and their real tensors from CPU buffers.
+    offloaded_names: set[str] = set()
+    for manager in offload_managers:
+        for name, tensor in manager.iter_cpu_weights():
+            offloaded_names.add(name)
+            yield name, tensor
+
+    # Yield non-offloaded parameters (e.g. final norms, embeddings).
+    for name, param in module.named_parameters():
+        if name not in offloaded_names:
+            yield name, param

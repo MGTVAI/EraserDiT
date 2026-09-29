@@ -17,10 +17,10 @@ import os
 import glob
 import math
 import json
-from contextlib import nullcontext
 
 from typing import Any, Dict, Optional, Tuple, Union
 
+from memory.backends.layerwise_offload import OffloadableDiTMixin
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -337,7 +337,7 @@ class LTXVideoTransformerBlock(nn.Module):
 
 
 @maybe_allow_in_graph
-class EraserDiTLTXVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin, PeftAdapterMixin):
+class EraserDiTLTXVideoTransformer3DModel(OffloadableDiTMixin, ModelMixin, ConfigMixin, FromOriginalModelMixin, PeftAdapterMixin):
     r"""
     A Transformer model for video-like data used in [LTX](https://huggingface.co/Lightricks/LTX-Video).
 
@@ -365,6 +365,7 @@ class EraserDiTLTXVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalM
     """
 
     _supports_gradient_checkpointing = True
+    layer_names = ["transformer_blocks"]
     _skip_layerwise_casting_patterns = ["norm"]
 
     @register_to_config
@@ -457,7 +458,11 @@ class EraserDiTLTXVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalM
         cache_adapter=None,
         text_cache=None,
         sequence_parallel=None,
+        image_rotary_emb: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     ) -> torch.Tensor:
+        if (cache_adapter is not None and self.layerwise_offload_managers
+                and cache_adapter.controller.mode.value != 'teacache'):
+            raise ValueError("Only TeaCache supports planned layerwise offload")
         if attention_kwargs is not None:
             attention_kwargs = attention_kwargs.copy()
             lora_scale = attention_kwargs.pop("scale", 1.0)
@@ -473,7 +478,8 @@ class EraserDiTLTXVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalM
                     "Passing `scale` via `attention_kwargs` when not using the PEFT backend is ineffective."
                 )
 
-        image_rotary_emb = self.rope(hidden_states, num_frames, height, width, rope_interpolation_scale, video_coords)
+        if image_rotary_emb is None:
+            image_rotary_emb = self.rope(hidden_states, num_frames, height, width, rope_interpolation_scale, video_coords)
 
         # convert encoder_attention_mask to a bias the same way we do for attention_mask
         if encoder_attention_mask is not None and encoder_attention_mask.ndim == 2:
@@ -514,26 +520,32 @@ class EraserDiTLTXVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalM
                                  else text_cache.project(encoder_hidden_states, self.caption_projection))
         encoder_hidden_states = encoder_hidden_states.view(batch_size, -1, hidden_states.size(-1))
 
-        offload = getattr(self, "_layerwise_offload_manager", None)
+        def run_blocks_impl(hidden_states, start, end):
+            for block in self.transformer_blocks[start:end]:
+                if torch.is_grad_enabled() and self.gradient_checkpointing:
+                    hidden_states = self._gradient_checkpointing_func(
+                        block, hidden_states, encoder_hidden_states, temb,
+                        image_rotary_emb, encoder_attention_mask,
+                    )
+                else:
+                    # Always enter Module.__call__: offload hooks must run
+                    # before the internal fused implementation reads weights.
+                    # Disabled-fusion telemetry uses ContextVar; the native
+                    # block arithmetic is equivalent and can be captured whole.
+                    hidden_states = block(
+                        hidden_states, encoder_hidden_states, temb,
+                        image_rotary_emb, encoder_attention_mask,
+                        decision=(None if torch.compiler.is_compiling()
+                                  and not self.operator_fusion_decision.effective_ops
+                                  else self.operator_fusion_decision), text_cache=text_cache,
+                    )
+            return hidden_states
 
         def run_blocks(hidden_states, start, end):
-            scope = offload.execution_range(start, end) if offload else nullcontext()
-            with scope:
-                for block in self.transformer_blocks[start:end]:
-                    if torch.is_grad_enabled() and self.gradient_checkpointing:
-                        hidden_states = self._gradient_checkpointing_func(
-                            block, hidden_states, encoder_hidden_states, temb,
-                            image_rotary_emb, encoder_attention_mask,
-                        )
-                    else:
-                        # Always enter Module.__call__: offload hooks must run
-                        # before the internal fused implementation reads weights.
-                        hidden_states = block(
-                            hidden_states, encoder_hidden_states, temb,
-                            image_rotary_emb, encoder_attention_mask,
-                            decision=self.operator_fusion_decision, text_cache=text_cache,
-                        )
-            return hidden_states
+            if cache_adapter is None:
+                return run_blocks_impl(hidden_states, start, end)
+            with self.layerwise_execution_plan(range(start, end)):
+                return run_blocks_impl(hidden_states, start, end)
 
         if cache_adapter is not None:
             if torch.is_grad_enabled():
@@ -541,12 +553,10 @@ class EraserDiTLTXVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalM
             cache_probe = temb
             if cache_adapter.controller.mode.value == 'teacache':
                 first = self.transformer_blocks[0]
-                # The probe's norm/table are stage-resident under layerwise
-                # offload, so it must not trigger a full block transfer.
-                probe = first.forward if offload else first
-                cache_probe = probe(
-                    hidden_states, encoder_hidden_states, temb, cache_probe_only=True,
-                )
+                with self.layerwise_execution_plan((0,)):
+                    cache_probe = first(
+                        hidden_states, encoder_hidden_states, temb, cache_probe_only=True,
+                    )
             hidden_states = cache_adapter.run(
                 hidden_states, cache_probe, run_blocks,
                 num_blocks=len(self.transformer_blocks),

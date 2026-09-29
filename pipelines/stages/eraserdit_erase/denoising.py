@@ -24,6 +24,7 @@ from nodes.control import service_checkpoint
 from nodes.stages.denoising import DenoisingStage
 from pipelines.stages.eraserdit_erase._common import (
     field_summary,
+    MODEL_FRAMES_KEY,
     latent_frame_count,
 )
 
@@ -39,7 +40,7 @@ def self_attention_backend_report(transformer) -> dict | None:
 
 
 class EraserDiTEraseDenoisingStage(DenoisingStage):
-    """Denoising with local FFN compilation and window-scoped rank residency."""
+    """Denoising with selectable FFN/whole-DiT compilation and rank residency."""
 
     def __init__(self, transformer, scheduler, server_args=None):
         if server_args is None:
@@ -51,9 +52,13 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
         self._scheduler = scheduler
         plan = resolve_mesh(server_args)
         self._replica_pool = None
-        if plan is not None and plan['sp'] * plan['cfg'] > 1:
+        if plan is not None and plan.get('backend') == 'nccl':
+            from pipelines.runtime.dit_executor import DiTProcessPool
+            self._replica_pool = DiTProcessPool(transformer, plan, server_args)
+        elif plan is not None and plan['sp'] * plan['cfg'] > 1:
             from models.adapters.eraserdit.replicas import EraserDiTReplicaPool
-            self._replica_pool = EraserDiTReplicaPool(transformer, plan, server_args)
+            self._replica_pool = EraserDiTReplicaPool(
+                transformer, plan, server_args, compiled_transformer=self._compiled_transformer)
 
     def close(self):
         if self._replica_pool is not None:
@@ -67,6 +72,16 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
             return
         self._compile_registration_attempted = True
         started = time.perf_counter()
+        if self._compile_server_args.torch_compile_scope == "transformer":
+            from layers.transformer_compile import configure_transformer_compile
+            from config.torch_compile import validate_transformer_compile
+            validate_transformer_compile(self._compile_server_args)
+            self._compiled_transformer = configure_transformer_compile(
+                self._transformer, mode=resolve_torch_compile_mode())
+            self._compile_status.applied = True
+            self._compile_status.mode = resolve_torch_compile_mode()
+            self._compile_status.compile_seconds = time.perf_counter() - started
+            return
         report = configure_block_compile(self._transformer, mode=resolve_torch_compile_mode())
         self._compiled_transformer = self._transformer
         self._compile_status.applied = True
@@ -77,6 +92,7 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
         from layers.block_compile import remove_block_compile
         remove_block_compile(self._transformer)
         if self._replica_pool is not None:
+            self._replica_pool.compiled_forwards.clear()
             for model in self._replica_pool.models[1:]:
                 remove_block_compile(model)
         super().fallback_to_eager(reason)
@@ -84,7 +100,16 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
     def compile_status_snapshot(self):
         report = super().compile_status_snapshot()
         report.update(getattr(self._transformer, '_block_compile_report', {}))
-        report['scope'] = 'block_ffn'
+        if self._compile_server_args.torch_compile_scope == 'transformer':
+            report.update(getattr(self._compiled_transformer, 'report', {}))
+            report['scope'] = 'transformer'
+            pool = getattr(self, '_replica_pool', None)
+            if pool is not None and pool.compiled_forwards:
+                from copy import deepcopy
+                report['rank_compile'] = [deepcopy(fn.report) for fn in pool.compiled_forwards]
+                report['successful_forwards'] = sum(fn.report['successful_forwards'] for fn in pool.compiled_forwards)
+        else:
+            report['scope'] = 'block_ffn'
         report['signature_scope'] = 'window_input_before_sp_partition'
         config = self._compile_server_args.pipeline_config
         for signature in report['signatures']:
@@ -95,6 +120,8 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
 
     @offload_component("transformer")
     def forward(self, batch: Req, server_args: ServerArgs) -> Req:
+        from config.torch_compile import validate_transformer_compile
+        validate_transformer_compile(server_args, batch)
         transformer = batch.modules.get("transformer") or self._transformer
         scheduler = batch.modules.get("scheduler") or self._scheduler
 
@@ -112,7 +139,7 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
         guidance_scale = float(batch.guidance_scale)
         rope_interpolation_scale = batch.rope_interpolation_scale
 
-        model_frames = int(batch.padded_video.shape[2])
+        model_frames = int(batch.extra[MODEL_FRAMES_KEY])
         temporal_ratio = int(getattr(batch.modules["vae"], "temporal_compression_ratio", 8))
         latent_num_frames = latent_frame_count(model_frames, temporal_ratio)
         latent_height = int(cond_latents.shape[-2])
@@ -132,14 +159,34 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
 
         parallel_device = validate_cfg_parallel(server_args, batch)
         mesh_plan = resolve_mesh(server_args, batch)
-        use_mesh = mesh_plan is not None and mesh_plan['sp'] * mesh_plan['cfg'] > 1
+        nccl = mesh_plan is not None and mesh_plan.get('backend') == 'nccl'
+        use_mesh = nccl or (mesh_plan is not None and mesh_plan['sp'] * mesh_plan['cfg'] > 1)
+        window_type = EraserDiTMeshWindow
+        if nccl:
+            from pipelines.runtime.dit_executor import DiTProcessWindow
+            window_type = DiTProcessWindow
         cache_scope = (nullcontext(None) if use_mesh else EraserDiTCacheWindow(
             batch, total_steps=len(timesteps), num_blocks=len(transformer.transformer_blocks),
             enable_torch_compile=server_args.enable_torch_compile))
-        with EraserDiTMeshWindow(transformer, mesh_plan, pool=self._replica_pool,
+        with window_type(transformer, mesh_plan, pool=self._replica_pool,
                                 batch=batch, total_steps=len(timesteps)) as mesh, \
                 EraserDiTCFGWindow(transformer, parallel_device) as cfg_window, \
                 cache_scope as cache_window, torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
+            # Coordinates are constant throughout one window and both CFG
+            # branches. Keep this local so the next window/request cannot reuse
+            # stale coordinates. Peer paths retain their device-local behavior.
+            rotary_kwargs = {}
+            if not mesh.active and parallel_device is None:
+                from layers.block_compile import prepare_block_compile
+                config = transformer.config
+                tokens = (latent_num_frames // config.patch_size_t
+                          * (latent_height // config.patch_size) * (latent_width // config.patch_size))
+                prepare_block_compile(transformer, batch_size=latents.shape[0], sequence_length=tokens,
+                                      device=device, dtype=model_dtype)
+                rotary_kwargs["image_rotary_emb"] = transformer.rope(
+                    latents, latent_num_frames, latent_height, latent_width,
+                    rope_interpolation_scale,
+                )
             for step_index, timestep in enumerate(timesteps):
                 service_checkpoint(batch, server_args, phase="denoise_step")
                 step_start = time.perf_counter()
@@ -161,6 +208,7 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
                     return_dict=False,
                     cond_latents=cond_input,
                     mask_values=mask_input,
+                    **rotary_kwargs,
                     **(cache_window.kwargs("negative", step_index) if cache_window else {}),
                 )
                 if mesh.active:
@@ -183,6 +231,7 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
                     return_dict=False,
                     cond_latents=cond_input,
                     mask_values=mask_input,
+                    **rotary_kwargs,
                     **(cache_window.kwargs("positive", step_index) if cache_window else {}),
                 )
                 if mesh.active:
@@ -214,6 +263,7 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
             }
         if batch.metrics is not None:
             batch.metrics.record_operation("denoise")
+        self.record_compile_status(batch)
         # Report the backend the forwards actually resolved to, not the request:
         # `auto` picks one at runtime and the matrix must record which.
         backend_report = self_attention_backend_report(self._transformer)

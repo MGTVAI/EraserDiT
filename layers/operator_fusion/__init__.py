@@ -1,6 +1,7 @@
 """Optional fused operators for the local EraserDiT runtime."""
 
 from .config import (
+    GATED_RESIDUAL_OP,
     OPERATOR_FUSION_BACKENDS,
     QK_RMSNORM_ROPE_OP,
     RMSNORM_ADALN_OP,
@@ -14,6 +15,7 @@ from .registry import (
 )
 
 __all__ = [
+    "GATED_RESIDUAL_OP",
     "OPERATOR_FUSION_BACKENDS",
     "OperatorFusionDecision",
     "QK_RMSNORM_ROPE_OP",

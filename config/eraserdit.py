@@ -33,6 +33,14 @@ class EraserDiTPipelineConfig:
     cfg_parallel_device: str | None = None
     quantization_scope: str = "blocks"
     sp_degree: int = 1
+    dit_parallel_backend: str = 'peer'
+    tp_degree: int = 1
+    tp_linear_mode: str = 'reference'
+    ulysses_degree: int | None = None
+    ring_degree: int = 1
+    ring_attention_mode: str = 'reference'
+    dit_fsdp_shard_degree: int = 1
+    dit_fsdp_replicate_degree: int = 1
     sp_linear_mode: str = "reference"
     sp_attention_mode: str = "ulysses"
     cfg_degree: int = 1
@@ -69,6 +77,8 @@ class EraserDiTEraseSamplingParams(SamplingParams):
     # and equals ``overlap``; ``infer_len`` is TEMP_INFER_LEN.
     infer_len: int = 121
     overlap: int = 9
+    # Approximate: remove excess mirrored context in partial non-head windows.
+    compact_tail_padding: bool = False
     time_sample: int = 8
     time_shift: int = 1
     # Whole-frame erase: the runtime's crop bbox must resolve to (0, 0, W, H).
@@ -133,3 +143,10 @@ class EraserDiTEraseSamplingParams(SamplingParams):
             raise ValueError("mask_dilate_iter must be non-negative")
         if self.overlap >= self.infer_len:
             raise ValueError("overlap must be smaller than infer_len")
+        if type(self.compact_tail_padding) is not bool:
+            raise TypeError('compact_tail_padding must be a bool')
+        if self.compact_tail_padding and (
+            self.overlap < 1 or self.overlap % 8 != 1 or self.infer_len % 8 != 1
+            or self.time_sample != 8
+        ):
+            raise ValueError('compact_tail_padding requires 8k+1 infer_len/overlap and time_sample=8')
