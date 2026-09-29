@@ -70,7 +70,9 @@ INT8 与 DiT 卸载的组合尚未开放。
 无缓存路径继续使用原有循环预取。`cache_dit` + 逐层卸载仍在执行请求前拒绝。
 TeaCache 属于近似计算，支持组合不表示任意阈值均满足质量要求。
 关闭所有卸载后，原有全驻留缓存、编译及 peer mesh 路径仍可使用。
-DiT FSDP 尚未接入；T5 的 FSDP 不受 `use_fsdp_inference` 开关控制。
+单卡卸载集成仍拒绝旧 `use_fsdp_inference` 开关；DiT FSDP/HSDP 已在独立 NCCL 后端接入，
+通过 `--dit-fsdp-shard-degree` / `--dit-fsdp-replicate-degree` 选择，见 [NCCL 并行](distributed_parallel_20260928.md)。
+T5 的 FSDP 使用独立进程组，不受该旧开关控制。
 
 ## 统计口径
 
@@ -84,4 +86,5 @@ DiT FSDP 尚未接入；T5 的 FSDP 不受 `use_fsdp_inference` 开关控制。
 RSS 是进程历史峰值，均不是独立阶段峰值。初始化和模型加载单列。
 迁移前的历史验收不能用作新实现的性能或组合保证。
 
-当前验证见 [2026-09-24 迁移验证](sglang_memory_validation_20260924.md)。
+迁移时的基线见 [2026-09-24 迁移验证](sglang_memory_validation_20260924.md)，
+后续组合见 [单卡编译与融合](single_gpu_optimization_20260927.md)及[缓存检查](single_gpu_cache_audit_20260929.md)。

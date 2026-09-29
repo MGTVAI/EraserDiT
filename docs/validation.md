@@ -9,6 +9,15 @@
 3. 使用 `data/model/` 模型和默认素材 `data/113000356.mp4`、`data/113000356_mask.mp4` 完成一次 SDPA 推理，播放结果并检查擦除区域。
 4. 按实际需要运行服务、上传素材、查询进度、下载产物；多卡和 INT8 单独启用对应测试。
 
+CPU 回归从仓库根目录执行（隐藏 GPU，避免自动运行 CUDA 用例）：
+
+```bash
+CUDA_VISIBLE_DEVICES='' ERASERDIT_TEST_TWO_GPU=0 ERASERDIT_TEST_INT8=0 \
+  OMP_NUM_THREADS=1 uv run --no-project python -m unittest discover -s tests -v
+```
+
+`httpx` 已包含在统一依赖清单中，无需单独安装测试依赖。
+
 用 FFprobe 检查输入与输出元数据，对每段视频分别执行：
 
 ```bash
@@ -17,7 +26,13 @@ ffprobe -v error -select_streams v:0 -count_frames \
   -of json outputs/result.mp4
 ```
 
-尺寸、帧数、帧率需符合预期；不能仅以命令退出成功判定画面正确。
+尺寸、帧数、帧率需符合预期；再完整解码排查损坏：
+
+```bash
+ffmpeg -v error -xerror -i outputs/result.mp4 -f null -
+```
+
+解码成功不代表目标已擦除，仍需查看 mask 内、边缘和窗口衔接处的画面。
 
 ## 性能对照
 
@@ -46,7 +61,7 @@ CUDA_VISIBLE_DEVICES=0 uv run --no-project python -m entrypoints.cli.erase_erase
 
 ## 质量与恢复
 
-逐帧解码 RGB，按 [统一质量标准](performance.md#acceptance) 比较基线与候选；
+逐帧解码 RGB，按 [质量指标与各轮验收目标](performance.md#acceptance) 比较基线与候选；
 采用外部工具时核实像素范围、SSIM 窗口、边界处理及聚合方式，记录工具版本和参数。
 FFmpeg 默认 SSIM 或 Y 通道 PSNR 不等价于该 RGB 标准。
 缓存／量化还需完整播放检查纹理、颜色和时间闪烁，不能仅靠平均分数判定。
@@ -64,7 +79,9 @@ ffmpeg -i outputs/result.mp4 -vf fps=1 outputs/frames/frame-%04d.png
 这些步骤不等同于所有真实模型故障注入场景已通过。
 
 
-## 移除旧模型后的验证（2026-09-22）
+## 历史验证：移除旧模型（2026-09-22）
+
+以下是当时的单次验证，不代表当前所有配置的验收结果。最新实验见[记录索引](README.md#实验与验证记录)。
 
 移除 MGErase LTX 0.9.5 支持后，使用已有 EraserDiT 环境、GPU 2（A100 80GB）、
 `data/model/` 和原始示例视频完成两窗口推理：1920×1080、145 帧、24000/1001 fps，

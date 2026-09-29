@@ -1,5 +1,7 @@
 # 可组合加速方案（设计与实施记录）
 
+> 此文保留阶段方案；当前支持范围见[性能配置](performance.md)，后续实施见[记录索引](README.md#实验与验证记录)。
+
 目标是在显存预算和质量要求内组合：组件/DiT 卸载、单卡 attention 与编译、
 TeaCache 或 cache_dit、CFG 与 sequence parallel。本文保留开发路线；最新已实现范围与测试结果见末尾的实施更新。
 USP 在本文指 Ulysses + Ring 的混合序列并行；FA 指 FlashAttention，Sage 指 SageAttention。

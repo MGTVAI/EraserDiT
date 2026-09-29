@@ -1,6 +1,7 @@
 --extra-index-url https://download.pytorch.org/whl/cu126
 
-# Tested compatibility set: Python 3.10 + Torch 2.6/cu126.
+# Python 3.10 + Torch 2.6/cu126. Installation order: docs/setup.md.
+# Preinstall Torch and build tools before building flash-attn without isolation.
 accelerate==1.13.0
 bitsandbytes
 diffusers==0.40.0
@@ -27,8 +28,10 @@ pillow==10.4.0
 imageio==2.37.3
 rich==15.0.0
 
-# Optional attention backends: see requirements-attention.txt.
+# Attention backends (selected at runtime; SDPA remains the default).
 triton==3.2.0
+flash-attn==2.8.3
+sageattention==1.0.6
 
 # HTTP serving and S3 result publishing.
 fastapi==0.140.0
@@ -36,3 +39,6 @@ uvicorn==0.51.0
 pydantic==2.13.4
 python-multipart>=0.0.20
 boto3
+
+# HTTP API regression tests.
+httpx>=0.27,<1

@@ -1,5 +1,12 @@
 """Explicit two/four GPU model, peer failure and VAE tiling verification."""
 import os
+import gc
+import hashlib
+import json
+from pathlib import Path
+import statistics
+import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 import unittest
@@ -163,6 +170,175 @@ class PeerExchangeGpuTests(unittest.TestCase):
                         torch.testing.assert_close(result, values[0], rtol=0, atol=0)
                     self.assertEqual(group.calls[rank], 6)
                     self.assertEqual(group.direct_copies[rank], 12 if length > 1000 else 0)
+
+
+@unittest.skipUnless(os.environ.get("ERASERDIT_TEST_VAE_BENCHMARK") == "1",
+                     "explicit real-weight VAE benchmark opt-in")
+class VAESpatialBenchmarkTests(unittest.TestCase):
+    """Paired untiled VAE measurements; performance is reported, not asserted.
+
+    Optional CPU fixtures contain encoder input, or decoder (latent, timestep).
+    Loading, fixture transfer, output comparison and allocator cleanup are outside
+    timing. The production adapter's replica setup and communication are included.
+    """
+
+    def test_single_vs_two_gpu(self):
+        from models.vaes.eraserdit_vae import EraserDiTAutoencoderKLLTXVideo
+        from loader.meta_load import load_safetensors_model
+
+        self.assertGreaterEqual(torch.cuda.device_count(), 2)
+        model_path = Path(os.environ.get("ERASERDIT_TEST_MODEL", "data/model")) / "vae"
+        report_path = Path(os.environ.get("ERASERDIT_VAE_REPORT", "/tmp/eraserdit_vae_benchmark.json"))
+        frames, height, width = map(int, os.environ.get("ERASERDIT_VAE_SHAPE", "17,320,192").split(","))
+        repeats = int(os.environ.get("ERASERDIT_VAE_REPEATS", "3"))
+        self.assertGreaterEqual(repeats, 1)
+        self.assertEqual((frames - 1) % 8, 0)
+        self.assertEqual(height % 32, 0)
+        self.assertEqual(width % 32, 0)
+        profile = enable_deterministic_mode()
+        config = json.loads((model_path / "config.json").read_text())
+        vae, _ = load_safetensors_model(
+            lambda: EraserDiTAutoencoderKLLTXVideo.from_config(config), model_path,
+            dtype=torch.bfloat16, device="cuda:0",
+        )
+        args = ServerArgs(device="cuda:0", pipeline_config=EraserDiTPipelineConfig())
+        set_global_server_args(args)
+        devices = (0, 1)
+        report = dict(
+            torch=torch.__version__, profile=profile,
+            visible_devices=os.environ.get("CUDA_VISIBLE_DEVICES"),
+            devices=[torch.cuda.get_device_name(d) for d in devices],
+            model_path=str(model_path.resolve()), shape=[frames, height, width],
+            weight_bytes=sum(t.numel() * t.element_size() for t in vae.parameters()),
+            source_sha256={p: hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in (
+                "models/vaes/eraserdit_vae.py", "models/adapters/eraserdit/vae.py",
+                "models/adapters/eraserdit/vae_spatial.py", "tests/test_mesh_gpu.py")},
+            scope="isolated VAE, BF16, no tiling/compile/offload; includes replica setup",
+            stages={},
+        )
+
+        def save():
+            report_path.write_text(json.dumps(report, indent=2))
+
+        def gpu_usage():
+            return subprocess.check_output([
+                "nvidia-smi", "--query-compute-apps=gpu_uuid,pid,used_memory",
+                "--format=csv,noheader"], text=True).strip()
+
+        def cleanup():
+            gc.collect()
+            for device in devices:
+                torch.cuda.synchronize(device)
+                with torch.cuda.device(device):
+                    torch.cuda.empty_cache()
+
+        def measure(operation, degree, value, temb):
+            args.pipeline_config.vae_degree = degree
+            batch = SimpleNamespace(extra={}, transformer_cache_mode="off", cache_text_projections=False)
+            cleanup()
+            before = [torch.cuda.memory_allocated(d) for d in devices]
+            for device in devices:
+                torch.cuda.reset_peak_memory_stats(device)
+            usage_before = gpu_usage()
+            started = time.perf_counter()
+            with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+                output = tiled_vae(vae, value, args, batch, operation=operation, temb=temb)
+            for device in devices:
+                torch.cuda.synchronize(device)
+            seconds = time.perf_counter() - started
+            tensor = output.parameters if operation == "encode" else output
+            peaks = [torch.cuda.max_memory_allocated(d) for d in devices]
+            item = dict(
+                degree=degree, seconds=seconds, baseline_allocated_bytes=before,
+                peak_allocated_bytes=peaks,
+                peak_increment_bytes=[p - b for p, b in zip(peaks, before)],
+                peak_reserved_bytes=[torch.cuda.max_memory_reserved(d) for d in devices],
+                output_shape=list(tensor.shape),
+                adapter=batch.extra.get(f"vae_parallel_{operation}"),
+                gpu_processes_before=usage_before, gpu_processes_after=gpu_usage(),
+            )
+            # Baselines live on CPU so they cannot inflate the following GPU peak.
+            result = tensor.detach().cpu()
+            del output, tensor
+            return result, item
+
+        def difference(actual, expected):
+            self.assertEqual(actual.shape, expected.shape)
+            actual, expected = actual.reshape(-1), expected.reshape(-1)
+            maximum, absolute_sum, different, finite = 0.0, 0.0, 0, True
+            for start in range(0, actual.numel(), 1_048_576):
+                a, b = actual[start:start + 1_048_576].float(), expected[start:start + 1_048_576].float()
+                delta = (a - b).abs()
+                finite = finite and bool(torch.isfinite(delta).all())
+                maximum = max(maximum, delta.max().item())
+                absolute_sum += delta.double().sum().item()
+                different += torch.count_nonzero(a != b).item()
+            return dict(max_abs=maximum, mean_abs=absolute_sum / actual.numel(),
+                        different_elements=different, finite=finite)
+
+        failures = []
+        try:
+            for operation in ("encode", "decode"):
+                fixture = os.environ.get(f"ERASERDIT_VAE_{operation.upper()}_INPUT")
+                if fixture:
+                    data = torch.load(fixture, map_location="cpu", weights_only=True)
+                    if operation == "encode":
+                        value, temb = data, None
+                    else:
+                        value, temb = data
+                    value = value.to(device="cuda:0", dtype=torch.bfloat16)
+                    temb = temb.to(device="cuda:0", dtype=torch.bfloat16) if temb is not None else None
+                    del data
+                else:
+                    generator = torch.Generator(device="cuda:0").manual_seed(42)
+                    shape = ((1, 3, frames, height, width) if operation == "encode" else
+                             (1, 128, (frames - 1) // 8 + 1, height // 32, width // 32))
+                    value = torch.randn(shape, generator=generator, device="cuda:0", dtype=torch.bfloat16)
+                    temb = torch.zeros(1, device="cuda:0", dtype=torch.bfloat16) if operation == "decode" else None
+                stage = dict(input_shape=list(value.shape), fixture=fixture, warmup=[], samples=[])
+                report["stages"][operation] = stage
+                reference = None
+                for degree in (1, 2):
+                    actual, item = measure(operation, degree, value, temb)
+                    if reference is None:
+                        reference = actual
+                    else:
+                        item["difference"] = difference(actual, reference)
+                    stage["warmup"].append(item)
+                    del actual
+                    save()
+                    print("VAE_WARMUP", operation, degree, round(item["seconds"], 3), flush=True)
+                for repeat in range(repeats):
+                    for degree in ((1, 2) if repeat % 2 == 0 else (2, 1)):
+                        actual, item = measure(operation, degree, value, temb)
+                        item["repeat"] = repeat
+                        item["difference"] = difference(actual, reference)
+                        stage["samples"].append(item)
+                        if not item["difference"]["finite"] or item["difference"]["different_elements"]:
+                            failures.append((operation, degree, repeat, item["difference"]))
+                        del actual
+                        save()
+                        print("VAE_SAMPLE", operation, degree, round(item["seconds"], 3),
+                              [round(p / 1024**3, 3) for p in item["peak_allocated_bytes"]],
+                              item["difference"], flush=True)
+                summary = {}
+                for degree in (1, 2):
+                    samples = [s for s in stage["samples"] if s["degree"] == degree]
+                    times = [s["seconds"] for s in samples]
+                    summary[str(degree)] = dict(
+                        median_seconds=statistics.median(times), range_seconds=[min(times), max(times)],
+                        peak_allocated_bytes=[max(s["peak_allocated_bytes"][d] for s in samples) for d in devices],
+                    )
+                stage["summary"] = summary
+                save()
+                del reference, value, temb
+                cleanup()
+            self.assertFalse(failures, f"spatial reference path changed output: {failures}")
+        finally:
+            report["output_mismatches"] = failures
+            save()
+            del vae
+            cleanup()
             with ThreadPoolExecutor(max_workers=4) as pool:
                 list(pool.map(worker, range(4)))
 

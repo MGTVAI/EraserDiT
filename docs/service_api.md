@@ -18,7 +18,18 @@ CUDA_VISIBLE_DEVICES=0 uv run --no-project python -m entrypoints.server.serve \
 
 服务在前台运行，使用 Ctrl+C 停止。`--task-root` 是服务端可写的产物目录；
 `--input-allowed-root` 是服务端输入白名单，JSON 请求中的输入文件必须位于该目录内。
-服务不会自动选择或等待 GPU。
+服务不会自动选择或等待 GPU。请求采样参数可以逐任务设置，设备、卸载、编译和并行拓扑需在启动时确定。
+
+| 部署参数 | 默认值 / 含义 |
+| --- | --- |
+| `--max-queued-tasks` | `8`，等待队列上限 |
+| `--max-upload-bytes` | `4294967296`，上传大小限制 |
+| `--terminal-task-ttl-seconds` | `86400`，终态任务保留时间 |
+| `--max-terminal-tasks` | `128`，终态任务保留上限 |
+| `--result-storage-mode` | `local`；可选 `s3`，需配置 bucket |
+
+S3 参数与其他服务选项用 `uv run --no-project python -m entrypoints.server.serve --help` 查看。
+任务记录仅保存在内存中，服务重启后不会恢复；及时下载需要保留的结果。
 
 `--pipeline-name` 决定使用哪个模型；请求 schema、采样参数构造与 capability 标识都由该管线
 声明的 `service_contract` 提供（`config/service_contracts/`），服务骨架不感知模型。
@@ -73,13 +84,13 @@ guidance 3.0 / infer_len 121 / overlap 9。
 INPUT_DIR="$PWD/data"
 curl -sS http://127.0.0.1:30000/v1/videos/eraser \
   -H 'Content-Type: application/json' \
-  -d "{\"video_path\":\"$INPUT_DIR/113000356.mp4\",\"mask_path\":\"$INPUT_DIR/113000356_mask.mp4\",\"seed\":42}"
+  -d "{\"video_path\":\"$INPUT_DIR/113000356.mp4\",\"mask_path\":\"$INPUT_DIR/113000356_mask.mp4\",\"seed\":42,\"prompt\":\"There is a rooftop terrace overlooking the city at sunset.\"}"
 
 # 文件上传：parameters 是 JSON 字符串，不是多个独立表单字段
 curl -sS http://127.0.0.1:30000/v1/videos/eraser \
   -F "video=@$INPUT_DIR/113000356.mp4" \
   -F "mask=@$INPUT_DIR/113000356_mask.mp4" \
-  -F 'parameters={"seed":42,"num_inference_steps":50}'
+  -F 'parameters={"seed":42,"num_inference_steps":50,"prompt":"There is a rooftop terrace overlooking the city at sunset."}'
 
 TASK_ID='替换为创建响应中的id'
 curl -sS "http://127.0.0.1:30000/v1/videos/$TASK_ID/progress"
@@ -123,6 +134,6 @@ curl -fsS http://127.0.0.1:30000/v1/models
 
 NCCL DiT 多进程服务通过启动参数 `--dit-parallel-backend nccl` 选择；
 CFG、SP/Ulysses/Ring、TP 与 FSDP/HSDP 的度数在启动时固定，不能按请求改变通信拓扑。
-当前要求 BF16、SDPA、DiT 常驻、关闭编译/量化/缓存；不支持的请求会提前拒绝。
+当前要求 BF16、SDPA、DiT 常驻或 FSDP 分片、关闭编译/量化/手工融合/缓存；不支持的请求会提前拒绝。
 响应指标中的 `parallel_history` 记录各窗口的实际后端、rank 参数字节、通信次数与显存峰值。
 策略参数、整片质量和性能证据见 [NCCL 并行验收](distributed_parallel_20260928.md)。

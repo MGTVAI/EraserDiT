@@ -21,7 +21,7 @@ CUDA_VISIBLE_DEVICES=0 uv run --no-project python -m entrypoints.cli.erase_erase
 掩码视频需与源视频的帧数、尺寸和帧率对应；掩码标出待擦除区域，prompt 描述擦除后的背景。
 通过 `uv run --no-project` 使用仓库 `.venv`，相对路径以仓库根目录为准。
 如需离线加载，在命令前设置 `HF_HUB_OFFLINE=1`；如需调整显存分配器，设置
-`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`。这些变量不由包装脚本隐式注入。
+`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`。单视频入口不会隐式注入这些变量；DP dispatcher 会为子进程设置 `HF_HUB_OFFLINE=1`。
 GPU 编号相对于 `CUDA_VISIBLE_DEVICES`；例如物理卡 2、3 对应 `cuda:0`、`cuda:1`。
 原尺寸 1080×1920、121 帧窗口曾测得约 60 GiB 空闲显存需求，不能作为所有配置的固定门槛。
 
@@ -31,7 +31,7 @@ GPU 编号相对于 `CUDA_VISIBLE_DEVICES`；例如物理卡 2、3 对应 `cuda:
 使用前需按素材验证，见 [迁移验证](sglang_memory_validation_20260924.md)。
 
 ```bash
-CUDA_VISIBLE_DEVICES=7 HF_HUB_OFFLINE=1 uv run --no-project python -m entrypoints.cli.erase_eraserdit \
+CUDA_VISIBLE_DEVICES=0 HF_HUB_OFFLINE=1 uv run --no-project python -m entrypoints.cli.erase_eraserdit \
   --model-path data/model \
   --video-input data/113000356.mp4 --mask-input data/113000356_mask.mp4 \
   --output-path outputs/result.mp4 \
@@ -147,7 +147,7 @@ CUDA_VISIBLE_DEVICES=0 uv run --no-project python -m entrypoints.cli.erase_erase
 预热和编译有一次性成本，冷启动不保证净加速。卸载、缓存、并行、量化的组合限制与测量条件见
 [性能说明](performance.md)。
 
-两卡单任务：设置 `CUDA_VISIBLE_DEVICES=6,7`，关闭卸载后使用局部编译和缓存：
+两卡单任务：设置 `CUDA_VISIBLE_DEVICES=0,1`，关闭卸载后使用局部编译和缓存：
 
 ```bash
 --no-dit-layerwise-offload --no-text-encoder-cpu-offload --no-vae-cpu-offload --cfg-degree 2 --enable-torch-compile \
@@ -161,8 +161,23 @@ SP 使用 `--sp-degree 2 --cfg-degree 1 --sp-linear-mode sharded`；
 
 独立 NCCL DiT 进程池使用 `--dit-parallel-backend nccl`，新增 TP、Ulysses×Ring、
 FSDP/HSDP 正交分组。参数组合、限制和整片 SSIM 验收状态见
-[NCCL 并行实施记录](distributed_parallel_20260928.md)。新路径目前要求 SDPA、常驻 DiT、
+[NCCL 并行实施记录](distributed_parallel_20260928.md)。新路径目前要求 BF16、SDPA、常驻或 FSDP 分片的 DiT、
 关闭编译/量化/融合/缓存；T5/VAE CPU offload 可以保留。
+
+双卡 NCCL Ulysses 示例（保留默认 T5/VAE 卸载）：
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 HF_HUB_OFFLINE=1 uv run --no-project python -m entrypoints.cli.erase_eraserdit \
+  --model-path data/model \
+  --video-input data/113000356.mp4 --mask-input data/113000356_mask.mp4 \
+  --output-path outputs/result_nccl_sp2.mp4 \
+  --prompt "There is a rooftop terrace overlooking the city at sunset." \
+  --dit-parallel-backend nccl --sp-degree 2 --ulysses-degree 2 --sp-linear-mode sharded \
+  --no-dit-layerwise-offload --no-dit-cpu-offload \
+  --attention-backend sdpa --transformer-cache-mode off --no-cache-text-projections
+```
+
+该命令使用默认完整尾窗；历史整片验收使用 `--compact-tail-padding`，复现时需同时核对窗口配置。
 
 多视频分配到不同 GPU 使用 DP dispatcher；`tasks.json` 沿用上面的格式：
 
@@ -173,7 +188,9 @@ CUDA_VISIBLE_DEVICES=0,1 HF_HUB_OFFLINE=1 uv run --no-project python -m entrypoi
   --transformer-cache-mode off --no-cache-text-projections
 ```
 
-`parallel-run-dir` 必须尚不存在。DP 提升多任务吞吐，单任务并行参数及设备分组见
+`parallel-run-dir` 必须尚不存在，DP 度数不能超过任务数，每项输出路径必须唯一。
+当前 DP dispatcher 要求所有任务关闭残差与文本投影缓存，子进程强制离线加载。
+DP 提升多任务吞吐，单任务并行参数及设备分组见
 [并行说明](performance.md#parallel)。
 
 

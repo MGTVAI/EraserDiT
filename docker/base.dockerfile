@@ -4,7 +4,7 @@
 #   docker build -f docker/base.dockerfile -t eraserdit:cu126 .
 #
 # Mount a complete model and inputs at runtime; see docs/setup.md.
-# Default backend is SDPA; optional attention packages are not required.
+# Includes attention backends and test dependencies; runtime defaults to SDPA.
 ARG PYTORCH_IMAGE=pytorch/pytorch:2.6.0-cuda12.6-cudnn9-devel
 FROM ${PYTORCH_IMAGE}
 
@@ -28,7 +28,12 @@ WORKDIR /workspace/EraserDiT
 
 COPY requirements.txt ./
 RUN uv venv --python 3.10 .venv \
-    && uv pip install --python .venv/bin/python --no-cache --index-strategy unsafe-best-match -r requirements.txt \
+    && uv pip install --python .venv/bin/python --no-cache \
+        --index-strategy unsafe-best-match \
+        --extra-index-url https://download.pytorch.org/whl/cu126 \
+        torch==2.6.0+cu126 pip setuptools wheel packaging ninja psutil \
+    && MAX_JOBS=4 uv pip install --python .venv/bin/python --no-cache \
+        --index-strategy unsafe-best-match --no-build-isolation-package flash-attn -r requirements.txt \
     && uv pip check --python .venv/bin/python
 
 COPY . .

@@ -1,3 +1,0 @@
-# Install after requirements.txt with --no-build-isolation.
-flash-attn==2.8.3
-sageattention==1.0.6

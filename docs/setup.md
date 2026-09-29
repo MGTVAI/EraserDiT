@@ -1,7 +1,7 @@
 # 安装与部署
 
 新机器使用 [README 快速开始](../README.md#快速开始) 完成安装、下载和首次推理。
-本文补充环境要求、可选配置与容器运行。所有命令从仓库根目录执行。
+本文说明统一依赖安装、环境检查与容器运行。所有命令从仓库根目录执行。
 
 ## 环境要求
 
@@ -10,8 +10,42 @@
 - FFmpeg 与 FFprobe 在 `PATH` 中，FFmpeg 支持 `libx264`。
 - 模型约 30 GB；磁盘还需容纳 Python 依赖、解码缓存和输出，CPU 内存及显存随素材尺寸变化。
 
-默认 SDPA 使用 PyTorch 自带实现，无需安装 CUDA Toolkit 或注意力扩展。
-系统需安装兼容 CUDA 12.6 的 NVIDIA 驱动；可用下列命令检查 Python 环境：
+`requirements.txt` 统一包含推理、HTTP 服务、FlashAttention / SageAttention 和测试依赖。
+SDPA 本身使用 PyTorch 内置实现，但完整安装包含 FlashAttention，需准备 CUDA 12.6 Toolkit、
+C++ 编译器及兼容驱动。`nvcc --version` 检查的是 Toolkit；`nvidia-smi` 中的 CUDA 版本不能替代它。
+Toolkit 无法自动定位时，将 `CUDA_HOME` 设为实际安装目录并把其 `bin` 加入 `PATH`。
+
+## 安装统一依赖
+
+先按 [uv 官方说明](https://docs.astral.sh/uv/getting-started/installation/)安装 uv，
+然后在仓库根目录执行：
+
+```bash
+sudo apt-get install -y git curl build-essential ffmpeg libgl1 libglib2.0-0
+nvcc --version
+uv venv --python 3.10
+uv pip install --python .venv/bin/python --index-strategy unsafe-best-match \
+  --extra-index-url https://download.pytorch.org/whl/cu126 \
+  torch==2.6.0+cu126 pip setuptools wheel packaging ninja psutil
+MAX_JOBS=4 uv pip install --python .venv/bin/python --index-strategy unsafe-best-match \
+  --no-build-isolation-package flash-attn -r requirements.txt
+uv pip check --python .venv/bin/python
+```
+
+第一步预装 Torch 和构建工具，第二步从唯一依赖清单安装全部包。
+FlashAttention 的构建脚本需要导入 Torch，仅将它关闭构建隔离；其余包保留 uv 默认行为。
+`MAX_JOBS=4` 限制扩展编译并发，可按 CPU 内存调整。
+参见 [FlashAttention 2.8.3 安装要求](https://github.com/Dao-AILab/flash-attention/tree/v2.8.3)
+和 [uv 构建隔离说明](https://docs.astral.sh/uv/pip/compatibility/#pep-517-build-isolation)。
+安装后仍默认使用 SDPA，安装扩展不会自动切换注意力后端。
+
+## 环境检查
+
+```bash
+uv run --no-project python -c 'import flash_attn, sageattention, httpx; print("attention/test imports OK")'
+```
+
+检查设备和入口：
 
 ```bash
 uv run --no-project python -c 'import torch; print(torch.__version__, torch.version.cuda); print("CUDA available:", torch.cuda.is_available(), "devices:", torch.cuda.device_count())'
@@ -49,42 +83,31 @@ HF_HUB_OFFLINE=0 uv run --no-project hf download jieeliu/EraserDiT \
 自有掩码需与视频逐帧对应，尺寸和帧率匹配，白色表示待擦除区域、黑色表示保留区域。
 prompt 描述擦除后的背景，无需额外下载 caption 模型。
 
-## 可选依赖
+## 复用环境
 
-默认安装只包含 SDPA 推理和 HTTP 服务所需依赖。测试依赖单独安装：
-
-```bash
-uv pip install --python .venv/bin/python -r requirements-test.txt
-```
-
-FlashAttention / SageAttention 按需安装，需要与 Torch 匹配的 CUDA 开发工具链和 C++ 编译器，
-`nvcc` 应在 `PATH` 中；无法自动定位时将 `CUDA_HOME` 设为本机 Toolkit 目录：
-
-```bash
-uv pip install --python .venv/bin/python pip setuptools wheel packaging ninja
-uv pip install --python .venv/bin/python --no-build-isolation -r requirements-attention.txt
-```
-
-依赖文件包含版本范围。需要复用同平台的确切环境时，可以导出实际安装版本：
+依赖清单包含固定版本和版本范围，并非完整锁文件。可导出实际安装版本：
 
 ```bash
 uv pip freeze --python .venv/bin/python > environment.freeze.txt
 ```
 
-在另一台同平台机器的新环境中安装：
+另一台同平台机器先按上面的流程准备 Toolkit、创建环境并预装 Torch 与构建工具，
+再用快照安装全部依赖：
 
 ```bash
-uv venv --python 3.10
-uv pip install --python .venv/bin/python --extra-index-url https://download.pytorch.org/whl/cu126 \
-  --index-strategy unsafe-best-match -r environment.freeze.txt
+MAX_JOBS=4 uv pip install --python .venv/bin/python \
+  --extra-index-url https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match \
+  --no-build-isolation-package flash-attn -r environment.freeze.txt
+uv pip check --python .venv/bin/python
 ```
 
-含可选 CUDA 扩展的环境应先安装基础依赖，再按上面的步骤构建扩展。
+历史实验若使用 SageAttention 2 或本机编译的扩展，以对应记录为准；
+统一清单保留 `sageattention==1.0.6`，不能据此直接复现其他扩展版本的性能。
 
 ## 容器
 
 主机需要 NVIDIA 驱动和支持 GPU 的容器运行时。镜像通过 uv 安装依赖并提供 FFmpeg，
-默认使用 SDPA；模型和素材通过挂载提供。
+使用 CUDA devel 基础镜像构建统一清单中的注意力扩展，推理默认使用 SDPA；模型和素材通过挂载提供。
 
 ```bash
 docker build -f docker/base.dockerfile -t eraserdit:cu126 .
@@ -110,6 +133,8 @@ docker run --rm --gpus all \
 | `CUDA available: False` | 检查驱动、GPU 可见性及容器 GPU 支持 |
 | 找不到 `ffmpeg` / `ffprobe` | 安装系统 FFmpeg 并确认命令在 `PATH` 中 |
 | 模型文件缺失 | 关闭离线模式，重新执行完整模型下载命令 |
+| 构建 FlashAttention 时缺少 `torch` / `nvcc` | 按安装顺序预装 Torch，检查 CUDA Toolkit 与 `CUDA_HOME`；使用上述关闭单包构建隔离的命令 |
+| 扩展编译被系统杀死 | 降低 `MAX_JOBS`，检查 CPU 内存与磁盘空间 |
 | 显存不足 | 使用较小素材验证，或启用[权重卸载](performance.md#offload)；卸载不能消除激活显存 |
 | 任务开始后 CPU 忙、GPU 空闲，停在掩码读取 | 入口默认设置 `NUMPY_MADVISE_HUGEPAGE=0`，避免共享主机上大数组分配触发透明大页整理停顿；直接调用 Python API 时，在导入 NumPy/Torch 前设置此环境变量。显式设置为 `1` 可恢复 NumPy 默认行为 |
 | 本机 HTTP 请求受代理影响 | 设置 `NO_PROXY=127.0.0.1,localhost` |

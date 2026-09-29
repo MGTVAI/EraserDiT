@@ -89,4 +89,6 @@ NCCL DiT 路径由 `pipelines/runtime/dit_executor.py` 管理常驻子进程；
 父进程保留 T5/VAE、scheduler 与 RNG，DiT worker 使用独立 NCCL world，避免替换父进程 T5 的 FSDP 组。
 `distributed/dit_groups.py` 只处理通用分组与通信，模型计算适配位于
 `models/adapters/eraserdit/nccl_runner.py` 和 `nccl_sequence.py`；TP Linear 位于 `layers/dit_tensor_parallel.py`。
-策略范围、进程边界成本和实测结果见 [NCCL 并行记录](distributed_parallel_20260928.md)。
+worker 在返回前以 FP32 合并 CFG，并仅由 owner 汇聚必要的 SP 输出；输入和预测仍经 CPU IPC 传递。
+策略范围见 [NCCL 并行记录](distributed_parallel_20260928.md)，边界计时与输出通信优化见
+[2026-09-29 验证](nccl_boundary_optimization_20260929.md)。
