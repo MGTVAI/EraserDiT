@@ -149,7 +149,7 @@ class EraserDiTErasePreprocessStage(PipelineStage):
         batch.crop_video = batch.video
         batch.crop_mask = batch.mask
         batch.masked_video = batch.padded_video
-        # Colour correction consumes CPU tensors. Keep only compact CPU source
+        # Colour correction uploads source pixels in chunks. Keep compact CPU source
         # samples between stages, rather than retaining them on the accelerator.
         batch.extra[STYLE_VIDEO_KEY] = (
             (source_video[..., :orig_h, :orig_w] * 255.0).round().to(torch.uint8).cpu()

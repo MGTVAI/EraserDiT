@@ -44,6 +44,11 @@ def _rank_check(rank, topology, rendezvous, cuda, fsdp, ring_mode, tp_mode):
             actual = gather_variable(local, group, len(ranks), lengths=lengths)
             expected = torch.tensor([[float(i) for i, n in enumerate(lengths) for _ in range(n)]], device=device)
             torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+            gathered = gather_variable(local, group, len(ranks), lengths=lengths, dst=ranks[-1])
+            if rank == ranks[-1]:
+                torch.testing.assert_close(gathered, expected, atol=0, rtol=0)
+            else:
+                assert gathered is None
         set_global_server_args(ServerArgs(device=str(device), attention_backend='sdpa'))
         torch.manual_seed(123)
         model = EraserDiTLTXVideoTransformer3DModel(in_channels=3, out_channels=4,
@@ -94,6 +99,12 @@ def _rank_check(rank, topology, rendezvous, cuda, fsdp, ring_mode, tp_mode):
                     expected = [reference(**v, hidden_states=hidden, timestep=timestep)[0].float()
                                 for v in (negative, positive)]
                     actual = runner.predict(packet)
+                    owner_actual = runner.predict(packet, owner_only=True)
+                if rank == 0:
+                    for a, b in zip(owner_actual, actual):
+                        torch.testing.assert_close(a, b, atol=0, rtol=0)
+                else:
+                    assert owner_actual is None
                 for a, b in zip(actual, expected):
                     if topology.tp > 1 and topology.sp == 1 and tp_mode == 'reference':
                         torch.testing.assert_close(a, b, atol=0, rtol=0)
@@ -110,11 +121,21 @@ def _rank_check(rank, topology, rendezvous, cuda, fsdp, ring_mode, tp_mode):
 class DistributedDiTTests(unittest.TestCase):
     @unittest.skipUnless(os.environ.get('ERASERDIT_TEST_DIT_NCCL') == '1', 'opt-in real process-pool GPUs')
     def test_process_pool_parent_group_and_peer_failure(self):
+        self._check_process_pool(sp_degree=1)
+
+    @unittest.skipUnless(os.environ.get('ERASERDIT_TEST_DIT_NCCL') == '1', 'opt-in real process-pool GPUs')
+    def test_process_pool_cfg_sp_guided(self):
+        if torch.cuda.device_count() < 4:
+            self.skipTest('CFG2 x SP2 requires four GPUs')
+        self._check_process_pool(sp_degree=2)
+
+    def _check_process_pool(self, sp_degree):
         from copy import deepcopy
         from config.server_args import ServerArgs, set_global_server_args
         from models.dits.eraserdit_transformer import EraserDiTLTXVideoTransformer3DModel
         from pipelines.runtime.dit_executor import DiTProcessPool, DiTProcessWindow
-        config = EraserDiTPipelineConfig(dit_parallel_backend='nccl', cfg_degree=2)
+        config = EraserDiTPipelineConfig(dit_parallel_backend='nccl', cfg_degree=2, sp_degree=sp_degree,
+                                        sp_linear_mode='sharded')
         args = ServerArgs(device='cuda:0', pipeline_config=config)
         set_global_server_args(args)
         torch.manual_seed(42)
@@ -123,7 +144,7 @@ class DistributedDiTTests(unittest.TestCase):
             num_layers=2, caption_channels=16).to(device='cuda:0', dtype=torch.bfloat16).eval()
         reference = deepcopy(model)
         topology = resolve_dit_topology(config)
-        plan = dict(topology=topology, devices=[torch.device('cuda', i) for i in range(2)],
+        plan = dict(topology=topology, devices=[torch.device('cuda', i) for i in range(topology.world_size)],
                     ring_attention_mode='reference')
         hidden = torch.randn(1, 1, 1, 3, 3, device='cuda:0', dtype=torch.bfloat16)
         values = dict(hidden_states=hidden, cond_latents=torch.randn_like(hidden), mask_values=torch.ones_like(hidden),
@@ -136,15 +157,35 @@ class DistributedDiTTests(unittest.TestCase):
             pool = None
             try:
                 pool = DiTProcessPool(model, plan, args)
-                for _ in range(2):
+                for frames in (1, 2):
+                    # Change window shape and static conditions on a resident
+                    # pool; no prior-window output or packet may be reused.
+                    values = dict(values, num_frames=frames)
+                    for key in ('hidden_states', 'cond_latents', 'mask_values'):
+                        values[key] = values[key][:, :, :1].repeat(1, 1, frames, 1, 1)
+                    negative = dict(values, encoder_hidden_states=values['encoder_hidden_states'] + .7)
                     with DiTProcessWindow(model, plan, pool=pool) as window:
-                        for _ in range(2):
+                        for scale in (0., 1., 7.5):
                             actual = window.predict(negative, values)
                             with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
                                 expected = [reference(**v)[0].float() for v in (negative, values)]
                             for a,b in zip(actual, expected):
-                                torch.testing.assert_close(a, b, atol=0, rtol=0)
-                        self.assertEqual(window.report()['transport'], 'nccl')
+                                # SP changes GEMM M even without this output
+                                # optimization. Dense-vs-SP keeps the existing
+                                # small-model tolerance; guided-vs-pair must be
+                                # bitwise equal on the very same topology.
+                                tolerance = .035 if sp_degree > 1 else 0
+                                torch.testing.assert_close(a, b, atol=tolerance, rtol=tolerance)
+                            guided = window.predict_guided(negative, values, scale)
+                            torch.testing.assert_close(guided, actual[0] + scale * (actual[1] - actual[0]),
+                                                       atol=0, rtol=0)
+                        report = window.report()
+                        self.assertEqual(report['transport'], 'nccl')
+                        self.assertEqual(report['output_assembly'], 'owner_only')
+                        self.assertEqual(report['boundary_tensor_bytes']['output'], 9 * expected[0].numel() * 4)
+                        self.assertTrue(all(v >= 0 for v in report['boundary_wall_seconds'].values()))
+                        self.assertTrue(all(r['window_gpu_seconds']['forward_and_output_gather'] > 0
+                                            for r in report['rank_reports']))
                 self.assertEqual(dist.get_world_size(), 1)
                 pool.processes[1].terminate()
                 pool.processes[1].join(timeout=5)
@@ -199,7 +240,8 @@ class DistributedDiTTests(unittest.TestCase):
     def test_cpu_collective_matrix(self):
         for topology in (DiTTopology(cfg=2), DiTTopology(ulysses=2), DiTTopology(ring=2),
                          DiTTopology(tp=2), DiTTopology(ulysses=2, ring=2),
-                         DiTTopology(ulysses=2, cfg=2), DiTTopology(tp=2, ulysses=2)):
+                         DiTTopology(ulysses=2, cfg=2), DiTTopology(tp=2, ulysses=2),
+                         DiTTopology(tp=2, cfg=2), DiTTopology(replicas=2)):
             self.run_ranks(topology)
 
     @unittest.skipUnless(os.environ.get('ERASERDIT_TEST_DIT_NCCL') == '1', 'opt-in real NCCL GPUs')
@@ -249,6 +291,7 @@ class DistributedDiTTests(unittest.TestCase):
         for topology in (DiTTopology(cfg=2), DiTTopology(ulysses=2), DiTTopology(ring=2), DiTTopology(tp=2)):
             self.run_ranks(topology, cuda=True)
         self.run_ranks(DiTTopology(ulysses=2), cuda=True, fsdp=True)
+        self.run_ranks(DiTTopology(replicas=2), cuda=True, fsdp=True)
         if torch.cuda.device_count() >= 4:
             for topology in (DiTTopology(ulysses=2, ring=2), DiTTopology(ulysses=2, cfg=2),
                              DiTTopology(tp=2, ulysses=2)):

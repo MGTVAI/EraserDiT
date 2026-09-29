@@ -234,7 +234,9 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
                     **rotary_kwargs,
                     **(cache_window.kwargs("positive", step_index) if cache_window else {}),
                 )
-                if mesh.active:
+                if nccl:
+                    noise_pred = mesh.predict_guided(negative_kwargs, positive_kwargs, guidance_scale)
+                elif mesh.active:
                     noise_pred_uncond, noise_pred_text = mesh.predict(negative_kwargs, positive_kwargs)
                 else:
                     noise_pred_text = transformer_for_forward(**positive_kwargs)[0].float()
@@ -242,9 +244,10 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
                 if parallel_device is not None:
                     noise_pred_uncond = negative_future.result().to(device)
 
-                noise_pred = noise_pred_uncond + guidance_scale * (
-                    noise_pred_text - noise_pred_uncond
-                )
+                if not nccl:
+                    noise_pred = noise_pred_uncond + guidance_scale * (
+                        noise_pred_text - noise_pred_uncond
+                    )
                 latents = scheduler.step(noise_pred, timestep, latents, return_dict=False)[0]
                 batch.step_index = step_index
                 if batch.metrics is not None:

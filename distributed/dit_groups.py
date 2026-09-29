@@ -46,8 +46,12 @@ class DiTGroups:
         return self.groups[axis]
 
 
-def gather_variable(value, group, size, *, dim=1, lengths=None):
-    """Gather unequal shards without allowing padding into attention softmax."""
+def gather_variable(value, group, size, *, dim=1, lengths=None, dst=None):
+    """Gather unequal shards, optionally returning only on global rank ``dst``.
+
+    Non-destination ranks return None for a destination-only gather. The default
+    remains all-gather for intermediate activations needed by every TP rank.
+    """
     if size == 1:
         return value
     if lengths is None:
@@ -61,6 +65,11 @@ def gather_variable(value, group, size, *, dim=1, lengths=None):
     shape[dim] = max(lengths)
     padded = value.new_zeros(shape)
     padded.narrow(dim, 0, value.shape[dim]).copy_(value)
-    outputs = [torch.empty_like(padded) for _ in range(size)]
-    dist.all_gather(outputs, padded, group=group)
+    outputs = [torch.empty_like(padded) for _ in range(size)] if dst is None or dist.get_rank() == dst else None
+    if dst is None:
+        dist.all_gather(outputs, padded, group=group)
+    else:
+        dist.gather(padded, gather_list=outputs, dst=dst, group=group)
+    if outputs is None:
+        return None
     return torch.cat([v.narrow(dim, 0, n) for v, n in zip(outputs, lengths)], dim=dim)

@@ -31,6 +31,7 @@ from pipelines.stages.eraserdit_erase._common import (
     get_task_state,
 )
 from models.adapters.eraserdit.postprocess import eraser_dit_window_output
+from utils.inference_timing import diagnostic_stage_timer
 
 
 class EraserDiTEraseWindowPostprocessStage(PipelineStage):
@@ -51,17 +52,16 @@ class EraserDiTEraseWindowPostprocessStage(PipelineStage):
 
         # [1, C, F, H, W] -> [F, C, H, W] cropped to the original frame extent.
         decoded_frames = decoded[0].permute(1, 0, 2, 3).to(torch.float32)
-        aligned_h, aligned_w = int(decoded_frames.shape[-2]), int(decoded_frames.shape[-1])
-
         # Tail retained for the *next* window's model input: raw, un-colour-fixed,
         # still at the aligned spatial size (baseline keeps the whole padded frame).
         overlap_right = int(spec.get("overlap_right", 0))
         if overlap_right > 0:
             # Frames are dim 0: this is the baseline's ``output_frames[-shift_alpha:]``,
             # which the baseline also keeps on CPU between windows.
-            state.prev_raw_tail = (
-                decoded_frames[-overlap_right:].detach().cpu().clone()
-            )
+            with diagnostic_stage_timer(batch.metrics, 'diagnostic.postprocess.raw_tail', device=decoded.device):
+                state.prev_raw_tail = (
+                    decoded_frames[-overlap_right:].detach().cpu().clone()
+                )
 
         # Baseline writes ``output_frames[shift_alpha:][:ori_frames]``: the model
         # renders the whole prefix + padded-new window, but only the newly loaded
@@ -73,29 +73,31 @@ class EraserDiTEraseWindowPostprocessStage(PipelineStage):
                 f"prefix, expected {new_frames}"
             )
         # Already [F, C, H, W], the layout the baseline hands to the colour fix.
-        generated = window_frames[..., :orig_h, :orig_w].contiguous()
-
-        aligned = eraser_dit_window_output(
-            generated,
-            style_video.to(dtype=torch.float32) / 255.0,
-            style_mask.to(dtype=torch.float32),
-            colorfix_type=str(batch.colorfix_type),
-            per_channel=bool(batch.colorfix_per_channel),
-        )
+        generated = window_frames[..., :orig_h, :orig_w]
+        if not (generated.is_cuda and str(batch.colorfix_type) == 'RGB'
+                and bool(batch.colorfix_per_channel)):
+            generated = generated.contiguous()
 
         # The prefix block is always replaced by the commit's overlap blend
         # (mode "before" restores the previously committed pixels), so it is left
         # at zero here.
-        patch = torch.zeros(
-            (input_len, 3, orig_h, orig_w),
-            dtype=torch.float32,
-            device=decoded.device,
-        )
-        patch[prefix_len : prefix_len + new_frames] = aligned.to(
-            device=decoded.device, dtype=patch.dtype
-        )
+        with diagnostic_stage_timer(batch.metrics, 'diagnostic.postprocess.output_buffer', device=decoded.device):
+            patch = torch.zeros(
+                (1, 3, input_len, orig_h, orig_w),
+                dtype=torch.float32,
+                device=decoded.device,
+            )
+        with diagnostic_stage_timer(batch.metrics, 'diagnostic.postprocess.color_correction', device=decoded.device):
+            eraser_dit_window_output(
+                generated,
+                style_video,
+                style_mask,
+                colorfix_type=str(batch.colorfix_type),
+                per_channel=bool(batch.colorfix_per_channel),
+                out=patch[0, :, prefix_len:prefix_len + new_frames].permute(1, 0, 2, 3),
+            )
 
-        batch.crop_video_modified = patch.permute(1, 0, 2, 3).unsqueeze(0).contiguous()
+        batch.crop_video_modified = patch
         batch.output_video = None
         batch.output = batch.crop_video_modified
         batch.decoded_video = None

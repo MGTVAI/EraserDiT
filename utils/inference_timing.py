@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +42,33 @@ def record_diagnostic_stage(
 ) -> None:
     if diagnostic_timing_enabled() and metrics is not None:
         metrics.record_stage(stage_name, duration_s)
+
+
+@contextmanager
+def diagnostic_stage_timer(metrics, stage_name, *, device=None):
+    """Opt-in wall timing, including queued CUDA work inside the region.
+
+    Normal inference adds no synchronization. Diagnostic regions are nested
+    inside stage timings and must not be added to them as independent work.
+    """
+    if not diagnostic_timing_enabled() or metrics is None:
+        yield
+        return
+    sync = None
+    if device is not None:
+        import torch
+        device = torch.device(device)
+        if device.type == 'cuda':
+            sync = lambda: torch.cuda.synchronize(device)
+    if sync:
+        sync()
+    started = time.perf_counter()
+    try:
+        yield
+    finally:
+        if sync:
+            sync()
+        metrics.record_stage(stage_name, time.perf_counter() - started)
 
 
 def _step_stats(metrics: RequestMetrics | None) -> dict[str, Any]:

@@ -94,6 +94,9 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 ERASERDIT_TEST_DIT_NCCL=1 OMP_NUM_THREADS=1 \
 ```
 
 包含不等长 Ulysses/Ring、TP 权重分片、FSDP、混合 USP、父进程组隔离和 worker 故障清理。
+输出汇聚检查同时运行全 rank 返回与仅 owner 返回，要求同拓扑结果逐元素一致；
+进程池检查 CFG 合并前移后与原 FP32 运算逐元素一致，覆盖 guidance 0/1/7.5、窗口形状切换和返回字节数。
+四卡额外运行 `test_process_pool_cfg_sp_guided`，覆盖 CFG2×SP2 的真实进程池路径。
 严格 Flash 数值 profile 检查限定 A100 / PyTorch 2.6；跳过不代表其他设备已完成效果验收。
 无 GPU 时可设置 `ERASERDIT_TEST_DIT_PROCESSES=1` 运行 Gloo 小模型矩阵。
 整片 SSIM 与性能记录见 [NCCL 并行验收](../docs/distributed_parallel_20260928.md)。

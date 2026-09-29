@@ -21,7 +21,7 @@ class DiTRankRunner:
     def reset(self):
         self.static = self.rotary = None
 
-    def predict(self, packet):
+    def predict(self, packet, *, owner_only=False):
         if packet['static'] is not None:
             self.static = packet['static']
             self.rotary = None
@@ -30,6 +30,9 @@ class DiTRankRunner:
             raise RuntimeError('first step requires window static conditions')
         topology = self.groups.topology
         cfg_rank = self.groups.coordinates[3]
+        # TP and FSDP replicas must still execute every forward/collective, but
+        # their identical final outputs need not be assembled and returned.
+        output_rank = not owner_only or (self.groups.coordinates[0] == 0 and self.groups.coordinates[4] == 0)
         branches = ('positive', 'negative') if topology.cfg == 1 else (('positive',) if cfg_rank == 0 else ('negative',))
         outputs = {}
         with torch.no_grad(), torch.autocast(hidden.device.type, dtype=torch.bfloat16, enabled=hidden.is_cuda):
@@ -42,20 +45,34 @@ class DiTRankRunner:
                 with scope:
                     output = self.model(**values, hidden_states=hidden, timestep=timestep,
                                         image_rotary_emb=self.rotary, sequence_parallel=self.sequence)[0]
+                self.forwards += 1
+                if not output_rank:
+                    continue
                 if self.sequence:
                     group, ranks, _ = self.groups.get('sp')
                     lengths = tuple(self.sequence._length(i) for i in range(len(ranks)))
-                    output = gather_variable(output, group, len(ranks), dim=1, lengths=lengths)
+                    output = gather_variable(output, group, len(ranks), dim=1, lengths=lengths,
+                                             dst=ranks[0] if owner_only else None)
+                    if output is None:
+                        continue
                     from models.dits.eraserdit_transformer import unpack_latents
                     output = unpack_latents(output, values['num_frames'], values['height'], values['width'],
                                             self.model.config.patch_size, self.model.config.patch_size_t)
                 outputs[branch] = output.float()
-                self.forwards += 1
+        if not output_rank:
+            return None
+        if owner_only and self.sequence and self.sequence.rank != 0:
+            return None
         if topology.cfg == 2:
             group, ranks, _ = self.groups.get('cfg')
             local = outputs[branches[0]].contiguous()
-            pair = [torch.empty_like(local) for _ in ranks]
-            dist.all_gather(pair, local, group=group)
+            pair = [torch.empty_like(local) for _ in ranks] if not owner_only or self.groups.rank == ranks[0] else None
+            if owner_only:
+                dist.gather(local, gather_list=pair, dst=ranks[0], group=group)
+                if pair is None:
+                    return None
+            else:
+                dist.all_gather(pair, local, group=group)
             return pair[1], pair[0]
         return outputs['negative'], outputs['positive']
 

@@ -93,6 +93,7 @@ def _worker(rank, plan, args, model_spec, connection, rendezvous):
                             lambda name, module: name.startswith('transformer_blocks.') and name.count('.') == 1])
         from models.adapters.eraserdit.nccl_runner import DiTRankRunner
         runner = DiTRankRunner(model, groups, config)
+        gpu_timings = []
         connection.send(('ready', runner.report()))
         while True:
             # Wait on each rank's local pipe, not a collective: an idle
@@ -103,19 +104,40 @@ def _worker(rank, plan, args, model_spec, connection, rendezvous):
                 break
             if command == 'reset':
                 runner.reset()
+                gpu_timings.clear()
                 torch.cuda.reset_peak_memory_stats(device)
                 dist.barrier(group=groups.control)
                 if rank == 0:
                     connection.send(('ok', None))
             elif command == 'predict':
+                events = [torch.cuda.Event(enable_timing=True) for _ in range(3)]
+                events[0].record()
                 packet = _broadcast_packet(message[1] if rank == 0 else None, groups, device)
-                negative, positive = runner.predict(packet)
+                events[1].record()
+                outputs = runner.predict(packet, owner_only=True)
                 if rank == 0:
-                    connection.send(('ok', (negative.cpu(), positive.cpu())))
-                del packet, negative, positive
+                    guidance_scale = packet.get('guidance_scale')
+                    if guidance_scale is not None:
+                        negative, positive = outputs
+                        # Keep the owner's FP32 operation order, without a
+                        # fused add or reduced-precision intermediate.
+                        outputs = negative + guidance_scale * (positive - negative)
+                        del negative, positive
+                events[2].record()
+                gpu_timings.append(events)
+                if rank == 0:
+                    connection.send(('ok', tree_map(lambda value: value.cpu(), outputs)))
+                del packet, outputs
             elif command == 'report':
+                if gpu_timings:
+                    gpu_timings[-1][-1].synchronize()
+                report = runner.report()
+                report['window_gpu_seconds'] = {
+                    'input_broadcast': sum(e[0].elapsed_time(e[1]) for e in gpu_timings) / 1000,
+                    'forward_and_output_gather': sum(e[1].elapsed_time(e[2]) for e in gpu_timings) / 1000,
+                }
                 reports = [None] * plan['topology'].world_size
-                dist.all_gather_object(reports, runner.report(), group=groups.control)
+                dist.all_gather_object(reports, report, group=groups.control)
                 if rank == 0:
                     connection.send(('ok', reports))
             else:
@@ -232,22 +254,42 @@ class DiTProcessWindow:
         self.pool, self.plan = pool, plan
         self.steps = 0
         self.active = True
+        self.boundary_seconds = dict(input_to_cpu=0., worker_roundtrip=0., output_to_device=0.)
+        self.boundary_bytes = dict(input=0, output=0)
 
     def __enter__(self):
         self.pool.call('reset')
         return self
 
     def predict(self, negative, positive):
+        return self._predict(negative, positive)
+
+    def predict_guided(self, negative, positive, guidance_scale):
+        """Return one FP32 guided prediction, reducing boundary output by half."""
+        return self._predict(negative, positive, guidance_scale=float(guidance_scale))
+
+    def _predict(self, negative, positive, guidance_scale=None):
         static = None
         if self.steps == 0:
             static = {name: {key: value for key, value in values.items()
                             if key not in ('hidden_states', 'timestep', 'image_rotary_emb')}
                       for name, values in (('negative', negative), ('positive', positive))}
         packet = dict(static=static, hidden=positive['hidden_states'], timestep=positive['timestep'])
+        if guidance_scale is not None:
+            packet['guidance_scale'] = guidance_scale
+        started = time.perf_counter()
         packet = tree_map(lambda value: value.detach().cpu() if isinstance(value, torch.Tensor) else value, packet)
+        self.boundary_seconds['input_to_cpu'] += time.perf_counter() - started
+        self.boundary_bytes['input'] += sum(v.numel() * v.element_size() for v in tree_flatten(packet)[0]
+                                            if isinstance(v, torch.Tensor))
+        started = time.perf_counter()
         outputs = self.pool.call('predict', packet)
+        self.boundary_seconds['worker_roundtrip'] += time.perf_counter() - started
+        self.boundary_bytes['output'] += sum(v.numel() * v.element_size() for v in tree_flatten(outputs)[0])
         device = positive['hidden_states'].device
-        result = tuple(value.to(device) for value in outputs)
+        started = time.perf_counter()
+        result = tree_map(lambda value: value.to(device), outputs)
+        self.boundary_seconds['output_to_device'] += time.perf_counter() - started
         self.steps += 1
         return result
 
@@ -257,6 +299,8 @@ class DiTProcessWindow:
                     cfg_degree=topology.cfg, sp_degree=topology.sp, tp_degree=topology.tp,
                     ulysses_degree=topology.ulysses, ring_degree=topology.ring,
                     ring_attention_mode=self.plan['ring_attention_mode'],
+                    output_assembly='owner_only',
+                    boundary_wall_seconds=dict(self.boundary_seconds), boundary_tensor_bytes=dict(self.boundary_bytes),
                     worker_setup_seconds=self.pool.setup_seconds, rank_reports=self.pool.call('report'))
 
     def __exit__(self, *exc):
