@@ -21,6 +21,73 @@ from models.adapters.eraserdit.vae import tiled_vae
 from utils.determinism import enable_deterministic_mode
 
 
+def assert_vae_close(actual, expected):
+    """Local BF16 convolutions need not be bitwise identical to full-height ones."""
+    actual, expected = actual.float(), expected.float()
+    torch.testing.assert_close(actual, expected, rtol=0.02, atol=0.15)
+    relative_rmse = (actual - expected).square().mean().sqrt() / expected.square().mean().sqrt().clamp_min(1e-8)
+    if relative_rmse.item() > 0.01:
+        raise AssertionError(f"VAE relative RMSE exceeds 1%: {relative_rmse.item()}")
+
+
+@unittest.skipUnless(os.environ.get("ERASERDIT_TEST_TWO_GPU") == "1", "explicit GPU opt-in")
+class VAEHaloTests(unittest.TestCase):
+    def test_local_convolution_boundaries_and_reused_storage(self):
+        from models.adapters.eraserdit.vae_spatial import SpatialExchange
+        from models.vaes.eraserdit_vae import LTXVideoCausalConv3d
+
+        enable_deterministic_mode()
+        torch.manual_seed(42)
+        # FP32 isolates halo correctness from accumulated BF16 rounding.
+        # Non-default streams, uneven shards, one-row shards, global edges,
+        # causal/noncausal time padding, and pointwise (no exchange) kernels.
+        # Four logical ranks on two GPUs also exercise both-neighbor exchange.
+        with torch.backends.cudnn.flags(enabled=True, allow_tf32=False, deterministic=True):
+            for causal in (True, False):
+                for kernel in (1, 3):
+                    model = LTXVideoCausalConv3d(4, 4, kernel, is_causal=causal).cuda(0).eval()
+                    peer = LTXVideoCausalConv3d(4, 4, kernel, is_causal=causal).cuda(1).eval()
+                    peer.load_state_dict(model.state_dict())
+                    for boundaries in ((0, 1, 11), (0, 5, 11), (0, 1, 3, 6, 11)):
+                        degree = len(boundaries) - 1
+                        value = torch.randn(1, 4, 5, 11, 7, device="cuda:0")
+                        for device in (0, 1):
+                            torch.cuda.synchronize(device)
+                        exchange = SpatialExchange(degree)
+                        outputs = [[] for _ in range(degree)]
+
+                        def work(rank):
+                            device = torch.device("cuda", rank % 2)
+                            stream = torch.cuda.Stream(device=device)
+                            with torch.cuda.device(device), torch.cuda.stream(stream), torch.no_grad():
+                                local = value[..., boundaries[rank]:boundaries[rank + 1], :]
+                                local = local.to(device).clone()
+                                component = model if rank % 2 == 0 else peer
+                                for step in range(3):
+                                    # Reuse source storage after the prior exchange.
+                                    local.add_(0.125)
+                                    seen_heights = []
+                                    def original(x):
+                                        seen_heights.append(x.shape[-2])
+                                        return component(x)
+                                    output = exchange.convolution(rank, local, original, kernel // 2)
+                                    self.assertEqual(seen_heights, [local.shape[-2] + 2 * (kernel // 2)])
+                                    outputs[rank].append(output)
+                                stream.synchronize()
+
+                        model.conv.padding = peer.conv.padding = (0, 0, kernel // 2)
+                        with ThreadPoolExecutor(max_workers=degree) as pool:
+                            list(pool.map(work, range(degree)))
+                        model.conv.padding = peer.conv.padding = (0, kernel // 2, kernel // 2)
+                        with torch.no_grad():
+                            for step in range(3):
+                                value.add_(0.125)
+                                expected = model(value)
+                                actual = torch.cat([outputs[r][step].to("cuda:0") for r in range(degree)], dim=-2)
+                                torch.testing.assert_close(actual, expected, rtol=2e-5, atol=2e-6)
+                        self.assertEqual(exchange.calls, [3] * degree)
+
+
 @unittest.skipUnless(os.environ.get("ERASERDIT_TEST_TWO_GPU") == "1", "explicit GPU opt-in")
 class GPUParallelTests(unittest.TestCase):
     def setUp(self):
@@ -120,26 +187,48 @@ class GPUParallelTests(unittest.TestCase):
         # Uneven spatial shards (5 latent rows -> 2 + 3) preserve untiled
         # convolution boundary context, posterior moments and decoded frames.
         args.pipeline_config.vae_tiling = False
-        # Both uneven shards and larger reduction layouts must stay exact.
+        # Local convolution shapes can select different BF16 cuDNN kernels.
         for frames, height in ((9, 160), (17, 320)):
             value = torch.randn(1, 3, frames, height, 192, device="cuda:0", dtype=torch.bfloat16)
             with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
                 expected = vae.encoder(value)
                 actual = tiled_vae(vae, value, args, batch, operation="encode").parameters
-                torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+                assert_vae_close(actual, expected)
                 latents = actual[:, :128]
                 expected = vae.decoder(latents, temb)
                 actual = tiled_vae(vae, latents, args, batch, operation="decode", temb=temb)
-                torch.testing.assert_close(actual, expected, rtol=0, atol=0)
-        self.assertEqual(batch.extra["vae_parallel_encode"]["algorithm"], "spatial_halo_reference")
+            # Random-image encoder means are a numerically sensitive decoder
+            # stress input. Compare both BF16 paths to FP32, rather than treating
+            # one BF16 kernel's rounding as ground truth or widening allclose.
+            with torch.no_grad(), torch.backends.cudnn.flags(enabled=True, allow_tf32=False, deterministic=True):
+                try:
+                    vae.decoder.float()
+                    precise = vae.decoder(latents.float(), temb.float())
+                finally:
+                    vae.decoder.bfloat16()
+            baseline_error = (expected.float() - precise).square()
+            parallel_error = (actual.float() - precise).square()
+            self.assertTrue(torch.isfinite(parallel_error).all().item())
+            self.assertLessEqual(parallel_error.mean().sqrt().item(),
+                                 baseline_error.mean().sqrt().item() * 1.1 + 1e-6)
+            self.assertLessEqual(parallel_error.max().sqrt().item(),
+                                 baseline_error.max().sqrt().item() * 1.25 + 1e-6)
+            boundary = height // 32 // 2 * 32
+            self.assertLessEqual(parallel_error[..., boundary-1:boundary+1, :].mean().sqrt().item(),
+                                 baseline_error[..., boundary-1:boundary+1, :].mean().sqrt().item() * 1.25 + 1e-6)
+        self.assertEqual(batch.extra["vae_parallel_encode"]["algorithm"], "spatial_halo")
         with patch.object(vae.encoder.conv_in.conv, "forward", side_effect=RuntimeError("injected VAE")):
             with self.assertRaises(Exception):
                 tiled_vae(vae, value, args, batch, operation="encode")
-        self.assertFalse(any(hasattr(m, "_parallel_spatial_layout") for m in vae.encoder.modules()))
+        from models.vaes.eraserdit_vae import LTXVideoCausalConv3d
+        for module in vae.encoder.modules():
+            if isinstance(module, LTXVideoCausalConv3d):
+                self.assertNotIn("forward", module.__dict__)
+                self.assertEqual(module.conv.padding[1], module.kernel_size[1] // 2)
         with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
             expected = vae.encoder(value)
             actual = tiled_vae(vae, value, args, batch, operation="encode").parameters
-            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+            assert_vae_close(actual, expected)
 
 
 @unittest.skipUnless(os.environ.get('ERASERDIT_TEST_MESH') == '1' and torch.cuda.device_count() >= 4,
@@ -170,6 +259,8 @@ class PeerExchangeGpuTests(unittest.TestCase):
                         torch.testing.assert_close(result, values[0], rtol=0, atol=0)
                     self.assertEqual(group.calls[rank], 6)
                     self.assertEqual(group.direct_copies[rank], 12 if length > 1000 else 0)
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                list(pool.map(worker, range(4)))
 
 
 @unittest.skipUnless(os.environ.get("ERASERDIT_TEST_VAE_BENCHMARK") == "1",
@@ -214,6 +305,7 @@ class VAESpatialBenchmarkTests(unittest.TestCase):
                 "models/vaes/eraserdit_vae.py", "models/adapters/eraserdit/vae.py",
                 "models/adapters/eraserdit/vae_spatial.py", "tests/test_mesh_gpu.py")},
             scope="isolated VAE, BF16, no tiling/compile/offload; includes replica setup",
+            tolerances=dict(rtol=0.02, atol=0.15, relative_rmse=0.01, seam_relative_rmse=0.02, ssim_min=0.99),
             stages={},
         )
 
@@ -248,6 +340,12 @@ class VAESpatialBenchmarkTests(unittest.TestCase):
             seconds = time.perf_counter() - started
             tensor = output.parameters if operation == "encode" else output
             peaks = [torch.cuda.max_memory_allocated(d) for d in devices]
+            if degree == 2:
+                metadata = batch.extra[f"vae_parallel_{operation}"]
+                self.assertEqual(metadata["effective_degree"], 2)
+                self.assertEqual(metadata["algorithm"], "spatial_halo")
+                self.assertGreater(metadata["convolutions_per_rank"][0], 0)
+                self.assertEqual(*metadata["convolutions_per_rank"])
             item = dict(
                 degree=degree, seconds=seconds, baseline_allocated_bytes=before,
                 peak_allocated_bytes=peaks,
@@ -264,17 +362,59 @@ class VAESpatialBenchmarkTests(unittest.TestCase):
 
         def difference(actual, expected):
             self.assertEqual(actual.shape, expected.shape)
+            # Include the partition boundary explicitly; an average over the
+            # entire video can otherwise conceal a narrow seam.
+            boundary = (height // 32 // 2) * (32 if actual.shape[-2] == height else 1)
+            seam_a = actual[..., max(0, boundary - 1):boundary + 1, :].float()
+            seam_b = expected[..., max(0, boundary - 1):boundary + 1, :].float()
+            seam_rmse = (seam_a - seam_b).square().mean().sqrt().item()
             actual, expected = actual.reshape(-1), expected.reshape(-1)
             maximum, absolute_sum, different, finite = 0.0, 0.0, 0, True
+            squared_sum, reference_squared_sum, outside_tolerance = 0.0, 0.0, 0
             for start in range(0, actual.numel(), 1_048_576):
                 a, b = actual[start:start + 1_048_576].float(), expected[start:start + 1_048_576].float()
                 delta = (a - b).abs()
                 finite = finite and bool(torch.isfinite(delta).all())
                 maximum = max(maximum, delta.max().item())
                 absolute_sum += delta.double().sum().item()
+                squared_sum += delta.double().square().sum().item()
+                reference_squared_sum += b.double().square().sum().item()
+                outside_tolerance += torch.count_nonzero(delta > 0.15 + 0.02 * b.abs()).item()
                 different += torch.count_nonzero(a != b).item()
+            reference_rms = max((reference_squared_sum / actual.numel()) ** 0.5, 1e-8)
             return dict(max_abs=maximum, mean_abs=absolute_sum / actual.numel(),
+                        relative_rmse=(squared_sum / actual.numel()) ** 0.5 / reference_rms,
+                        seam_relative_rmse=seam_rmse / reference_rms,
+                        outside_tolerance=outside_tolerance,
                         different_elements=different, finite=finite)
+
+        def acceptable(item, degree):
+            if not item["finite"]:
+                return False
+            if degree == 1:
+                return item["different_elements"] == 0
+            return (item["outside_tolerance"] == 0 and item["relative_rmse"] <= 0.01
+                    and item["seam_relative_rmse"] <= 0.02)
+
+        def decoded_quality(actual, expected):
+            import cv2
+            import numpy as np
+            cv2.setNumThreads(1)
+            scores, seams = [], []
+            boundary = height // 32 // 2 * 32
+            for frame in range(actual.shape[2]):
+                a, b = [(v[0, :, frame].float().clamp(-1, 1).permute(1, 2, 0).numpy() + 1) * 127.5
+                        for v in (actual, expected)]
+                def blur(x):
+                    return cv2.GaussianBlur(x, (11, 11), 1.5, borderType=cv2.BORDER_REFLECT)
+                ma, mb = blur(a), blur(b)
+                va, vb, cov = blur(a * a) - ma * ma, blur(b * b) - mb * mb, blur(a * b) - ma * mb
+                ssim = ((2 * ma * mb + 2.55**2) * (2 * cov + 7.65**2)
+                        / ((ma * ma + mb * mb + 2.55**2) * (va + vb + 7.65**2)))
+                scores.append(float(ssim.mean(dtype=np.float64)))
+                seams.append(float(ssim[max(0, boundary - 16):boundary + 16].mean(dtype=np.float64)))
+            return dict(mean_ssim=statistics.mean(scores), min_frame_ssim=min(scores),
+                        seam_ssim=statistics.mean(seams))
 
         failures = []
         try:
@@ -304,6 +444,12 @@ class VAESpatialBenchmarkTests(unittest.TestCase):
                         reference = actual
                     else:
                         item["difference"] = difference(actual, reference)
+                        if not acceptable(item["difference"], degree):
+                            failures.append((operation, degree, "warmup", item["difference"]))
+                        if operation == "decode":
+                            stage["quality"] = decoded_quality(actual, reference)
+                            if min(stage["quality"].values()) < 0.99:
+                                failures.append((operation, degree, "quality", stage["quality"]))
                     stage["warmup"].append(item)
                     del actual
                     save()
@@ -314,7 +460,7 @@ class VAESpatialBenchmarkTests(unittest.TestCase):
                         item["repeat"] = repeat
                         item["difference"] = difference(actual, reference)
                         stage["samples"].append(item)
-                        if not item["difference"]["finite"] or item["difference"]["different_elements"]:
+                        if not acceptable(item["difference"], degree):
                             failures.append((operation, degree, repeat, item["difference"]))
                         del actual
                         save()
@@ -333,14 +479,12 @@ class VAESpatialBenchmarkTests(unittest.TestCase):
                 save()
                 del reference, value, temb
                 cleanup()
-            self.assertFalse(failures, f"spatial reference path changed output: {failures}")
+            self.assertFalse(failures, f"spatial VAE exceeded numerical tolerances: {failures}")
         finally:
             report["output_mismatches"] = failures
             save()
             del vae
             cleanup()
-            with ThreadPoolExecutor(max_workers=4) as pool:
-                list(pool.map(worker, range(4)))
 
 
 if __name__ == "__main__":

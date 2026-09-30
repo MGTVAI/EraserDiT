@@ -77,7 +77,13 @@ CacheDiT 需关闭 DiT 逐层卸载；隔离残差缓存收益时同时关闭文
 | peer（默认） | `--cfg-degree 2` 或 `--sp-degree 2` | 单任务 CFG/SP；常驻 DiT，可使用支持的局部编译与缓存组合 |
 | NCCL DiT 进程池 | `--dit-parallel-backend nccl` | CFG、Ulysses、Ring/USP、TP、FSDP/HSDP；BF16、SDPA，关闭编译、量化、融合和全部 Transformer 缓存 |
 | DP dispatcher | `entrypoints.cli.erase_parallel --dp-degree N` | 将独立视频分配给不同 GPU 组；当前要求 Transformer 缓存关闭 |
-| VAE 并行 | `--vae-degree 2 / 4` | 保留编解码并行入口；不能与组件卸载或 VAE 编译组合 |
+| VAE 并行 | `--vae-degree 2 / 4` | 未启用 tiling 时按高度分片、逐层交换边界；不能与组件卸载或 VAE 编译组合 |
+
+VAE 空间并行保留完整时间上下文，在局部分片上执行卷积、归一化和下采样。
+BF16 卷积形状变化可能改变舍入结果；双卡速度、显存和解码质量见
+[VAE 空间并行验证](vae_spatial_validation_20260929.md)。开启 `--vae-tiling` 仍使用独立的重叠 tile 路径。
+完整视频的[端到端验证](vae_e2e_validation_20260930.md)中，主卡 allocated 峰值降低 24.7%，
+但整片 SSIM 为 0.98313，未达到 0.99；独立解码器的一致性不能代表经过 DiT 后的整片结果。
 
 NCCL 的 `sp_degree = ulysses_degree × ring_degree`；TP 与 FSDP 不同时管理同一权重。
 使用 FSDP/HSDP 时以 `--dit-fsdp-shard-degree` / `--dit-fsdp-replicate-degree` 配置，

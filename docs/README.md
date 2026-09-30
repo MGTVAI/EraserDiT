@@ -26,6 +26,8 @@
 
 | 日期 | 记录 | 范围 |
 | --- | --- | --- |
+| 2026-09-30 | [双卡 VAE 端到端验证](vae_e2e_validation_20260930.md) | 完整视频各三次、逐卡峰值降低；整片 SSIM 0.98313，未达到 0.99 |
+| 2026-09-29 | [双卡 VAE 空间并行](vae_spatial_validation_20260929.md) | 局部卷积、边界交换、编解码性能与逐卡峰值、数值及接缝验证 |
 | 2026-09-29 | [单卡缓存检查](single_gpu_cache_audit_20260929.md) | TeaCache / CacheDiT 实现、完整擦除与单素材视觉检查 |
 | 2026-09-29 | [NCCL 边界优化](nccl_boundary_optimization_20260929.md) | owner 输出汇聚、CFG 合并、返回字节与分段计时 |
 | 2026-09-28 | [NCCL 并行实施与验收](distributed_parallel_20260928.md) | DP/CFG/SP/USP/TP/FSDP/HSDP，整片 SSIM ≥0.985 |

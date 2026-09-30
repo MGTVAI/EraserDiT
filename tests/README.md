@@ -59,6 +59,11 @@ CUDA_VISIBLE_DEVICES=0,1 ERASERDIT_TEST_TWO_GPU=1 \
 ```
 
 不设置 `ERASERDIT_TEST_MODEL` 会跳过真实 VAE checkpoint 测试。
+单/双卡 VAE 性能与显存对照单独设置 `ERASERDIT_TEST_VAE_BENCHMARK=1`，运行
+`uv run --no-project python -m unittest tests.test_mesh_gpu.VAESpatialBenchmarkTests -v`。
+测试分别预热、交替测量编码/解码，记录 BF16 误差并检查解码及接缝 SSIM；性能不设强制提升门槛。
+输入形状、真实输入 fixture 与结果说明见 [双卡 VAE 验证](../docs/vae_spatial_validation_20260929.md)。
+`VAEHaloTests` 覆盖 FP32 边界、非默认 stream 和源存储复用；真实权重回归包含 FP32 精度对照及异常恢复。
 四卡检查沿用 `ERASERDIT_TEST_TWO_GPU=1`，暴露四张设备，运行 `test_mesh_gpu.py`；
 该文件根据可见设备数执行四卡组合。
 本轮新增大张量直写回归，使用 `ERASERDIT_TEST_MESH=1` 并暴露四卡启用，
