@@ -124,6 +124,8 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="explicit spatial tiling; numerics differ from untiled VAE")
     parser.add_argument("--vae-tile-size", type=int, default=512)
     parser.add_argument("--vae-tile-stride", type=int, default=448)
+    parser.add_argument("--vae-low-memory", action=argparse.BooleanOptionalAction, default=False,
+                        help="bound VAE normalization/convolution temporaries with full spatial/temporal context")
     parser.add_argument(
         "--runtime-mode",
         type=str,
@@ -191,6 +193,7 @@ def _build_server_args(args: argparse.Namespace) -> ServerArgs:
         sp_linear_mode=args.sp_linear_mode,
         parallel_devices=args.parallel_devices, vae_tiling=args.vae_tiling,
         vae_tile_size=args.vae_tile_size, vae_tile_stride=args.vae_tile_stride,
+        vae_low_memory=args.vae_low_memory,
     )
     return ServerArgs(
         model_path=str(Path(args.model_path).expanduser().resolve()),

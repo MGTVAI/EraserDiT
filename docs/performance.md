@@ -16,6 +16,7 @@
 | 全驻留对照 | 上一行再加 `--no-text-encoder-cpu-offload --no-vae-cpu-offload` | 需要更多权重显存 |
 | DiT 整组件卸载 | `--no-dit-layerwise-offload --dit-cpu-offload` | 不与逐层卸载同时开启 |
 | 降低 VAE 激活峰值 | `--vae-tiling` | 近似路径，默认关闭；需独立检查画面与接缝 |
+| 24 GiB 显存预算 | `--vae-low-memory` | VAE 归一化与卷积按算子分批，保留完整时空邻域；搭配默认权重卸载，见[运行与验证](memory24_20260930.md) |
 
 `--dit-offload-prefetch-size 0` 表示预取一层；没有旧版字节预算参数。
 卸载仅减少权重驻留，不能消除输入、激活或 VAE 峰值。单卡逐层卸载支持局部 FFN 编译和 TeaCache，

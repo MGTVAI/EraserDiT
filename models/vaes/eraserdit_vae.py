@@ -25,11 +25,13 @@ from diffusers.models.activations import get_activation
 from diffusers.models.embeddings import PixArtAlphaCombinedTimestepSizeEmbeddings
 from diffusers.models.modeling_outputs import AutoencoderKLOutput
 from diffusers.models.modeling_utils import ModelMixin
-from diffusers.models.normalization import RMSNorm
+from models.vaes.memory import ChunkedRMSNorm as RMSNorm
 from diffusers.models.autoencoders.vae import DecoderOutput, DiagonalGaussianDistribution
 
 
 class LTXVideoCausalConv3d(nn.Module):
+    chunk_size = 0
+
     def __init__(
         self,
         in_channels: int,
@@ -66,6 +68,9 @@ class LTXVideoCausalConv3d(nn.Module):
         )
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        if self.chunk_size and not torch.is_grad_enabled() and hidden_states.numel() > self.chunk_size:
+            from models.vaes.memory import chunked_causal_conv
+            return chunked_causal_conv(self, hidden_states)
         time_kernel_size = self.kernel_size[0]
 
         if self.is_causal:
@@ -222,7 +227,10 @@ class LTXVideoDownsampler3d(nn.Module):
         )
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        hidden_states = torch.cat([hidden_states[:, :, : self.stride[0] - 1], hidden_states], dim=2)
+        # Spatial-only downsampling has no temporal prefix. Avoid a full-size
+        # copy of the activations in the low-memory inference path.
+        if self.stride[0] != 1 or not self.conv.chunk_size or torch.is_grad_enabled():
+            hidden_states = torch.cat([hidden_states[:, :, : self.stride[0] - 1], hidden_states], dim=2)
 
         residual = (
             hidden_states.unflatten(4, (-1, self.stride[2]))

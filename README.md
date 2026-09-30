@@ -27,7 +27,7 @@
 
 | 方向 | 能力 |
 | --- | --- |
-| **降低显存** | DiT 逐层预取与卸载、T5 FSDP CPU offload、VAE 组件卸载；窗口调度、帧缓存释放和可选 VAE 分块 |
+| **降低显存** | DiT 逐层预取与卸载、T5 FSDP CPU offload、VAE 组件卸载；窗口调度、帧缓存释放，可选 VAE 算子分批与分块 |
 | **加速单卡计算** | SDPA / FlashAttention / SageAttention；Triton QK RoPE、AdaLN 与残差融合；FFN、完整 DiT 及 T5/VAE 编译 |
 | **减少重复计算** | 文本编码、RoPE 与文本投影复用；TeaCache / CacheDiT 残差缓存；可选尾窗口减填充 |
 | **多卡单任务** | peer CFG/SP 与独立 NCCL DiT 后端，支持 Ulysses、Ring/USP、TP、FSDP/HSDP 及组合；VAE 编解码支持高度分片与逐层边界交换 |
@@ -143,6 +143,10 @@ CUDA_VISIBLE_DEVICES=0 HF_HUB_OFFLINE=1 uv run --no-project python -m entrypoint
 ```
 
 ## 常用优化配置
+
+24 GiB 显存预算使用 `--vae-low-memory` 并保留默认卸载，完整命令及质量差异见
+[单卡低显存验证](docs/memory24_20260930.md)。1080p 示例已通过 A100 上的 22 GiB
+分配器限额测试；尚未进行 24G 消费卡实测。
 
 双卡 peer CFG 全驻留示例（SageAttention 和 TeaCache 均需按素材检查质量）：
 

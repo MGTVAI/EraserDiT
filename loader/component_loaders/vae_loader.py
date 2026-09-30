@@ -39,4 +39,6 @@ class VAELoader(ComponentLoader):
         vae, loading_info = load_safetensors_model(
             lambda: model_cls.from_config(config), component_model_path, dtype=dtype,
         )
+        from models.vaes.memory import configure_vae_memory
+        configure_vae_memory(vae, getattr(server_args.pipeline_config, 'vae_low_memory', False))
         return vae, loading_info

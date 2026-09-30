@@ -27,6 +27,7 @@ CUDA_VISIBLE_DEVICES='' ERASERDIT_TEST_TWO_GPU=0 ERASERDIT_TEST_INT8=0 \
 | `test_runtime_boundaries.py` | 分布式状态与日志判断、资源策略回退、视频 IO；预加载/流式窗口顺序、重叠、跳过、多对象传递和提交异常释放 |
 | `test_prepost_boundaries.py` | EraserDiT 预/后处理导入契约、patch 行为、通用裁剪独立导入 |
 | `test_memory_lifetimes.py` | mask 分批与完整处理的 CPU/GPU 数值一致性、进入 VAE 前视频引用释放 |
+| `test_vae_memory.py` | VAE 分批归一化、卷积完整邻域与边界、下采样、梯度回退及 CLI/服务参数 |
 | `test_static_condition_reuse.py` | 请求内文本编码缓存失效和隔离、预计算 RoPE 的 CPU/GPU 数值一致性 |
 | `test_operator_fusion_precision.py` | QK RoPE、gated residual 舍入一致性，布局/梯度回退，完整 block 与文本缓存、逐层卸载组合 |
 | `test_service_api.py` | HTTP 契约、任务和产物；使用 scheduler stub，无权重 |

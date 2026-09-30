@@ -123,6 +123,7 @@ CUDA_VISIBLE_DEVICES=0 uv run --no-project python -m entrypoints.cli.erase_erase
 | `--infer-len` / `--overlap` | `121` / `9`，窗口长度与重叠帧数 |
 | `--dtype` | `bf16` |
 | `--dit-layerwise-offload` | 默认开启，使用 SGLang 原生循环预取 |
+| `--vae-low-memory` | 默认关闭；VAE 归一化、卷积分批并保留完整邻域，搭配默认卸载用于 [24 GiB 显存预算](memory24_20260930.md) |
 | `--text-encoder-cpu-offload` / `--vae-cpu-offload` | 默认开启，分别使用 T5 FSDP 和 VAE 组件搬运 |
 | `--pin-cpu-memory` | 默认开启；无 DiT 字节预算参数 |
 | `--dit-offload-prefetch-size` | 默认 0，代表一层；[0,1) 为层数比例，≥1 为整数层数 |

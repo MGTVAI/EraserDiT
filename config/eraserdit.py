@@ -47,6 +47,7 @@ class EraserDiTPipelineConfig:
     vae_degree: int = 1
     parallel_devices: tuple[int, ...] | None = None
     vae_tiling: bool = False
+    vae_low_memory: bool = False
     vae_tile_size: int = 512
     vae_tile_stride: int = 448
     # The adapter declares its own component class names instead of
