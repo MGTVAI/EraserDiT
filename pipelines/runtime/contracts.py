@@ -318,6 +318,7 @@ class EraseRuntimeContext:
     final_window_output_cache: ArrayFrameCache | ChunkedFrameCache | TensorFrameCache | None = None
     next_write_index: int = 0
     mask_release_frontier: int = 0
+    streaming_mask_threshold: float | None = None
     distributed_metadata: dict[str, Any] = field(default_factory=dict)
     official_parallel_metadata: dict[str, Any] = field(default_factory=dict)
     runtime_timing_seconds: dict[str, float] = field(default_factory=dict)

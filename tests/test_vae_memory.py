@@ -40,6 +40,51 @@ class VAEMemoryTests(unittest.TestCase):
     def test_cuda_normalization(self):
         self.check_normalization('cuda')
 
+    def test_inplace_activations_preserve_input_and_rounding(self):
+        from unittest.mock import patch
+        from models.vaes.eraserdit_vae import LTXVideoResnetBlock3d, LTXVideoUpsampler3d
+        from models.vaes.memory import vae_modulate
+        devices = ['cpu'] + (['cuda'] if torch.cuda.is_available() else [])
+        for device in devices:
+            dtype = torch.bfloat16 if device == 'cuda' else torch.float64
+            for module in (LTXVideoResnetBlock3d(8, 8),
+                           LTXVideoDownsampler3d(8, 16, stride=(1, 2, 2)),
+                           LTXVideoDownsampler3d(8, 16, stride=(2, 2, 2)),
+                           LTXVideoUpsampler3d(8, stride=(2, 2, 2), residual=True, upscale_factor=2)):
+                module = module.to(device=device, dtype=dtype).eval()
+                x = torch.randn(1, 8, 5, 4, 6, device=device, dtype=dtype)
+                original = x.clone()
+                with torch.no_grad():
+                    expected = module(x)
+                    with patch.dict('os.environ', {'MGERASE_VAE_INPLACE_ACTIVATIONS': '1'}):
+                        configure_vae_memory(module, True)
+                    actual = module(x)
+                torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+                torch.testing.assert_close(x, original, rtol=0, atol=0)
+            x = torch.randn(1, 8, 5, 4, 6, device=device, dtype=dtype)
+            scale = torch.randn(1, 8, 1, 1, 1, device=device, dtype=dtype)
+            shift = torch.randn_like(scale)
+            with torch.no_grad():
+                expected = vae_modulate(x, scale, shift)
+                actual = vae_modulate(x.clone(), scale, shift, inplace=True)
+            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+            x.requires_grad_(True)
+            vae_modulate(x, scale, shift, inplace=True).sum().backward()
+            self.assertIsNotNone(x.grad)
+
+    def test_budget_configuration(self):
+        from config.eraserdit import EraserDiTPipelineConfig
+        model = torch.nn.Sequential(ChunkedRMSNorm(8, eps=1e-8), LTXVideoCausalConv3d(8, 8, 3))
+        configure_vae_memory(model, True, 1024)
+        self.assertEqual([m.chunk_size for m in model], [1024, 1024])
+        configure_vae_memory(model, False, 1024)
+        self.assertEqual([m.chunk_size for m in model], [0, 0])
+        for invalid in (0, -1, True, 1.5):
+            with self.assertRaises(ValueError):
+                configure_vae_memory(model, True, invalid)
+            with self.assertRaises(ValueError):
+                EraserDiTPipelineConfig(vae_chunk_elements=invalid)
+
     def test_training_fallback(self):
         reference = RMSNorm(8, eps=1e-8)
         chunked = ChunkedRMSNorm(8, eps=1e-8)
@@ -88,8 +133,9 @@ class VAEMemoryTests(unittest.TestCase):
     def test_cli_and_service_options(self):
         from entrypoints.cli.erase_eraserdit import _build_parser, _build_server_args
         parser = _build_parser()
-        args = parser.parse_args(['--model-path', 'data/model', '--vae-low-memory'])
+        args = parser.parse_args(['--model-path', 'data/model', '--vae-low-memory', '--vae-chunk-elements', '8388608'])
         self.assertTrue(_build_server_args(args).pipeline_config.vae_low_memory)
+        self.assertEqual(_build_server_args(args).pipeline_config.vae_chunk_elements, 8388608)
         self.assertFalse(parser.parse_args([]).vae_low_memory)
         from entrypoints.server.serve import _build_parser as service_parser
         service_args = service_parser().parse_args([

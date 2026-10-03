@@ -32,6 +32,7 @@ class EraserDiTVideoRequest(BaseModel):
     infer_len: int = Field(default=121, ge=9)
     overlap: int = Field(default=9, ge=0)
     compact_tail_padding: bool = False
+    streaming_cache_dtype: Literal["bf16", "uint8"] = "bf16"
     max_sequence_length: int = Field(default=128, ge=1, le=512)
     mask_dilate_iter: int = Field(default=9, ge=0)
     mask_ksize: int = Field(default=9, ge=1)
@@ -42,6 +43,7 @@ class EraserDiTVideoRequest(BaseModel):
     transformer_cache_force_compute: bool = False
     cache_text_projections: bool | None = None
     cache_residual_predictor: Literal["none", "linear"] = "none"
+    cache_probe_metric: Literal["global", "mask_frame_max"] = "global"
     teacache_threshold: float = Field(default=0.3, gt=0, allow_inf_nan=False)
     max_teacache_consecutive_skip: int = Field(default=1, ge=1)
     teacache_warmup_steps: int = Field(default=4, ge=0)

@@ -1,4 +1,7 @@
 """Ulysses x Ring on orthogonal NCCL groups, with unequal-length support."""
+import os
+from contextlib import nullcontext
+
 import torch
 import torch.distributed as dist
 
@@ -15,29 +18,59 @@ class DistributedSequenceRank(SequenceRank):
         self.calls = dict(ulysses=0, ring=0)
         self.partial_attention_dtype = None
         self.effective_attention = None
+        self.packing = os.environ.get('MGERASE_NCCL_PACKING', 'reference')
+        self.head_chunks = int(os.environ.get('MGERASE_ULYSSES_HEAD_CHUNKS', '1'))
+        self.head_overlap = True
+        self._communication_stream = None
+        if self.head_chunks not in (1, 2, 4):
+            raise ValueError('MGERASE_ULYSSES_HEAD_CHUNKS must be 1, 2 or 4')
+        self.profiler = None
+        if self.packing not in ('reference', 'packed', 'direct'):
+            raise ValueError('MGERASE_NCCL_PACKING must be reference, packed or direct')
 
     def _length(self, sp_rank):
         return self.length * (sp_rank + 1) // self.degree - self.length * sp_rank // self.degree
 
-    def _ulysses_input(self, value):
+    def _region(self, name):
+        return self.profiler.region(name) if self.profiler is not None else nullcontext()
+
+    def _ulysses_input(self, value, *, qkv=None, head_offset=0, head_count=None, asynchronous=False):
         group, ranks, urank = self.groups.get('ulysses')
         size = len(ranks)
         if size == 1:
             return value
         batch, local, heads, dim = value.shape
+        if qkv is not None:
+            batch *= 3
         if heads % size:
             raise ValueError('attention heads must be divisible by Ulysses degree')
-        h = heads // size
+        h = heads // size if head_count is None else head_count
         rrank = self.groups.coordinates[2]
         lengths = [self._length(rrank * size + u) for u in range(size)]
-        inputs = [x.contiguous().flatten() for x in value.split(h, dim=2)]
+        # Pack all destination heads in one copy instead of materializing each
+        # head shard and concatenating those shards into a second allocation.
+        with self._region('ulysses.input_pack'):
+            if qkv is not None:
+                from layers.attention.qkv_packing import pack_qkv
+                packed = pack_qkv(*qkv, size, head_offset=head_offset, head_count=head_count)
+            elif self.packing in ('packed', 'direct'):
+                packed = value.unflatten(2, (size, h)).permute(2, 0, 1, 3, 4).contiguous().view(-1)
+            else:
+                packed = torch.cat([x.contiguous().flatten() for x in value.split(h, dim=2)])
         recv_counts = [batch * length * h * dim for length in lengths]
         output = value.new_empty(sum(recv_counts))
-        dist.all_to_all_single(output, torch.cat(inputs), recv_counts,
-                               [x.numel() for x in inputs], group=group)
+        with self._region('ulysses.input_all_to_all'):
+            work = dist.all_to_all_single(output, packed, recv_counts,
+                                   [batch * local * h * dim] * size, group=group,
+                                   **({'async_op': True} if asynchronous else {}))
+            if asynchronous:
+                # NCCL wait establishes a dependency on the current CUDA
+                # stream; the host can enqueue the next head chunk.
+                work.wait()
         self.calls['ulysses'] += 1
-        return torch.cat([x.view(batch, length, h, dim) for x, length in
-                          zip(output.split(recv_counts), lengths)], dim=1)
+        with self._region('ulysses.input_unpack'):
+            return torch.cat([x.view(batch, length, h, dim) for x, length in
+                              zip(output.split(recv_counts), lengths)], dim=1)
 
     def _ulysses_output(self, value):
         group, ranks, urank = self.groups.get('ulysses')
@@ -47,14 +80,79 @@ class DistributedSequenceRank(SequenceRank):
         batch, _, heads, dim = value.shape
         rrank = self.groups.coordinates[2]
         lengths = [self._length(rrank * size + u) for u in range(size)]
-        inputs = [x.contiguous().flatten() for x in value.split(lengths, dim=1)]
+        with self._region('ulysses.output_pack'):
+            if self.packing in ('packed', 'direct') and len(set(lengths)) == 1:
+                # Equal shards require only one layout copy.
+                packed = value.unflatten(1, (size, lengths[0])).permute(1, 0, 2, 3, 4).contiguous().view(-1)
+            else:
+                packed = torch.cat([x.contiguous().flatten() for x in value.split(lengths, dim=1)])
         count = batch * lengths[urank] * heads * dim
         output = value.new_empty(count * size)
-        dist.all_to_all_single(output, torch.cat(inputs), [count] * size,
-                               [x.numel() for x in inputs], group=group)
+        with self._region('ulysses.output_all_to_all'):
+            dist.all_to_all_single(output, packed, [count] * size,
+                                   [batch * length * heads * dim for length in lengths], group=group)
         self.calls['ulysses'] += 1
-        return torch.cat([x.view(batch, lengths[urank], heads, dim)
-                          for x in output.split(count)], dim=2)
+        with self._region('ulysses.output_unpack'):
+            return torch.cat([x.view(batch, lengths[urank], heads, dim)
+                              for x in output.split(count)], dim=2)
+
+    def _head_chunk_attention(self, query, key, value, impl, metadata):
+        size = len(self.groups.get('ulysses')[1])
+        if (not query.is_cuda or self.packing != 'direct' or size < 2
+                or len(self.groups.get('ring')[1]) != 1 or torch.is_grad_enabled()
+                or query.shape[2] % (size * self.head_chunks)):
+            raise ValueError('head chunks require inference CUDA/direct Ulysses without Ring, '
+                             'and heads divisible by Ulysses degree * chunks')
+        heads = query.shape[2] // size // self.head_chunks
+        current = torch.cuda.current_stream(query.device)
+        outputs = []
+        if not self.head_overlap:
+            for chunk in range(self.head_chunks):
+                q, k, v = self._ulysses_input(query, qkv=(query, key, value),
+                    head_offset=chunk * heads, head_count=heads).chunk(3, dim=0)
+                with self._region('self_attention'):
+                    outputs.append(impl.forward(q, k, v, metadata))
+        else:
+            if self._communication_stream is None:
+                self._communication_stream = torch.cuda.Stream(device=query.device)
+            communication = self._communication_stream
+            communication.wait_stream(current)
+            # Keep cross-stream inputs alive until both streams join. Explicit
+            # retirement permits allocator reuse without record_stream's
+            # deferred event polling on every QKV allocation.
+            received_buffers = []
+            def receive_chunk(chunk):
+                with torch.cuda.stream(communication):
+                    received = self._ulysses_input(query, qkv=(query, key, value),
+                        head_offset=chunk * heads, head_count=heads, asynchronous=True)
+                    ready = torch.cuda.Event()
+                    ready.record(communication)
+                received_buffers.append(received)
+                return received, ready
+
+            try:
+                received, ready = receive_chunk(0)
+                for chunk in range(self.head_chunks):
+                    current.wait_event(ready)
+                    q, k, v = received.chunk(3, dim=0)
+                    with self._region('self_attention'):
+                        outputs.append(impl.forward(q, k, v, metadata))
+                    # Launch compute before enqueueing the next communication:
+                    # preparing every chunk first delays the first SDPA launch.
+                    if chunk + 1 < self.head_chunks:
+                        received, ready = receive_chunk(chunk + 1)
+            finally:
+                # Receives belong to communication, inputs to current. Keep
+                # all receives until their reads are ordered before reuse on
+                # the allocating stream. Record current's event BEFORE its
+                # wait on communication to avoid a cyclic dependency.
+                communication.wait_stream(current)
+                current.wait_stream(communication)
+        self.effective_attention = 'torch_sdpa_head_chunks'
+        # Restore the original head order before the existing output exchange.
+        with self._region('ulysses.head_concat'):
+            output = torch.cat(outputs, dim=2)
+        return self._ulysses_output(output)
 
     def _rotate(self, key, value, owner):
         group, ranks, rank = self.groups.get('ring')
@@ -76,16 +174,25 @@ class DistributedSequenceRank(SequenceRank):
     def attention(self, query, key, value, impl, metadata):
         if impl.causal or impl.dropout or metadata.attn_mask is not None:
             raise ValueError('distributed DiT self-attention requires unmasked noncausal SDPA with dropout=0')
+        if self.head_chunks > 1:
+            return self._head_chunk_attention(query, key, value, impl, metadata)
         if len(self.groups.get('ulysses')[1]) > 1:
             # Q/K/V have identical layouts in self-attention. Batch packing
             # keeps their reduction order unchanged while using one exchange.
-            q, k, v = self._ulysses_input(torch.cat((query, key, value), dim=0)).chunk(3, dim=0)
+            if self.packing == 'direct':
+                q, k, v = self._ulysses_input(query, qkv=(query, key, value)).chunk(3, dim=0)
+            else:
+                with self._region('ulysses.qkv_concat'):
+                    packed_qkv = torch.cat((query, key, value), dim=0)
+                q, k, v = self._ulysses_input(packed_qkv).chunk(3, dim=0)
+                del packed_qkv
         else:
             q, k, v = query, key, value
         _, ranks, owner = self.groups.get('ring')
         if len(ranks) == 1:
             self.effective_attention = 'torch_sdpa'
-            output = impl.forward(q, k, v, metadata)
+            with self._region('self_attention'):
+                output = impl.forward(q, k, v, metadata)
         elif self.ring_mode == 'reference':
             self.effective_attention = 'torch_sdpa_ring_gather'
             # Alignment path preserves full-K reduction order. Communication

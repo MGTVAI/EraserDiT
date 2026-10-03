@@ -41,8 +41,9 @@ _CURRENT_STATS: ContextVar[OperatorFusionRequestStats | None] = ContextVar(
 @contextmanager
 def operator_fusion_request_scope(
     decision: OperatorFusionDecision,
+    *, stats: OperatorFusionRequestStats | None = None,
 ) -> Iterator[OperatorFusionRequestStats]:
-    stats = OperatorFusionRequestStats(decision=decision)
+    stats = stats if stats is not None else OperatorFusionRequestStats(decision=decision)
     token = _CURRENT_STATS.set(stats)
     try:
         yield stats

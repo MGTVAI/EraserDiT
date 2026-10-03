@@ -43,6 +43,7 @@ def eraser_dit_window_output(
     colorfix_type: str = "RGB",
     per_channel: bool = True,
     out: torch.Tensor | None = None,
+    chunked_fp32: bool = False,
 ) -> torch.Tensor:
     """Colour-align a window's generated frames and quantise them as the baseline does.
 
@@ -61,10 +62,14 @@ def eraser_dit_window_output(
                             or out.device != generated.device):
         raise ValueError("out must match generated shape/device and use float32")
 
-    if (generated.is_cuda and generated.dtype == torch.float32
+    if (generated.is_cuda and (generated.dtype == torch.float32 or
+                              (chunked_fp32 and generated.dtype == torch.bfloat16))
             and style.dtype in (torch.float32, torch.uint8)
             and colorfix_type == "RGB" and per_channel):
         return _rgb_per_channel_cuda(generated, style, mask_ori, out=out)
+
+    if chunked_fp32:
+        generated = generated.float()
 
     if style.dtype == torch.uint8:
         style = style.float() / 255.0
@@ -125,7 +130,7 @@ def _rgb_per_channel_cuda(generated, style, mask_ori, *, out=None):
     with torch.autocast('cuda', enabled=False):
         for start in range(0, generated.shape[0], chunk_frames):
             stop = start + chunk_frames
-            content = quantize_like_baseline(generated[start:stop])
+            content = quantize_like_baseline(generated[start:stop].float())
             source = style[start:stop].to(device=generated.device, dtype=torch.float32)
             if style.dtype == torch.uint8:
                 source = source / 255.0

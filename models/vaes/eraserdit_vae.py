@@ -156,6 +156,8 @@ class LTXVideoResnetBlock3d(nn.Module):
     def forward(
         self, inputs: torch.Tensor, temb: Optional[torch.Tensor] = None, generator: Optional[torch.Generator] = None
     ) -> torch.Tensor:
+        from models.vaes.memory import vae_modulate, vae_silu
+        inplace = getattr(self, "memory_inplace", False)
         hidden_states = inputs
 
         hidden_states = self.norm1(hidden_states.movedim(1, -1)).movedim(-1, 1)
@@ -163,9 +165,9 @@ class LTXVideoResnetBlock3d(nn.Module):
         if self.scale_shift_table is not None:
             temb = temb.unflatten(1, (4, -1)) + self.scale_shift_table[None, ..., None, None, None]
             shift_1, scale_1, shift_2, scale_2 = temb.unbind(dim=1)
-            hidden_states = hidden_states * (1 + scale_1) + shift_1
+            hidden_states = vae_modulate(hidden_states, scale_1, shift_1, inplace=inplace)
 
-        hidden_states = self.nonlinearity(hidden_states)
+        hidden_states = vae_silu(hidden_states, self.nonlinearity, inplace=inplace)
         hidden_states = self.conv1(hidden_states)
 
         if self.per_channel_scale1 is not None:
@@ -178,9 +180,9 @@ class LTXVideoResnetBlock3d(nn.Module):
         hidden_states = self.norm2(hidden_states.movedim(1, -1)).movedim(-1, 1)
 
         if self.scale_shift_table is not None:
-            hidden_states = hidden_states * (1 + scale_2) + shift_2
+            hidden_states = vae_modulate(hidden_states, scale_2, shift_2, inplace=inplace)
 
-        hidden_states = self.nonlinearity(hidden_states)
+        hidden_states = vae_silu(hidden_states, self.nonlinearity, inplace=inplace)
         hidden_states = self.dropout(hidden_states)
         hidden_states = self.conv2(hidden_states)
 
@@ -197,7 +199,8 @@ class LTXVideoResnetBlock3d(nn.Module):
         if self.conv_shortcut is not None:
             inputs = self.conv_shortcut(inputs)
 
-        hidden_states = hidden_states + inputs
+        hidden_states = (hidden_states.add_(inputs) if inplace and not torch.is_grad_enabled()
+                         else hidden_states + inputs)
         return hidden_states
 
 
@@ -232,14 +235,18 @@ class LTXVideoDownsampler3d(nn.Module):
         if self.stride[0] != 1 or not self.conv.chunk_size or torch.is_grad_enabled():
             hidden_states = torch.cat([hidden_states[:, :, : self.stride[0] - 1], hidden_states], dim=2)
 
-        residual = (
-            hidden_states.unflatten(4, (-1, self.stride[2]))
-            .unflatten(3, (-1, self.stride[1]))
-            .unflatten(2, (-1, self.stride[0]))
-        )
-        residual = residual.permute(0, 1, 3, 5, 7, 2, 4, 6).flatten(1, 4)
-        residual = residual.unflatten(1, (-1, self.group_size))
-        residual = residual.mean(dim=2)
+        if getattr(self, "memory_inplace", False) and not torch.is_grad_enabled():
+            from models.vaes.memory import chunked_downsample_residual
+            residual = chunked_downsample_residual(hidden_states, self.stride, self.group_size, self.conv.chunk_size)
+        else:
+            residual = (
+                hidden_states.unflatten(4, (-1, self.stride[2]))
+                .unflatten(3, (-1, self.stride[1]))
+                .unflatten(2, (-1, self.stride[0]))
+            )
+            residual = residual.permute(0, 1, 3, 5, 7, 2, 4, 6).flatten(1, 4)
+            residual = residual.unflatten(1, (-1, self.group_size))
+            residual = residual.mean(dim=2)
 
         hidden_states = self.conv(hidden_states)
         hidden_states = (
@@ -300,7 +307,9 @@ class LTXVideoUpsampler3d(nn.Module):
         hidden_states = hidden_states[:, :, self.stride[0] - 1 :]
 
         if self.residual:
-            hidden_states = hidden_states + residual
+            hidden_states = (hidden_states.add_(residual)
+                             if getattr(self, "memory_inplace", False) and not torch.is_grad_enabled()
+                             else hidden_states + residual)
 
         return hidden_states
 
@@ -998,6 +1007,8 @@ class LTXVideoDecoder3d(nn.Module):
         self.gradient_checkpointing = False
 
     def forward(self, hidden_states: torch.Tensor, temb: Optional[torch.Tensor] = None) -> torch.Tensor:
+        from models.vaes.memory import vae_modulate, vae_silu
+        inplace = getattr(self, "memory_inplace", False)
         hidden_states = self.conv_in(hidden_states)
 
         if self.timestep_scale_multiplier is not None:
@@ -1027,9 +1038,9 @@ class LTXVideoDecoder3d(nn.Module):
             temb = temb.view(hidden_states.size(0), -1, 1, 1, 1).unflatten(1, (2, -1))
             temb = temb + self.scale_shift_table[None, ..., None, None, None]
             shift, scale = temb.unbind(dim=1)
-            hidden_states = hidden_states * (1 + scale) + shift
+            hidden_states = vae_modulate(hidden_states, scale, shift, inplace=inplace)
 
-        hidden_states = self.conv_act(hidden_states)
+        hidden_states = vae_silu(hidden_states, self.conv_act, inplace=inplace)
         hidden_states = self.conv_out(hidden_states)
 
         p = self.patch_size

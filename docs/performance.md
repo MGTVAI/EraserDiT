@@ -47,7 +47,11 @@ FFN 默认保留原生 Linear 边界；`MGERASE_COMPILE_LINEAR_BACKEND=inductor`
 
 两种残差缓存互斥，默认 `off`；阈值均为 `0.3`、预热 4 步、末步保护 1 步、最多连续复用 1 步。
 CacheDiT 默认前 1 / 后 0 个 block 实算。文本投影缓存独立配置，auto 在残差缓存开启时也会开启。
-缓存按窗口和 CFG 分支隔离，不跨窗口沿用残差；完整 DiT 编译、NCCL 和 DP dispatcher 要关闭全部 Transformer 缓存。
+缓存按窗口和 CFG 分支隔离，不跨窗口沿用残差；完整 DiT 编译和 DP dispatcher 要关闭全部 Transformer 缓存。
+NCCL 常驻 CFG/Ulysses 可显式开启 `--cache-text-projections`，复用文本投影与 cross-attention K/V；
+默认 auto 在残差缓存关闭时仍不启用。NCCL 常驻 CFG/Ulysses 支持残差缓存及可选局部探针，已完成单素材逐帧质量筛选（见 [报告](nccl_cache_quality_20261002.md)）；与 TP/Ring/FSDP 的组合不支持。
+[五组交替 A/B](nccl_text_cache_profile_20261002.md)输出文件一致，但没有证明稳定提速；
+本例每 rank 保留约 29.5 MiB 缓存张量，不作为默认速度推荐。
 
 单卡默认卸载配置可追加：
 
@@ -76,7 +80,7 @@ CacheDiT 需关闭 DiT 逐层卸载；隔离残差缓存收益时同时关闭文
 | 路径 | 入口 / 参数 | 用途与限制 |
 | --- | --- | --- |
 | peer（默认） | `--cfg-degree 2` 或 `--sp-degree 2` | 单任务 CFG/SP；常驻 DiT，可使用支持的局部编译与缓存组合 |
-| NCCL DiT 进程池 | `--dit-parallel-backend nccl` | CFG、Ulysses、Ring/USP、TP、FSDP/HSDP；BF16、SDPA，关闭编译、量化、融合和全部 Transformer 缓存 |
+| NCCL DiT 进程池 | `--dit-parallel-backend nccl` | CFG、Ulysses、Ring/USP、TP、FSDP/HSDP；BF16、SDPA，关闭编译、量化；常驻 CFG/Ulysses 可用文本/残差缓存及限定算子融合 |
 | DP dispatcher | `entrypoints.cli.erase_parallel --dp-degree N` | 将独立视频分配给不同 GPU 组；当前要求 Transformer 缓存关闭 |
 | VAE 并行 | `--vae-degree 2 / 4` | 未启用 tiling 时按高度分片、逐层交换边界；不能与组件卸载或 VAE 编译组合 |
 
@@ -98,7 +102,17 @@ NCCL 单任务与 DP 的完整命令见 [CLI](cli.md#加速与多卡)。
 
 [2026-09-29 边界优化](nccl_boundary_optimization_20260929.md)由 worker 合并 CFG，只返回一个预测张量，
 减少 50% 返回张量逻辑字节；同条件 Ulysses2 输出一致，但请求耗时范围重叠，尚未证明稳定端到端提速。
-父进程仍拥有 scheduler、RNG 与 T5/VAE，输入/输出仍经过 CPU IPC。
+父进程仍拥有 scheduler、RNG 与 T5/VAE，输入/输出默认经过 CPU IPC。
+可用 `MGERASE_DIT_BOUNDARY_TRANSPORT=cuda_ipc` 显式测试 GPU 边界，仍保留接收端拷贝与同步；
+适用范围和实测见[边界传输记录](cuda_ipc_boundary_20261003.md)。
+输入 Ulysses head 分块的[重叠候选](ulysses_overlap_20261003.md)虽有真实 kernel 重叠，
+当前 L40S 整片反而变慢，`MGERASE_ULYSSES_HEAD_CHUNKS` 默认保持 1。
+
+[L40S 单窗口对照](window_optimization_20261002.md)固定 121 帧、各测五次：
+双卡 CFG2 比 SP2 纯推理耗时减少 21.5%，四卡 CFG2×SP2 比 SP4 减少 7.3%。
+在相同卡数下可优先比较 CFG 与 SP 的组合。
+`MGERASE_NCCL_PACKING=packed` 显式启用减少打包拷贝的实验路径，原路径仍为默认；
+纯 SP 本轮有小幅收益，CFG2×SP2 范围重叠，不能视为通用加速。
 
 <a id="quantization"></a>
 ## 实验性量化
@@ -128,3 +142,12 @@ allocated/reserved 是本进程 PyTorch 指标；多卡时分别记录 owner 与
 [初始优化验证](optimization_validation_20260922.md)、[缓存阈值验证](cache_threshold_03_validation_20260922.md)
 和[旧组合验收](composable_acceleration_validation_20260923.md)。复跑历史脚本需要对应代码快照与环境。
 `results/` 中的日志、脚本和视频是本机实验产物，不随 Git 分发。
+
+2026-10-02 的[内存与卸载验证](memory_optimization_20261002.md)采用 121 帧单窗口：
+VAE 阶段驻留/CPU 权重复用减少权重传输并降低 owner 峰值 allocated，另修复连续请求的上下文循环引用。
+耗时、allocated/reserved、CPU RSS 和分配器限额分别报告。
+
+[帧转换与输出缓存优化](frame_copy_optimization_20261002.md)进一步减少 CPU 整窗临时副本，
+明确区分局部转换内存、阶段末 RSS 和纯模型推理耗时；保留 Python 默认张量输出契约。
+
+本轮同条件五组配对：[融合与 direct 打包](fusion_memory_optimization_20261002.md)在四卡 CFG2×SP2 上去噪降低 13.5%，输出文件完全一致。

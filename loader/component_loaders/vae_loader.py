@@ -40,5 +40,6 @@ class VAELoader(ComponentLoader):
             lambda: model_cls.from_config(config), component_model_path, dtype=dtype,
         )
         from models.vaes.memory import configure_vae_memory
-        configure_vae_memory(vae, getattr(server_args.pipeline_config, 'vae_low_memory', False))
+        configure_vae_memory(vae, getattr(server_args.pipeline_config, 'vae_low_memory', False),
+                             getattr(server_args.pipeline_config, 'vae_chunk_elements', 16 * 1024 * 1024))
         return vae, loading_info

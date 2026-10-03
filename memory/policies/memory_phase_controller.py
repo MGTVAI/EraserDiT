@@ -105,6 +105,7 @@ class MemoryPhaseController:
                 self.adapter.acquire_component_residency(
                     component_name,
                     reason=f"memory_phase:{phase.value}:enter",
+                    phase=phase.value,
                 )
                 self._active_component_acquired = True
             else:

@@ -264,6 +264,7 @@ def prepare_runtime_context(
     memory_adapter: Any | None = None,
 ) -> EraseRuntimeContext:
     service_checkpoint(batch, server_args, phase="runtime_context_start")
+    streaming_mask_threshold = None
     distributed_context = getattr(server_args, "distributed_context", None)
     distributed_metadata = (
         distributed_context.as_dict() if distributed_context is not None else {}
@@ -470,20 +471,27 @@ def prepare_runtime_context(
         mask_cache = None
         if active_sp_context is None or active_sp_context.is_writer:
             ffmpeg_thread_count = _resolve_ffmpeg_thread_count(batch)
+            # Match the preload FFmpeg decoder policy for exact uint8 caches.
+            decode_threads = "auto" if params.streaming_cache_dtype == "uint8" else ffmpeg_thread_count
+            if params.streaming_cache_dtype == "uint8":
+                from utils.video_io import read_mask_rgb_max
+                maximum = read_mask_rgb_max(mask_path, width=width, height=height, num_frames=num_frames,
+                    checkpoint=lambda: service_checkpoint(batch, server_args, phase="streaming_mask_scan"))
+                streaming_mask_threshold = maximum * float(params.mask_threshold) / 2.0
             sequential_video_reader = SequentialVideoReader(
                 video_path,
                 width=width,
                 height=height,
                 pix_fmt="rgb24",
-                thread_count=ffmpeg_thread_count,
+                thread_count=decode_threads,
             )
             sequential_mask_reader = SequentialVideoReader(
                 mask_path,
                 width=width,
                 height=height,
-                pix_fmt="gray",
+                pix_fmt="rgb24" if params.streaming_cache_dtype == "uint8" else "gray",
                 squeeze_single_channel=True,
-                thread_count=ffmpeg_thread_count,
+                thread_count=decode_threads,
             )
             sequential_video_writer = (
                 SequentialVideoWriter(
@@ -495,11 +503,14 @@ def prepare_runtime_context(
                 if output_file_path
                 else None
             )
-            video_frame_cache = TensorFrameCache(
-                start_index=0,
-                shape_tail=(3, height, width),
-                dtype=torch.bfloat16,
-            )
+            if params.streaming_cache_dtype == "uint8":
+                video_frame_cache = ChunkedFrameCache(
+                    start_index=0, shape_tail=(height, width, 3), dtype=np.uint8,
+                )
+            else:
+                video_frame_cache = TensorFrameCache(
+                    start_index=0, shape_tail=(3, height, width), dtype=torch.bfloat16,
+                )
             mask_frame_cache = ChunkedFrameCache(
                 start_index=0,
                 shape_tail=(height, width),
@@ -557,6 +568,7 @@ def prepare_runtime_context(
         working_video=working_video,
         final_video=final_video,
         mask_cache=mask_cache,
+        streaming_mask_threshold=streaming_mask_threshold,
         fps=fps,
         codec_name=codec_name or None,
         encoding_profile=encoding_profile,

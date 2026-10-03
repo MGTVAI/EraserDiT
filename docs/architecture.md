@@ -89,6 +89,8 @@ NCCL DiT 路径由 `pipelines/runtime/dit_executor.py` 管理常驻子进程；
 父进程保留 T5/VAE、scheduler 与 RNG，DiT worker 使用独立 NCCL world，避免替换父进程 T5 的 FSDP 组。
 `distributed/dit_groups.py` 只处理通用分组与通信，模型计算适配位于
 `models/adapters/eraserdit/nccl_runner.py` 和 `nccl_sequence.py`；TP Linear 位于 `layers/dit_tensor_parallel.py`。
-worker 在返回前以 FP32 合并 CFG，并仅由 owner 汇聚必要的 SP 输出；输入和预测仍经 CPU IPC 传递。
+worker 在返回前以 FP32 合并 CFG，并仅由 owner 汇聚必要的 SP 输出；输入和预测默认经 CPU IPC 传递。
+实验 CUDA IPC 路径由 `MGERASE_DIT_BOUNDARY_TRANSPORT=cuda_ipc` 启用，接收端复制到自身 GPU 存储，
+以隔离调用方与 worker 的张量生命周期；父进程仍负责 scheduler 和 RNG。
 策略范围见 [NCCL 并行记录](distributed_parallel_20260928.md)，边界计时与输出通信优化见
 [2026-09-29 验证](nccl_boundary_optimization_20260929.md)。

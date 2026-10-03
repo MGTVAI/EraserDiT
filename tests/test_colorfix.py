@@ -22,6 +22,41 @@ def reference(generated, style, mask):
 
 
 class ColorfixTests(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get('ERASERDIT_TEST_POSTPROCESS') == '1', 'opt-in CUDA colorfix')
+    def test_chunked_fp32_matches_whole_window_cast(self):
+        from config.server_args import ServerArgs, set_global_server_args
+        from pipelines.stages.eraserdit_erase._common import (
+            EraserDiTTaskState, TASK_STATE_KEY, PREFIX_LEN_KEY, NEW_FRAMES_KEY,
+            ORIG_SIZE_KEY, STYLE_VIDEO_KEY, STYLE_MASK_KEY, MODEL_FRAMES_KEY,
+        )
+        from pipelines.stages.eraserdit_erase.window_postprocess import EraserDiTEraseWindowPostprocessStage
+        args = ServerArgs(device='cuda:0')
+        set_global_server_args(args)
+        torch.manual_seed(82)
+        decoded = torch.rand(1, 3, 20, 32, 40, device='cuda:0', dtype=torch.bfloat16)
+        source = torch.randint(0, 256, (17, 3, 29, 31), dtype=torch.uint8)
+        for kind in ('binary', 'partial', 'black'):
+            mask = torch.zeros_like(source)
+            if kind == 'partial':
+                mask[:, :, ::2] = 1
+            if kind == 'black':
+                decoded.zero_()
+            results = []
+            for enabled in ('0', '1'):
+                state = EraserDiTTaskState()
+                batch = SimpleNamespace(decoded_video=decoded, colorfix_type='RGB', colorfix_per_channel=True,
+                    metrics=None, extra={TASK_STATE_KEY:state, PREFIX_LEN_KEY:2, NEW_FRAMES_KEY:17,
+                        ORIG_SIZE_KEY:(29,31), STYLE_VIDEO_KEY:source, STYLE_MASK_KEY:mask,
+                        MODEL_FRAMES_KEY:20, 'window_spec':{'overlap_right':3}})
+                with patch.dict(os.environ, MGERASE_POSTPROCESS_CHUNKED_FP32=enabled):
+                    EraserDiTEraseWindowPostprocessStage().forward(batch, args)
+                results.append(batch.crop_video_modified)
+                torch.testing.assert_close(state.prev_raw_tail,
+                    decoded[0, :, -3:].permute(1, 0, 2, 3).float().cpu(), atol=0, rtol=0)
+                self.assertEqual(state.prev_raw_tail.dtype, torch.float32)
+                self.assertEqual(state.windows_seen, 1)
+            torch.testing.assert_close(*results, atol=0, rtol=0)
+
     def test_masked_statistics_empty_singleton_and_soft_selection(self):
         torch.manual_seed(41)
         value = torch.rand(2, 3, 7, 9)

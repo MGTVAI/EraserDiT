@@ -54,6 +54,7 @@ class EraserDiTCacheWindow:
                 dbc, residual_predictor=getattr(batch, 'cache_residual_predictor', 'none'),
                 num_transformer_blocks=num_blocks, **common,
             )
+        self.controller.probe_metric = getattr(batch, "cache_probe_metric", "global")
         self.controller._eraserdit_observe_retained = self._record_retained_bytes
 
     def _record_retained_bytes(self):
@@ -65,6 +66,10 @@ class EraserDiTCacheWindow:
                 for t in vars(state).values():
                     if isinstance(t, torch.Tensor):
                         storages[(str(t.device), t.untyped_storage().data_ptr())] = t.untyped_storage().nbytes()
+            regions = self.controller._consensus.probe_regions
+            if regions is not None:
+                for t in (regions.weights, regions.frame_ids):
+                    storages[(str(t.device), t.untyped_storage().data_ptr())] = t.untyped_storage().nbytes()
         self._peak_retained_bytes = max(self._peak_retained_bytes, sum(storages.values()))
 
     def __enter__(self):
@@ -89,6 +94,9 @@ class EraserDiTCacheWindow:
         if self.text_caches:
             report['closed'] = True
             report['aborted'] = exc_type is not None
+        report['cache_probe_metric'] = getattr(self.batch, 'cache_probe_metric', 'global')
+        if self.controller is not None:
+            self.controller._consensus.probe_regions = None
         report['force_compute'] = self.force_compute
         report['experimental'] = self.mode != 'off'
         if self.mode == 'teacache':
@@ -108,6 +116,14 @@ class EraserDiTCacheBranch:
     def __init__(self, controller, branch, step):
         self.controller, self.branch, self.step = controller, branch, step
         self.global_sequence_length = None
+
+    def configure_probe_regions(self, mask, *, shape, shard=slice(None), patch_size=1, patch_size_t=1):
+        if self.controller.probe_metric == 'global':
+            return
+        if patch_size != 1 or patch_size_t != 1:
+            raise ValueError('mask_frame_max currently requires unit spatial/temporal patches')
+        from cache.regions import ProbeRegions
+        self.controller._consensus.probe_regions = ProbeRegions(mask, shape=shape, shard=shard)
 
     def run(self, hidden_states, modulated_input, run_blocks, *, num_blocks, layout):
         try:

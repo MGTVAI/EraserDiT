@@ -132,30 +132,114 @@ class WindowRuntimeTests(unittest.TestCase):
                 writer = SequentialVideoWriter(str(Path(directory) / f'{name}.mp4'),
                                                width=32, height=32, fps=25, thread_count=1)
                 try:
-                    writer.write_frames(np.full((17, 32, 32, 3), value, dtype=np.uint8))
+                    pixels = np.full((17, 32, 32, 3), value, dtype=np.uint8)
+                    if name == 'mask':
+                        pixels[:, :16, :, 0] = 30
+                        pixels[:, :16, :, 1:] = 200
+                    writer.write_frames(pixels)
                 finally:
                     writer.close()
-            for streaming in (False, True):
+            file_bytes = {}
+            for streaming, return_tensor, cache_dtype in ((False, True, "bf16"), (False, False, "bf16"),
+                    (True, True, "bf16"), (True, False, "bf16"),
+                    (True, True, "uint8"), (True, False, "uint8")):
                 inputs, _ = self.make_runtime(streaming=streaming)
                 batch, params = inputs['batch'], inputs['params']
+                params.streaming_cache_dtype = cache_dtype
                 params.video_input_path = str(Path(directory) / 'video.mp4')
                 params.mask_input_path = str(Path(directory) / 'mask.mp4')
                 params.output_path = directory
-                params.output_file_name = f'result-{streaming}.mp4'
+                params.output_file_name = f'result-{streaming}-{return_tensor}.mp4'
                 params.save_output = True
+                batch.extra['return_output_tensor'] = return_tensor
                 pipeline = EraserDiTErasePipeline.__new__(EraserDiTErasePipeline)
                 pipeline._memory_adapter = None
                 context = pipeline._prepare_global_context(batch, inputs['server_args'])
                 try:
                     inputs['context'] = context
+                    if streaming and cache_dtype == 'uint8':
+                        from pipelines.runtime.io.streaming import ensure_window_cache_loaded
+                        from utils.video_io import read_mask_rgb_array
+                        ensure_window_cache_loaded(context, SimpleNamespace(load_start=0, load_end=9))
+                        expected_mask, _ = read_mask_rgb_array(params.mask_input_path, threshold_ratio=params.mask_threshold / 2)
+                        np.testing.assert_array_equal(context.mask_frame_cache.slice(0, 9), expected_mask[:9])
                     run_windowed_runtime(**inputs)
                     pipeline._maybe_save_output(batch, context)
                     output = read_video_metadata(batch.extra['output_file_path'])
                     self.assertEqual((output['num_frames'], output['width'], output['height']),
                                      (17, 32, 32))
                     self.assertEqual(Fraction(output['fps_fraction']), 25)
+                    if streaming or not return_tensor:
+                        self.assertIsNone(batch.output)
+                    else:
+                        self.assertIsNotNone(batch.output)
+                    payload = Path(batch.extra['output_file_path']).read_bytes()
+                    if return_tensor:
+                        file_bytes[streaming, cache_dtype] = payload
+                    else:
+                        self.assertEqual(payload, file_bytes[streaming, cache_dtype])
+                    if streaming and cache_dtype == "uint8":
+                        self.assertEqual(payload, file_bytes[False, "bf16"])
                 finally:
                     close_runtime_resources(context)
+
+    def test_long_uint8_stream_has_bounded_caches_and_preserves_frame_order(self):
+        from pipelines.eraserdit_erase_pipeline import EraserDiTErasePipeline
+        from pipelines.runtime.drivers.windowed import run_windowed_runtime
+        from pipelines.runtime.io.output import close_runtime_resources
+        from pipelines.runtime.io.streaming import ensure_window_cache_loaded
+        from utils.video_io import read_mask_rgb_array
+        with tempfile.TemporaryDirectory() as directory:
+            for name in ('video', 'mask'):
+                writer = SequentialVideoWriter(str(Path(directory) / f'{name}.mp4'),
+                    width=32, height=32, fps=25, thread_count=1)
+                try:
+                    for start in range(0, 257, 16):
+                        n = min(16, 257-start)
+                        if name == 'video':
+                            pixels = np.broadcast_to(np.arange(start, start+n, dtype=np.int64)[:, None, None, None] % 256,
+                                                     (n, 32, 32, 3)).astype(np.uint8).copy()
+                        else:
+                            pixels = np.full((n, 32, 32, 3), 1 if start < 128 else 128, dtype=np.uint8)
+                        writer.write_frames(pixels)
+                finally:
+                    writer.close()
+            outputs = []
+            for streaming in (False, True):
+                inputs, _ = self.make_runtime(streaming=streaming)
+                batch, params = inputs['batch'], inputs['params']
+                params.streaming_cache_dtype = 'uint8'
+                params.video_input_path = str(Path(directory) / 'video.mp4')
+                params.mask_input_path = str(Path(directory) / 'mask.mp4')
+                params.output_path = directory
+                params.output_file_name = f'long-{streaming}.mp4'
+                params.save_output = True
+                batch.extra['return_output_tensor'] = False
+                pipeline = EraserDiTErasePipeline.__new__(EraserDiTErasePipeline)
+                pipeline._memory_adapter = None
+                context = pipeline._prepare_global_context(batch, inputs['server_args'])
+                inputs['context'] = context
+                observed = []
+                expected_mask, _ = read_mask_rgb_array(params.mask_input_path, threshold_ratio=params.mask_threshold / 2)
+                def load(ctx, spec):
+                    ensure_window_cache_loaded(ctx, spec)
+                    observed.append((ctx.video_frame_cache.num_frames, ctx.mask_frame_cache.num_frames))
+                    if streaming:
+                        np.testing.assert_array_equal(ctx.mask_frame_cache.slice(spec.deal_start, spec.load_end),
+                                                      expected_mask[spec.deal_start:spec.load_end])
+                try:
+                    with patch('pipelines.runtime.windowing.materializer.ensure_window_cache_loaded', side_effect=load):
+                        run_windowed_runtime(**inputs)
+                    pipeline._maybe_save_output(batch, context)
+                    output = Path(batch.extra['output_file_path'])
+                    self.assertEqual(read_video_metadata(str(output))['num_frames'], 257)
+                    outputs.append(output.read_bytes())
+                    if streaming:
+                        self.assertGreater(len(observed), 20)
+                        self.assertLessEqual(max(max(pair) for pair in observed), 2 * params.infer_len)
+                finally:
+                    close_runtime_resources(context)
+            self.assertEqual(*outputs)
 
 
 class RuntimeBoundaryTests(unittest.TestCase):
@@ -173,6 +257,18 @@ class RuntimeBoundaryTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), expected)
+
+    def test_mask_max_scan_cancel_closes_reader(self):
+        from unittest.mock import MagicMock
+        from utils.video_io import read_mask_rgb_max
+        reader = MagicMock()
+        def cancel():
+            raise RuntimeError('request cancelled')
+        with patch('utils.video_io.SequentialVideoReader', return_value=reader):
+            with self.assertRaisesRegex(RuntimeError, 'request cancelled'):
+                read_mask_rgb_max('unused', width=32, height=32, num_frames=100, checkpoint=cancel)
+        reader.close.assert_called_once()
+        reader.read_frames.assert_not_called()
 
     def test_mask_binarization_preserves_threshold_and_dtype(self):
         for dtype in (np.uint8, np.int8, np.uint16, np.float32, np.float64):

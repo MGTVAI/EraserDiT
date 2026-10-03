@@ -837,6 +837,10 @@ def _run_writer_window_runtime(
         context.final_window_output_cache = object_states[-1].output_cache
         if context.window_runtime_mode != "streaming" or not params.save_output:
             context.video_frame_cache = object_states[-1].output_cache
+        # File-only clients do not need an additional full-window FP32 result.
+        # Keep the API's tensor return by default, and whenever no file is saved.
+        return_tensor = batch.extra.get("return_output_tensor", True) or not params.save_output
+        if return_tensor and (context.window_runtime_mode != "streaming" or not params.save_output):
             cached_final_frames = context.final_window_output_cache.slice(
                 context.final_window_output_cache.start_index,
                 context.final_window_output_cache.end_index,

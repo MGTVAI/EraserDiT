@@ -500,12 +500,17 @@ class EraserDiTLTXVideoTransformer3DModel(OffloadableDiTMixin, ModelMixin, Confi
         # GEMM kernel selection at this projection is sensitive to M; a single
         # rounding difference can be amplified by the full denoising chain.
         hidden_states = self.proj_in(hidden_states)
+        shard = slice(None)
         if sequence_parallel is not None:
             if cache_adapter is not None:
                 cache_adapter.global_sequence_length = hidden_states.shape[1]
             shard = sequence_parallel.partition(hidden_states.shape[1])
             hidden_states = hidden_states[:, shard]
             image_rotary_emb = tuple(t[:, shard] for t in image_rotary_emb)
+
+        if cache_adapter is not None:
+            cache_adapter.configure_probe_regions(mask_values, shape=(num_frames, height, width), shard=shard,
+                patch_size=self.config.patch_size, patch_size_t=self.config.patch_size_t)
 
         temb, embedded_timestep = self.time_embed(
             timestep.flatten(),

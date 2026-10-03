@@ -139,6 +139,9 @@ class EraseSession:
                 "torch_compile": warmup_result.extra.get("torch_compile"),
                 "operator_fusion": warmup_result.extra.get("operator_fusion"),
             }
+            # Only the small summary is consumed below; do not retain a full
+            # warmup video while the real request allocates its own window.
+            del warmup_result, warmup_req
         pipeline_start = time.perf_counter()
         result = self._forward_with_operator_fusion(req)
         pipeline_duration_s = time.perf_counter() - pipeline_start

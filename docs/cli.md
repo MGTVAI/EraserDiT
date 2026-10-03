@@ -113,6 +113,43 @@ CUDA_VISIBLE_DEVICES=0 uv run --no-project python -m entrypoints.cli.erase_erase
 任务顺序共用一个常驻 session。`--warmup` 仅为首个任务执行预热，不保证覆盖后续所有输入形状。
 标准输出末尾包含 `{"tasks": [...]}` 报告，记录输出路径、加载、预热、请求耗时及内存等指标。
 
+## 单窗口性能基准
+
+从示例视频和 mask 各无损截取前 121 帧，固定一个完整窗口、50 配置步数、
+strength=0.8。每种配置的请求共用一个常驻 session，先用 2 步请求预热，再执行 5 次正式请求。
+汇总纯推理与 DiT 去噪耗时的中位数和范围，不含加载、预热或视频读写。
+输出目录必须不存在；按实际分配的 GPU 设置 `--devices`。
+
+```bash
+uv run --no-project python -m entrypoints.cli.benchmark_window \
+  --run-dir outputs/window_reference --devices 1,2,3,6
+
+# 同一输入和参数验证实验性 Ulysses 打包优化
+uv run --no-project python -m entrypoints.cli.benchmark_window \
+  --run-dir outputs/window_packed --devices 1,2,3,6 \
+  --configs sp2,sp4,cfg2_sp2 --packing packed
+```
+
+默认对比 SP1、SP2、CFG2、SP4、CFG2×SP2；可用 `--configs` 选择子集。
+`--prepare-only` 仅生成素材、任务及命令清单，不启动 GPU。
+产物含 `manifest.json`、各配置日志、视频和 `summary.json`。
+脚本检查每次正式推理只有一个去噪窗口且输出 121 帧。
+
+`--text-cache-ab` 在同一常驻 session 内按 off/on、on/off 交替比较文本缓存，
+`--repeats 5` 表示每种模式各五次；汇总单列纯推理、去噪、扣除预热的完整请求耗时和输出 SHA256。
+manifest 保存当前 Python 源码指纹，包括未提交文件。
+
+`--profile-step 2` 为每个窗口的第二个去噪步输出各 rank 的 CPU/CUDA trace 和算子汇总，
+产物位于 run-dir 下的 `profiles/`。它仅用于瓶颈诊断，采集耗时不能用于速度对照。
+普通 CLI 可设置 `MGERASE_DIT_PROFILE_DIR=/absolute/path` 与 `MGERASE_DIT_PROFILE_STEP=2`；
+未设置目录时不启动 profiler、不安装模块计时 hooks。计数从 1 开始，短于目标步的窗口不采集。
+trace 标记投影、norm、FFN、attention 和 Ulysses 打包/交换/重排；父子区间重叠，rank 并行，不能相加。
+
+实验开关 `MGERASE_NCCL_PACKING=packed` 减少 Ulysses 发送缓冲区打包拷贝，
+默认 `reference` 保持原路径。两者通信内容与顺序相同，不等长输出分片保留原打包路径。
+已通过 CPU/真实 NCCL 精确检查，三个配置的单窗口 A/B 输出文件一致。
+本轮纯 SP 观察到小幅提速，CFG2×SP2 未证明稳定收益，见[单窗口验证](window_optimization_20261002.md)。
+
 ## 常用参数
 
 | 参数 | 默认值 / 说明 |
@@ -163,7 +200,9 @@ SP 使用 `--sp-degree 2 --cfg-degree 1 --sp-linear-mode sharded`；
 独立 NCCL DiT 进程池使用 `--dit-parallel-backend nccl`，新增 TP、Ulysses×Ring、
 FSDP/HSDP 正交分组。参数组合、限制和整片 SSIM 验收状态见
 [NCCL 并行实施记录](distributed_parallel_20260928.md)。新路径目前要求 BF16、SDPA、常驻或 FSDP 分片的 DiT、
-关闭编译/量化/融合/缓存；T5/VAE CPU offload 可以保留。
+关闭编译/量化；T5/VAE CPU offload 可以保留。常驻 CFG/Ulysses 已支持限定融合和残差缓存，见本页末尾实验选项。
+常驻 CFG/Ulysses 可增加 `--cache-text-projections`，每窗/CFG 分支独立保存文本投影与 K/V，
+窗口结束清理；正常权重版本或条件变化会使缓存失效。TP、Ring、FSDP 暂不支持此缓存组合。
 
 双卡 NCCL Ulysses 示例（保留默认 T5/VAE 卸载）：
 
@@ -191,7 +230,7 @@ CUDA_VISIBLE_DEVICES=0,1 HF_HUB_OFFLINE=1 uv run --no-project python -m entrypoi
 
 `parallel-run-dir` 必须尚不存在，DP 度数不能超过任务数，每项输出路径必须唯一。
 当前 DP dispatcher 要求所有任务关闭残差与文本投影缓存，子进程强制离线加载。
-DP 提升多任务吞吐，单任务并行参数及设备分组见
+同四卡 DP 的吞吐、单条延迟及内存取舍见[实测](dp_topology_20261002.md)。单任务并行参数及设备分组见
 [并行说明](performance.md#parallel)。
 
 
@@ -261,3 +300,56 @@ CLI 的 `timing.extra.component_compile` 和服务任务的 `metrics.component_c
 包含组件级执行次数与首次输入形状
 调用耗时，后者包含编译和执行，已计入请求耗时。T5 一次请求通常只执行两次，
 且 VAE 每窗口只调用少数次，首次编译成本未必能在一个视频中摊薄。
+
+## VAE 阶段卸载（实验性）
+
+启用 `--vae-cpu-offload` 时，可设置 `MGERASE_VAE_OFFLOAD_MODE`：
+
+- `full`：默认，编码和解码阶段均搬运整个 VAE。
+- `split`：仅搬运当前 encoder/decoder 和根参数/buffer。
+- `cached`：在 split 基础上复用 CPU 权重存储，未修改的参数不回拷。
+
+例如：`MGERASE_VAE_OFFLOAD_MODE=cached uv run --no-project python -m entrypoints.cli.erase_eraserdit ...`。
+缓存遵循 CPU pin_memory 设置，仅支持 eval 推理；阶段内直接通过 `.data` 修改参数不受支持。
+完整单窗口对照使用 `entrypoints.cli.benchmark_window --vae-offload-mode full|split|cached`。
+内存口径、适用范围与结果见[内存优化验证](memory_optimization_20261002.md)。
+
+CLI 擦除只消费输出文件，现会跳过 preload 路径的整窗 FP32 返回张量。
+Python `EraseSession.run` 默认仍保留原返回行为；保存文件且不需要内存输出时，可传
+`request_extra={"return_output_tensor": False}`。`save_output=False` 时仍返回张量。
+详见[帧转换与输出缓存优化](frame_copy_optimization_20261002.md)。
+
+### 2026-10-02 实验选项
+
+- 常驻 NCCL CFG/Ulysses SP1/2/4 可组合 `--operator-fusion-backend triton` 与
+  `MGERASE_NCCL_PACKING=direct`。仅支持 `qk_rmsnorm_rope,rmsnorm_adaln`，不含 gated residual。
+- `MGERASE_POSTPROCESS_CHUNKED_FP32=1` 按颜色校正块转 FP32，减少后处理临时激活。
+- `MGERASE_VAE_INPLACE_ACTIVATIONS=1` 配合 `--vae-low-memory` 复用 VAE 临时激活，并分块计算下采样残差；保持原归约与舍入。
+- `--vae-low-memory --vae-chunk-elements 16777216` 设置 VAE 分块目标元素预算；完整帧/邻域为下限。
+- `--runtime-mode windowed_streaming --streaming-cache-dtype uint8` 保留源帧/提交帧的 uint8 精度，并与 preload 使用相同的 RGB mask 阈值；软 mask 需有界预扫描。
+- `--cache-probe-metric mask_frame_max` 为 TeaCache/CacheDiT 增加逐帧 mask/边缘变化约束；默认 global。
+
+默认值保持原行为。实测范围和验收状态见[本轮记录](fusion_memory_optimization_20261002.md)。
+
+### NCCL GPU 边界传输（实验性）
+
+在创建会话前设置 `MGERASE_DIT_BOUNDARY_TRANSPORT=cuda_ipc`，可避免 owner 与 DiT worker
+之间每步预测的 CPU 中转；默认值 `cpu` 保持原路径。输入 GPU 必须与 rank 0 相同。
+该实现仍有接收端 GPU 拷贝与同步，改变环境变量不会切换已有进程池。
+验证范围、性能和生命周期约束见[边界传输记录](cuda_ipc_boundary_20261003.md)。
+
+### Ulysses 通信计算重叠（实验性）
+
+当前 L40S 整片筛选变慢，不作为速度推荐；保留以下入口用于复现和其他配置验证。
+
+在常驻 NCCL Ulysses SP2/4 的命令前设置：
+
+```bash
+export MGERASE_NCCL_PACKING=direct
+export MGERASE_ULYSSES_HEAD_CHUNKS=4
+```
+
+需要在创建进程池前设置；运行中的池不会动态切换。
+`HEAD_CHUNKS` 可选 1/2/4，默认 1 为原路径。分块需要 heads 能被 `SP × chunks` 整除，
+不支持 Ring、TP、FSDP；当前仍要求 BF16/SDPA、关闭编译和量化。
+分块输入通信与 attention 重叠，输出交换仍走原路径。实测与限制见[验收记录](ulysses_overlap_20261003.md)。

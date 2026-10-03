@@ -30,6 +30,8 @@ rich==15.0.0
 
 # Attention backends (selected at runtime; SDPA remains the default).
 triton==3.2.0
+# Triton JIT imports setuptools at runtime, not only during installation.
+setuptools==75.8.0
 flash-attn==2.8.3
 sageattention==1.0.6
 

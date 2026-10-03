@@ -27,16 +27,21 @@ CUDA_VISIBLE_DEVICES='' ERASERDIT_TEST_TWO_GPU=0 ERASERDIT_TEST_INT8=0 \
 | `test_runtime_boundaries.py` | 分布式状态与日志判断、资源策略回退、视频 IO；预加载/流式窗口顺序、重叠、跳过、多对象传递和提交异常释放 |
 | `test_prepost_boundaries.py` | EraserDiT 预/后处理导入契约、patch 行为、通用裁剪独立导入 |
 | `test_memory_lifetimes.py` | mask 分批与完整处理的 CPU/GPU 数值一致性、进入 VAE 前视频引用释放 |
-| `test_vae_memory.py` | VAE 分批归一化、卷积完整邻域与边界、下采样、梯度回退及 CLI/服务参数 |
+| `test_vae_memory.py` | VAE 分块预算、归一化/卷积邻域、原位激活及残差分块的精确性、输入不变、梯度回退和 CLI/服务参数 |
 | `test_static_condition_reuse.py` | 请求内文本编码缓存失效和隔离、预计算 RoPE 的 CPU/GPU 数值一致性 |
 | `test_operator_fusion_precision.py` | QK RoPE、gated residual 舍入一致性，布局/梯度回退，完整 block 与文本缓存、逐层卸载组合 |
 | `test_service_api.py` | HTTP 契约、任务和产物；使用 scheduler stub，无权重 |
 | `test_component_offload.py` | 组件租约、异常清理；CUDA 可用时附加设备验证 |
 | `test_layerwise_offload.py` | 迁移管理器的循环预取、布局、重复推理、T5 FSDP、异常清理；CUDA 用例需 GPU |
+| `test_cache_regions.py` | 逐帧全图/mask/边缘探针，小目标保护、非等长分片汇总、空区域和非有限值 |
 | `test_cache.py` | CFG/窗口隔离、探针、FP32 残差、请求契约；部分测试需要 CUDA |
 | `test_cfg_parallel.py` | CFG 配置约束与显式双卡小模型检查 |
 | `test_mesh.py` | CPU 分组、非整除分片、通信、失败传播及 DP 分配 |
 | `test_nccl_dit.py` | 正交拓扑、真实 NCCL Ulysses/Ring/TP/FSDP/混合组、父进程组隔离及 worker 故障清理 |
+| `test_ulysses_overlap.py` | 真实 NCCL head 分块流水，SP2/CFG2×SP2/SP4、非等长分片、stream 生命周期与异常后复用 |
+| `test_nccl_packing.py` | Ulysses 新旧打包的收发数据精确一致性，覆盖等长/不等长分片及非连续布局 |
+| `test_nccl_text_cache.py` | rank 文本缓存条件/权重失效、分支/窗口隔离、抽样 profiler 与异常 hooks 清理；真实多卡检查位于 `test_nccl_dit.py` |
+| `test_window_benchmark.py` | 单窗口计时汇总，拒绝多窗口和非 121 帧报告 |
 | `test_mesh_gpu.py` | 显式两/四卡 Transformer、异常恢复和可选真实 VAE |
 | `test_quantization.py` | 层覆盖及组合约束，显式 INT8 GPU 验证 |
 
@@ -106,3 +111,45 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 ERASERDIT_TEST_DIT_NCCL=1 OMP_NUM_THREADS=1 \
 严格 Flash 数值 profile 检查限定 A100 / PyTorch 2.6；跳过不代表其他设备已完成效果验收。
 无 GPU 时可设置 `ERASERDIT_TEST_DIT_PROCESSES=1` 运行 Gloo 小模型矩阵。
 整片 SSIM 与性能记录见 [NCCL 并行验收](../docs/distributed_parallel_20260928.md)。
+
+VAE 阶段卸载回归：`CUDA_VISIBLE_DEVICES=0 uv run --no-project python -m unittest tests.test_vae_residency -v`。
+覆盖编码/解码驻留、精确输出、CPU backing 复用、可变参数/buffer、共享参数、替换注册张量及上传失败恢复。
+真实模型单窗口对照和显存限额验证见[内存优化验证](../docs/memory_optimization_20261002.md)。
+`tests.test_runtime_cleanup` 在禁用循环 GC 时验证请求和对象链回调能立即释放上下文，包含关闭资源异常路径。
+
+帧转换与输出契约：`uv run --no-project python -m unittest tests.test_frame_conversion tests.test_runtime_boundaries -v`。
+覆盖精确数值/布局、只读及反向 NumPy 视图、输入输出存储独立、预热结果释放，以及仅文件输出与原路径视频逐字节一致。
+
+本轮补充：`test_runtime_boundaries` 包含 257 帧多窗口 uint8 流式缓存上界、软/彩色 mask
+阈值与 preload 等价性、扫描取消后 reader 关闭；`test_colorfix` 检查分块 FP32 后处理
+的 patch/raw tail 精确性。`test_nccl_dit` 增加融合、残差缓存的 CFG/SP 共识及进程池窗口重置。
+单卡 VAE/打包专项可运行：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 uv run --no-project python -m unittest \
+  tests.test_vae_memory tests.test_nccl_packing tests.test_colorfix -v
+```
+
+CUDA IPC 边界专项（显式分配两卡或四卡）：
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 ERASERDIT_TEST_DIT_NCCL=1 OMP_NUM_THREADS=1 \
+  uv run --no-project python -m unittest \
+  tests.test_nccl_dit.DistributedDiTTests.test_cuda_ipc_process_pool \
+  tests.test_nccl_dit.DistributedDiTTests.test_cuda_ipc_normal_close \
+  tests.test_nccl_dit.DistributedDiTTests.test_cuda_ipc_owner_rank_failure -v
+```
+
+覆盖非默认 stream、非连续/变化输入、跨窗缓存及故障/正常关闭后已返回结果的所有权。
+对照与限制见[CUDA IPC 边界记录](../docs/cuda_ipc_boundary_20261003.md)。
+
+Ulysses 分块重叠专项：
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 ERASERDIT_TEST_DIT_NCCL=1 OMP_NUM_THREADS=1 \
+  uv run --no-project python -m unittest tests.test_ulysses_overlap tests.test_nccl_packing \
+  tests.test_nccl_dit.DistributedDiTTests.test_head_overlap_process_pool -v
+```
+
+真实权重筛选：`entrypoints.cli.benchmark_dit --variants fusion_direct,heads2_serial,heads2,heads4`。
+`heads2_serial` 仅为基准中的分块串行对照；实际并行与整片收益见[验收记录](../docs/ulysses_overlap_20261003.md)。

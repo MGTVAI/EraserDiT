@@ -48,6 +48,7 @@ class EraserDiTPipelineConfig:
     parallel_devices: tuple[int, ...] | None = None
     vae_tiling: bool = False
     vae_low_memory: bool = False
+    vae_chunk_elements: int = 16 * 1024 * 1024
     vae_tile_size: int = 512
     vae_tile_stride: int = 448
     # The adapter declares its own component class names instead of
@@ -59,6 +60,10 @@ class EraserDiTPipelineConfig:
             "scheduler": "FlowMatchEulerDiscreteScheduler",
         }
     )
+
+    def __post_init__(self):
+        if isinstance(self.vae_chunk_elements, bool) or not isinstance(self.vae_chunk_elements, int) or self.vae_chunk_elements < 1:
+            raise ValueError("vae_chunk_elements must be a positive integer")
 
 
 @dataclass
@@ -103,12 +108,11 @@ class EraserDiTEraseSamplingParams(SamplingParams):
     negative_prompt: str | None = ERASERDIT_NEGATIVE_PROMPT
     # Whole-frame erase: no bbox cropping (plan §4.7).
     crop_flag: bool = False
-    # The streaming runtime keeps its frame caches in bf16, which quantises both
-    # the model input and the committed frames; measured against the frozen
-    # baseline that costs ~1.2 dB on the non-erase region.  The preload runtime
-    # uses uint8 caches and matches the baseline exactly.  Streaming stays
-    # available (``--runtime-mode windowed_streaming``) for very long inputs.
+    # Preload preserves uint8 pixels. Streaming retains its legacy bf16 default;
+    # streaming_cache_dtype="uint8" avoids that quantisation with bounded caches
+    # and uses the same RGB mask threshold as preload.
     runtime_mode: str = "windowed_preload"
+    streaming_cache_dtype: str = "bf16"
     runtime_workdir: str | None = None
     # Output write contract (plan §4.10): libx264 / yuv420p / bit rate
     # ``bit_rate // 1e6`` M, overriding the shared profile builder.
@@ -126,6 +130,7 @@ class EraserDiTEraseSamplingParams(SamplingParams):
     transformer_cache_force_compute: bool = False
     cache_text_projections: bool | None = None
     cache_residual_predictor: str = "none"
+    cache_probe_metric: str = "global"
     teacache_threshold: float = 0.3
     max_teacache_consecutive_skip: int = 1
     teacache_warmup_steps: int = 4
@@ -140,6 +145,8 @@ class EraserDiTEraseSamplingParams(SamplingParams):
         super().__post_init__()
         from config.eraserdit_cache import resolve_eraserdit_cache_params
         resolve_eraserdit_cache_params(self)
+        if self.streaming_cache_dtype not in {"bf16", "uint8"}:
+            raise ValueError("streaming_cache_dtype must be bf16 or uint8")
         if self.mask_dilate_iter < 0:
             raise ValueError("mask_dilate_iter must be non-negative")
         if self.overlap >= self.infer_len:

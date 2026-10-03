@@ -3,6 +3,8 @@
 从[项目 README](../README.md#快速开始)完成首次安装和推理。以下指南描述当前代码，
 带日期的实验记录保留当时的环境、参数、质量目标与测量结果。
 
+本轮整体优化的状态、推荐命令与回归汇总见[推进记录](optimization_progress_20261002.md)。
+
 ## 使用与开发
 
 | 文档 | 内容 |
@@ -26,6 +28,16 @@
 
 | 日期 | 记录 | 范围 |
 | --- | --- | --- |
+| 2026-10-03 | [Ulysses 分块重叠](ulysses_overlap_20261003.md) | GPU kernel 重叠证据、head 分块筛选、数值/生命周期和整片配对 |
+| 2026-10-03 | [CUDA IPC 边界传输](cuda_ipc_boundary_20261003.md) | 去除每步 CPU 张量中转、GPU 所有权与进程生命周期、同条件视频对照 |
+| 2026-10-02 | [同卡数 DP 筛选](dp_topology_20261002.md) | 四卡单 worker 与双 worker 的冷批次吞吐、单条延迟、私有内存及输出差异 |
+| 2026-10-02 | [融合与内存验收](fusion_memory_optimization_20261002.md) | NCCL 融合/direct 打包、VAE 激活、后处理及 uint8 流式组合 |
+| 2026-10-02 | [残差缓存与局部探针](nccl_cache_quality_20261002.md) | 七项视频筛选、逐帧 mask/边缘指标与视觉检查 |
+| 2026-10-02 | [编译、预取与量化筛选](optimization_screening_20261002.md) | 真实权重 FFN compile/Graph、预取、INT8/FP8 及 ROI 语义审查 |
+| 2026-10-02 | [NCCL 文本缓存与 DiT 剖析](nccl_text_cache_profile_20261002.md) | 常驻 CFG/Ulysses 文本 K/V 复用、单步 trace 与交替 A/B |
+| 2026-10-02 | [帧转换与输出缓存优化](frame_copy_optimization_20261002.md) | 减少整窗临时分配、仅文件输出与单窗口对照 |
+| 2026-10-02 | [内存、卸载与拷贝优化](memory_optimization_20261002.md) | VAE 阶段驻留、CPU 权重复用、121 帧对照与显存限额 |
+| 2026-10-02 | [单窗口并行与打包优化](window_optimization_20261002.md) | 121 帧、各五次；CFG/SP 配置对照，Ulysses 打包 A/B 与文件一致性 |
 | 2026-09-30 | [单卡 24 GiB 显存预算](memory24_20260930.md) | VAE 算子分批、默认权重卸载、原尺寸整片限额验证 |
 | 2026-09-30 | [双卡 VAE 端到端验证](vae_e2e_validation_20260930.md) | 完整视频各三次、逐卡峰值降低；整片 SSIM 0.98313，未达到 0.99 |
 | 2026-09-29 | [双卡 VAE 空间并行](vae_spatial_validation_20260929.md) | 局部卷积、边界交换、编解码性能与逐卡峰值、数值及接缝验证 |

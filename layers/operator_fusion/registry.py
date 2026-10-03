@@ -69,6 +69,9 @@ def _triton_is_available() -> bool:
 
 
 def _resolve_sp_degree(server_args: Any) -> int:
+    config = getattr(server_args, 'pipeline_config', None)
+    if getattr(config, 'dit_parallel_backend', None) == 'nccl':
+        return int(config.sp_degree)
     parallel_context = getattr(server_args, "parallel_context", None)
     plan = getattr(parallel_context, "plan", None)
     if plan is not None:

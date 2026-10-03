@@ -97,6 +97,18 @@ def validate_nccl_dit(args, batch=None):
             raise ValueError('explicit TP/USP/FSDP degrees require --dit-parallel-backend nccl')
         return None
     topology = resolve_dit_topology(config)
+    import os
+    try:
+        head_chunks = int(os.environ.get('MGERASE_ULYSSES_HEAD_CHUNKS', '1'))
+    except ValueError as error:
+        raise ValueError('MGERASE_ULYSSES_HEAD_CHUNKS must be 1, 2 or 4') from error
+    if head_chunks not in (1, 2, 4):
+        raise ValueError('MGERASE_ULYSSES_HEAD_CHUNKS must be 1, 2 or 4')
+    if head_chunks > 1 and (topology.ulysses not in (2, 4) or topology.ring != 1
+            or topology.tp != 1 or topology.replicas != 1
+            or config.dit_fsdp_shard_degree * config.dit_fsdp_replicate_degree != 1
+            or os.environ.get('MGERASE_NCCL_PACKING', 'reference') != 'direct'):
+        raise ValueError('Ulysses head chunks require resident SP2/4, direct packing, no Ring/TP/FSDP')
     import torch
     if args.resolve_component_dtype('transformer') is not torch.bfloat16:
         raise ValueError('NCCL DiT currently requires bf16 model precision')
@@ -117,12 +129,38 @@ def validate_nccl_dit(args, batch=None):
     if (args.enable_torch_compile or normalize_compile_components(getattr(args, 'compile_components', ()))
             or str(args.transformer_quantization).strip().lower() != 'none'):
         raise ValueError('NCCL quality-alignment path requires compile off and unquantized DiT')
-    if args.attention_backend != 'sdpa' or args.operator_fusion_backend != 'disabled':
-        raise ValueError('NCCL quality-alignment path requires SDPA and operator fusion disabled')
+    if args.attention_backend != 'sdpa':
+        raise ValueError('NCCL quality-alignment path requires SDPA')
+    if args.operator_fusion_backend != 'disabled':
+        validate_nccl_fusion(args, topology)
     if config.cfg_parallel_device is not None:
         raise ValueError('use cfg_degree with NCCL DiT workers')
     if batch is not None:
         get = batch.get if isinstance(batch, dict) else lambda key, default: getattr(batch, key, default)
-        if get('transformer_cache_mode', 'off') != 'off' or get('cache_text_projections', False):
-            raise ValueError('NCCL quality-alignment path requires transformer caches off')
+        if get('transformer_cache_mode', 'off') != 'off':
+            validate_nccl_text_cache(config, topology)
+        if get('cache_text_projections', False):
+            validate_nccl_text_cache(config, topology)
     return topology
+
+
+def validate_nccl_text_cache(config, topology):
+    """Text K/V reuse is currently validated only for resident CFG/Ulysses."""
+    if (topology.tp != 1 or topology.ring != 1 or topology.replicas != 1
+            or config.dit_fsdp_shard_degree * config.dit_fsdp_replicate_degree != 1):
+        raise ValueError('NCCL text projection cache requires resident CFG/Ulysses without TP, Ring or FSDP')
+
+
+def validate_nccl_fusion(args, topology):
+    config = args.pipeline_config
+    if (topology.tp != 1 or topology.ring != 1 or topology.replicas != 1
+            or topology.sp not in (1, 2, 4)
+            or config.dit_fsdp_shard_degree * config.dit_fsdp_replicate_degree != 1):
+        raise ValueError('NCCL operator fusion requires resident CFG/Ulysses with SP1/2/4')
+    if args.operator_fusion_backend not in ('auto', 'triton'):
+        raise ValueError('NCCL operator fusion backend must be disabled, auto or triton')
+    ops = args.operator_fusion_ops
+    if ops is not None:
+        ops = tuple(s.strip() for s in ops.split(',') if s.strip()) if isinstance(ops, str) else tuple(ops)
+        if not ops or set(ops) - {'qk_rmsnorm_rope', 'rmsnorm_adaln'}:
+            raise ValueError('NCCL operator fusion currently supports qk_rmsnorm_rope and rmsnorm_adaln only')

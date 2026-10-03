@@ -73,3 +73,15 @@ def gather_variable(value, group, size, *, dim=1, lengths=None, dst=None):
     if outputs is None:
         return None
     return torch.cat([v.narrow(dim, 0, n) for v, n in zip(outputs, lengths)], dim=dim)
+
+
+class DiTCacheCoordinator:
+    """Minimal branch-SP reduction contract for the existing cache controllers."""
+    def __init__(self, groups):
+        self.group, ranks, self.rank = groups.get('sp')
+        self.world_size = len(ranks)
+
+    def all_reduce(self, tensor):
+        if self.world_size > 1:
+            dist.all_reduce(tensor, group=self.group)
+        return tensor

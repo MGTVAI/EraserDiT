@@ -14,7 +14,7 @@ from config.dit_parallel import DiTTopology, resolve_dit_topology
 from config.eraserdit import EraserDiTPipelineConfig
 
 
-def _rank_check(rank, topology, rendezvous, cuda, fsdp, ring_mode, tp_mode):
+def _rank_check(rank, topology, rendezvous, cuda, fsdp, ring_mode, tp_mode, text_cache=False, fusion=False, residual_cache=False):
     from config.server_args import ServerArgs, set_global_server_args
     from distributed.dit_groups import DiTGroups
     from models.dits.eraserdit_transformer import EraserDiTLTXVideoTransformer3DModel
@@ -52,7 +52,8 @@ def _rank_check(rank, topology, rendezvous, cuda, fsdp, ring_mode, tp_mode):
         set_global_server_args(ServerArgs(device=str(device), attention_backend='sdpa'))
         torch.manual_seed(123)
         model = EraserDiTLTXVideoTransformer3DModel(in_channels=3, out_channels=4,
-            num_attention_heads=4, attention_head_dim=16, cross_attention_dim=64,
+            num_attention_heads=32 if fusion else 4, attention_head_dim=64 if fusion else 16,
+            cross_attention_dim=2048 if fusion else 64,
             num_layers=2, caption_channels=16).eval().requires_grad_(False)
         if cuda:
             model.to(dtype=torch.bfloat16)
@@ -81,6 +82,17 @@ def _rank_check(rank, topology, rendezvous, cuda, fsdp, ring_mode, tp_mode):
                 lambda name, module: name.startswith('transformer_blocks.') and name.count('.') == 1])
         config = EraserDiTPipelineConfig(sp_linear_mode='sharded', ring_attention_mode=ring_mode,
                                         tp_linear_mode=tp_mode)
+        cached = DiTRankRunner(deepcopy(model), groups, config) if text_cache else None
+        fused = None
+        if fusion:
+            from layers.operator_fusion.registry import resolve_operator_fusion_decision
+            optimized = deepcopy(model)
+            decision = resolve_operator_fusion_decision(SimpleNamespace(
+                operator_fusion_backend='triton', operator_fusion_ops=None, sp_degree=topology.sp))
+            optimized.operator_fusion_decision = decision
+            for block in optimized.transformer_blocks:
+                block.attn1.processor.operator_fusion_decision = decision
+            fused = DiTRankRunner(optimized, groups, config)
         runner = DiTRankRunner(model, groups, config)
         for frames in ((1, 2, 65) if ring_mode == 'streaming' else (1, 2)):
             # Nine tokens exercises unequal sequence and ring shards.
@@ -99,7 +111,28 @@ def _rank_check(rank, topology, rendezvous, cuda, fsdp, ring_mode, tp_mode):
                     expected = [reference(**v, hidden_states=hidden, timestep=timestep)[0].float()
                                 for v in (negative, positive)]
                     actual = runner.predict(packet)
+                    if fused is not None:
+                        fused_actual = fused.predict(dict(packet, cache_text_projections=True))
+                        for a, b in zip(actual, fused_actual):
+                            torch.testing.assert_close(a, b, atol=0, rtol=0)
+                    if cached is not None:
+                        cached_actual = cached.predict(dict(packet, cache_text_projections=True))
+                        for a, b in zip(actual, cached_actual):
+                            torch.testing.assert_close(a, b, atol=0, rtol=0)
                     owner_actual = runner.predict(packet, owner_only=True)
+                    if topology.ulysses > 1:
+                        packing = runner.sequence.packing
+                        try:
+                            for alternative in (('reference', 'packed', 'direct') if cuda else ('reference', 'packed')):
+                                if alternative == packing:
+                                    continue
+                                runner.sequence.packing = alternative
+                                alternate = runner.predict(packet, owner_only=True)
+                                if rank == 0:
+                                    for a, b in zip(owner_actual, alternate):
+                                        torch.testing.assert_close(a, b, atol=0, rtol=0)
+                        finally:
+                            runner.sequence.packing = packing
                 if rank == 0:
                     for a, b in zip(owner_actual, actual):
                         torch.testing.assert_close(a, b, atol=0, rtol=0)
@@ -110,7 +143,42 @@ def _rank_check(rank, topology, rendezvous, cuda, fsdp, ring_mode, tp_mode):
                         torch.testing.assert_close(a, b, atol=0, rtol=0)
                     else:
                         torch.testing.assert_close(a, b, atol=.035 if cuda else 2e-6, rtol=.035 if cuda else 2e-5)
+            if cached is not None:
+                for stats in cached.report()['text_cache'].values():
+                    assert stats['projection_hits'] == 1
+                    assert stats['kv_hits'] == len(model.transformer_blocks)
+                cached.reset()
+                assert not cached.text_caches and cached.static is None
+            if fused is not None:
+                stats = fused.report()['operator_fusion']
+                forwards = 2 * (2 if topology.cfg == 1 else 1)
+                assert stats['fused_calls']['qk_rmsnorm_rope'] == 2 * forwards
+                assert stats['fused_calls']['rmsnorm_adaln'] == 4 * forwards
+                assert not stats['runtime_fallback_reasons']
+                fused.reset()
             runner.reset()
+        if residual_cache:
+            cached_runner = DiTRankRunner(deepcopy(reference), groups, config)
+            for mode in ('teacache', 'cache_dit'):
+                for force in (True, False):
+                    for metric in ('global', 'mask_frame_max'):
+                        options = dict(transformer_cache_mode=mode, transformer_cache_force_compute=force,
+                            cache_probe_metric=metric, teacache_warmup_steps=1, cache_dit_warmup_steps=1)
+                        for index in range(6):
+                            packet = dict(hidden=hidden, timestep=timestep,
+                                static=dict(negative=negative, positive=positive) if index == 0 else None)
+                            expected = runner.predict(packet)
+                            actual = cached_runner.predict(dict(packet, residual_cache=options,
+                                step=index, total_steps=6, cache_text_projections=True))
+                            for a, b in zip(actual, expected):
+                                torch.testing.assert_close(a, b, atol=0 if force else .035, rtol=0 if force else .035)
+                        report = cached_runner.report()['residual_cache']
+                        total = report['total']
+                        skipped = total.get('skip_steps', total.get('cached_middle_steps', 0))
+                        assert skipped == (0 if force else 2 * (2 if topology.cfg == 1 else 1)), report
+                        assert not report['communication']['mismatch_count'] if 'communication' in report else True
+                        cached_runner.reset(); runner.reset()
+                        assert cached_runner.cache_window is None
         if topology.tp > 1 or fsdp:
             original = sum(p.numel() * p.element_size() for p in reference.parameters())
             assert runner.report()['local_parameter_bytes'] < original
@@ -119,6 +187,43 @@ def _rank_check(rank, topology, rendezvous, cuda, fsdp, ring_mode, tp_mode):
 
 
 class DistributedDiTTests(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get('ERASERDIT_TEST_DIT_NCCL') == '1', 'opt-in real NCCL GPUs')
+    def test_residual_cache_same_topology(self):
+        for topology in (DiTTopology(cfg=2), DiTTopology(ulysses=2)):
+            self.run_ranks(topology, cuda=True, residual_cache=True)
+        if torch.cuda.device_count() >= 4:
+            self.run_ranks(DiTTopology(cfg=2, ulysses=2), cuda=True, residual_cache=True)
+
+    @unittest.skipUnless(os.environ.get('ERASERDIT_TEST_DIT_NCCL') == '1', 'opt-in real NCCL GPUs')
+    def test_fusion_matches_same_topology(self):
+        for topology in (DiTTopology(cfg=2), DiTTopology(ulysses=2)):
+            self.run_ranks(topology, cuda=True, fusion=True)
+        if torch.cuda.device_count() >= 4:
+            self.run_ranks(DiTTopology(cfg=2, ulysses=2), cuda=True, fusion=True)
+
+    @unittest.skipUnless(os.environ.get('ERASERDIT_TEST_DIT_NCCL') == '1', 'opt-in real process-pool GPUs')
+    def test_fusion_process_pool(self):
+        self._check_process_pool(sp_degree=2 if torch.cuda.device_count() >= 4 else 1,
+                                 text_cache=True, fusion=True)
+
+    @unittest.skipUnless(os.environ.get('ERASERDIT_TEST_DIT_NCCL') == '1', 'opt-in real NCCL GPUs')
+    def test_text_cache_matches_same_topology(self):
+        for topology in (DiTTopology(cfg=2), DiTTopology(ulysses=2)):
+            self.run_ranks(topology, cuda=True, text_cache=True)
+        if torch.cuda.device_count() >= 4:
+            self.run_ranks(DiTTopology(cfg=2, ulysses=2), cuda=True, text_cache=True)
+
+    @unittest.skipUnless(os.environ.get('ERASERDIT_TEST_DIT_NCCL') == '1', 'opt-in real process-pool GPUs')
+    def test_text_cache_process_pool(self):
+        self._check_process_pool(sp_degree=2 if torch.cuda.device_count() >= 4 else 1, text_cache=True)
+
+    @unittest.skipUnless(os.environ.get('ERASERDIT_TEST_DIT_NCCL') == '1', 'opt-in real NCCL GPUs')
+    def test_ulysses_packing_matches_reference(self):
+        self.run_ranks(DiTTopology(ulysses=2), cuda=True)
+        if torch.cuda.device_count() >= 4:
+            self.run_ranks(DiTTopology(ulysses=4), cuda=True)
+            self.run_ranks(DiTTopology(ulysses=2, cfg=2), cuda=True)
+
     @unittest.skipUnless(os.environ.get('ERASERDIT_TEST_DIT_NCCL') == '1', 'opt-in real process-pool GPUs')
     def test_process_pool_parent_group_and_peer_failure(self):
         self._check_process_pool(sp_degree=1)
@@ -129,18 +234,53 @@ class DistributedDiTTests(unittest.TestCase):
             self.skipTest('CFG2 x SP2 requires four GPUs')
         self._check_process_pool(sp_degree=2)
 
-    def _check_process_pool(self, sp_degree):
+    @unittest.skipUnless(os.environ.get('ERASERDIT_TEST_DIT_NCCL') == '1', 'opt-in real process-pool GPUs')
+    def test_residual_cache_process_pool(self):
+        self._check_process_pool(sp_degree=2 if torch.cuda.device_count() >= 4 else 1,
+                                 text_cache=True, residual_cache=True)
+
+    @unittest.skipUnless(os.environ.get('ERASERDIT_TEST_DIT_NCCL') == '1', 'opt-in real NCCL GPUs')
+    def test_cuda_ipc_process_pool(self):
+        from unittest.mock import patch
+        with patch.dict(os.environ, MGERASE_DIT_BOUNDARY_TRANSPORT='cuda_ipc'):
+            self._check_process_pool(sp_degree=2 if torch.cuda.device_count() >= 4 else 1,
+                                     text_cache=True, residual_cache=True)
+
+    @unittest.skipUnless(os.environ.get('ERASERDIT_TEST_DIT_NCCL') == '1', 'opt-in real NCCL GPUs')
+    def test_cuda_ipc_normal_close(self):
+        from unittest.mock import patch
+        with patch.dict(os.environ, MGERASE_DIT_BOUNDARY_TRANSPORT='cuda_ipc'):
+            self._check_process_pool(sp_degree=1, kill_peer=False)
+
+    @unittest.skipUnless(os.environ.get('ERASERDIT_TEST_DIT_NCCL') == '1', 'opt-in real NCCL GPUs')
+    def test_cuda_ipc_owner_rank_failure(self):
+        from unittest.mock import patch
+        with patch.dict(os.environ, MGERASE_DIT_BOUNDARY_TRANSPORT='cuda_ipc'):
+            self._check_process_pool(sp_degree=1, failed_rank=0)
+
+    @unittest.skipUnless(os.environ.get('ERASERDIT_TEST_DIT_NCCL') == '1', 'opt-in real NCCL GPUs')
+    def test_head_overlap_process_pool(self):
+        if torch.cuda.device_count() < 4:
+            self.skipTest('CFG2 x SP2 requires four GPUs')
+        from unittest.mock import patch
+        with patch.dict(os.environ, MGERASE_NCCL_PACKING='direct', MGERASE_ULYSSES_HEAD_CHUNKS='2'):
+            self._check_process_pool(sp_degree=2, text_cache=True, fusion=True, residual_cache=True)
+
+    def _check_process_pool(self, sp_degree, text_cache=False, fusion=False, residual_cache=False,
+                            kill_peer=True, failed_rank=1):
         from copy import deepcopy
         from config.server_args import ServerArgs, set_global_server_args
         from models.dits.eraserdit_transformer import EraserDiTLTXVideoTransformer3DModel
         from pipelines.runtime.dit_executor import DiTProcessPool, DiTProcessWindow
         config = EraserDiTPipelineConfig(dit_parallel_backend='nccl', cfg_degree=2, sp_degree=sp_degree,
                                         sp_linear_mode='sharded')
-        args = ServerArgs(device='cuda:0', pipeline_config=config)
+        args = ServerArgs(device='cuda:0', pipeline_config=config,
+                          operator_fusion_backend='triton' if fusion else 'disabled')
         set_global_server_args(args)
         torch.manual_seed(42)
         model = EraserDiTLTXVideoTransformer3DModel(in_channels=3, out_channels=1,
-            num_attention_heads=4, attention_head_dim=16, cross_attention_dim=64,
+            num_attention_heads=32 if fusion else 4, attention_head_dim=64 if fusion else 16,
+            cross_attention_dim=2048 if fusion else 64,
             num_layers=2, caption_channels=16).to(device='cuda:0', dtype=torch.bfloat16).eval()
         reference = deepcopy(model)
         topology = resolve_dit_topology(config)
@@ -164,9 +304,20 @@ class DistributedDiTTests(unittest.TestCase):
                     for key in ('hidden_states', 'cond_latents', 'mask_values'):
                         values[key] = values[key][:, :, :1].repeat(1, 1, frames, 1, 1)
                     negative = dict(values, encoder_hidden_states=values['encoder_hidden_states'] + .7)
-                    with DiTProcessWindow(model, plan, pool=pool) as window:
+                    request = SimpleNamespace(cache_text_projections=text_cache,
+                        transformer_cache_mode='teacache' if residual_cache else 'off',
+                        transformer_cache_force_compute=True, cache_probe_metric='mask_frame_max', extra={})
+                    with DiTProcessWindow(model, plan, pool=pool, batch=request, total_steps=6) as window:
+                        held = []
                         for scale in (0., 1., 7.5):
-                            actual = window.predict(negative, values)
+                            # Exercise non-default producer/consumer streams.
+                            with torch.cuda.stream(torch.cuda.Stream()):
+                                hidden = torch.randn_like(values['hidden_states']).transpose(-1, -2)
+                                values = dict(values, hidden_states=hidden)
+                                negative = dict(negative, hidden_states=hidden)
+                                actual = window.predict(negative, values)
+                                held.append((actual, tuple(a.clone() for a in actual)))
+                            torch.cuda.synchronize()
                             with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
                                 expected = [reference(**v)[0].float() for v in (negative, values)]
                             for a,b in zip(actual, expected):
@@ -179,25 +330,55 @@ class DistributedDiTTests(unittest.TestCase):
                             guided = window.predict_guided(negative, values, scale)
                             torch.testing.assert_close(guided, actual[0] + scale * (actual[1] - actual[0]),
                                                        atol=0, rtol=0)
+                        # Retained results must not alias reusable IPC buffers.
+                        for pair, snapshot in held:
+                            for a, b in zip(pair, snapshot):
+                                torch.testing.assert_close(a, b, atol=0, rtol=0)
                         report = window.report()
                         self.assertEqual(report['transport'], 'nccl')
+                        self.assertEqual(report['boundary_transport'],
+                            'cuda_tensor_ipc' if pool.boundary_transport == 'cuda_ipc' else 'cpu_tensor_ipc')
                         self.assertEqual(report['output_assembly'], 'owner_only')
+                        self.assertEqual(report['cache_text_projections'], text_cache)
+                        for rank_report in report['rank_reports']:
+                            if fusion:
+                                stats = rank_report['operator_fusion']
+                                self.assertEqual(stats['sp_degree'], sp_degree)
+                                self.assertEqual(stats['fused_calls']['qk_rmsnorm_rope'], 12)
+                                self.assertEqual(stats['fused_calls']['rmsnorm_adaln'], 24)
+                            self.assertEqual(bool(rank_report['text_cache']), text_cache)
+                            for stats in rank_report['text_cache'].values():
+                                self.assertEqual(stats['projection_hits'], 5)
+                                self.assertEqual(stats['kv_hits'], 10)
                         self.assertEqual(report['boundary_tensor_bytes']['output'], 9 * expected[0].numel() * 4)
                         self.assertTrue(all(v >= 0 for v in report['boundary_wall_seconds'].values()))
                         self.assertTrue(all(r['window_gpu_seconds']['forward_and_output_gather'] > 0
                                             for r in report['rank_reports']))
+                held_before_close = tuple(a.clone() for a in actual)
                 self.assertEqual(dist.get_world_size(), 1)
-                pool.processes[1].terminate()
-                pool.processes[1].join(timeout=5)
-                with self.assertRaises(RuntimeError):
-                    pool.call('report')
+                if kill_peer:
+                    pool.processes[failed_rank].terminate()
+                    pool.processes[failed_rank].join(timeout=5)
+                    with self.assertRaises(RuntimeError):
+                        pool.call('report')
+                else:
+                    pool.close()
                 self.assertTrue(pool.closed)
+                for a, b in zip(actual, held_before_close):
+                    torch.testing.assert_close(a, b, atol=0, rtol=0)
                 self.assertTrue(all(not p.is_alive() for p in pool.processes))
                 self.assertEqual(dist.get_world_size(), 1)
             finally:
                 if pool:
                     pool.close(force=True)
                 dist.destroy_process_group()
+
+    def test_invalid_boundary_transport(self):
+        from unittest.mock import patch
+        from pipelines.runtime.dit_executor import DiTProcessPool
+        with patch.dict(os.environ, MGERASE_DIT_BOUNDARY_TRANSPORT='invalid'):
+            with self.assertRaisesRegex(ValueError, 'BOUNDARY_TRANSPORT'):
+                DiTProcessPool(torch.nn.Linear(1, 1).bfloat16(), {}, None)
 
     def test_topology_noncontiguous_sp_groups(self):
         topology = DiTTopology(tp=2, ulysses=2, ring=2, cfg=2)
@@ -229,11 +410,34 @@ class DistributedDiTTests(unittest.TestCase):
         _validate_eraserdit_request({'sampling': {'transformer_cache_mode': 'off'}}, args)
         with self.assertRaises(ValueError):
             _validate_eraserdit_request({'sampling': {'transformer_cache_mode': 'teacache'}}, args)
+        from config.dit_parallel import validate_nccl_dit
+        for allowed in (EraserDiTPipelineConfig(dit_parallel_backend='nccl', cfg_degree=2),
+                        EraserDiTPipelineConfig(dit_parallel_backend='nccl', sp_degree=2)):
+            validate_nccl_dit(ServerArgs(pipeline_config=allowed), {'cache_text_projections': True})
+        for blocked in (config,
+                        EraserDiTPipelineConfig(dit_parallel_backend='nccl', tp_degree=2),
+                        EraserDiTPipelineConfig(dit_parallel_backend='nccl', dit_fsdp_shard_degree=2)):
+            with self.assertRaisesRegex(ValueError, 'resident CFG/Ulysses'):
+                validate_nccl_dit(ServerArgs(pipeline_config=blocked), {'cache_text_projections': True})
+        for sp in (1, 2, 4):
+            allowed = EraserDiTPipelineConfig(dit_parallel_backend='nccl', sp_degree=sp)
+            args = ServerArgs(pipeline_config=allowed, operator_fusion_backend='auto')
+            validate_nccl_dit(args)
+            from layers.operator_fusion.registry import resolve_operator_fusion_decision
+            self.assertEqual(resolve_operator_fusion_decision(args).sp_degree, sp)
+        for blocked in (config,
+                        EraserDiTPipelineConfig(dit_parallel_backend='nccl', tp_degree=2),
+                        EraserDiTPipelineConfig(dit_parallel_backend='nccl', dit_fsdp_shard_degree=2)):
+            with self.assertRaisesRegex(ValueError, 'operator fusion requires resident'):
+                ServerArgs(pipeline_config=blocked, operator_fusion_backend='auto')
+        with self.assertRaisesRegex(ValueError, 'qk_rmsnorm_rope and rmsnorm_adaln only'):
+            ServerArgs(pipeline_config=EraserDiTPipelineConfig(dit_parallel_backend='nccl'),
+                       operator_fusion_backend='triton', operator_fusion_ops='gated_residual')
 
-    def run_ranks(self, topology, cuda=False, fsdp=False, ring_mode='reference', tp_mode='reference'):
+    def run_ranks(self, topology, cuda=False, fsdp=False, ring_mode='reference', tp_mode='reference', text_cache=False, fusion=False, residual_cache=False):
         print('checking', topology, 'cuda', cuda, 'fsdp', fsdp, flush=True)
         with tempfile.TemporaryDirectory() as directory:
-            mp.spawn(_rank_check, args=(topology, f'file://{directory}/store', cuda, fsdp, ring_mode, tp_mode),
+            mp.spawn(_rank_check, args=(topology, f'file://{directory}/store', cuda, fsdp, ring_mode, tp_mode, text_cache, fusion, residual_cache),
                      nprocs=topology.world_size, join=True)
 
     @unittest.skipUnless(os.environ.get('ERASERDIT_TEST_DIT_PROCESSES') == '1', 'opt-in multiprocessing test')

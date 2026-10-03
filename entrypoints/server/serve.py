@@ -94,6 +94,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--vae-tiling', action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument('--vae-tile-size', type=int, default=None)
     parser.add_argument('--vae-tile-stride', type=int, default=None)
+    parser.add_argument('--vae-chunk-elements', type=int, default=None)
     parser.add_argument('--vae-low-memory', action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument('--transformer-quantization', choices=['none', 'int8_w8a8_native'], default='none')
     parser.add_argument('--quantization-scope', choices=['blocks', 'ffn'], default=None)
@@ -134,7 +135,7 @@ def _build_server_args(args: argparse.Namespace, pipeline_cls: type) -> ServerAr
     for name in ('sp_degree', 'cfg_degree', 'sp_linear_mode', 'sp_attention_mode',
                  'dit_parallel_backend', 'tp_degree', 'tp_linear_mode', 'ulysses_degree', 'ring_degree',
                  'ring_attention_mode', 'dit_fsdp_shard_degree', 'dit_fsdp_replicate_degree',
-                 'parallel_devices', 'vae_degree', 'vae_tiling', 'vae_tile_size', 'vae_tile_stride', 'vae_low_memory',
+                 'parallel_devices', 'vae_degree', 'vae_tiling', 'vae_tile_size', 'vae_tile_stride', 'vae_low_memory', 'vae_chunk_elements',
                  'quantization_scope'):
         value = getattr(args, name, None)
         if value is not None:

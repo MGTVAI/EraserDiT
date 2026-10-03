@@ -16,6 +16,7 @@ CACHE_DEFAULTS = {
     'transformer_cache_mode': 'off',
     'transformer_cache_force_compute': False,
     'cache_residual_predictor': 'none',
+    'cache_probe_metric': 'global',
     'cache_text_projections': None,
     'teacache_threshold': 0.3,
     'max_teacache_consecutive_skip': 1,
@@ -56,6 +57,8 @@ def resolve_eraserdit_cache_params(source, *, enable_torch_compile=False, num_bl
     )
     if get('cache_text_projections') is not None and type(get('cache_text_projections')) is not bool:
         raise TypeError('cache_text_projections must be a bool or None (auto)')
+    if get('cache_probe_metric') not in ('global', 'mask_frame_max'):
+        raise ValueError('cache_probe_metric must be global or mask_frame_max')
     if get('cache_residual_predictor') not in ('none', 'linear'):
         raise ValueError('cache_residual_predictor must be none or linear')
     force = get('transformer_cache_force_compute')

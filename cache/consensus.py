@@ -34,6 +34,7 @@ class CacheDecisionConsensus:
     ) -> None:
         self._coordinator = coordinator
         self._stats = stats
+        self.probe_regions = None
 
     def relative_l1(
         self,
@@ -42,6 +43,16 @@ class CacheDecisionConsensus:
         *,
         context: CacheExecutionContext,
     ) -> float:
+        if self.probe_regions is not None:
+            sums, error = None, None
+            try:
+                sums = self.probe_regions.sums(current, previous)
+            except BaseException as caught:
+                error = caught
+            self.synchronize_validation(error, device=current.device, phase='probe regions')
+            if self._coordinator is not None:
+                self._all_reduce(sums)
+            return self.probe_regions.distance(sums)
         error: BaseException | None = None
         numerator = 0.0
         denominator = 0.0

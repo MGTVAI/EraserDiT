@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 
+import numpy as np
 import torch
 
 from pipelines.runtime.events import record_runtime_event
@@ -108,7 +109,15 @@ def ensure_window_cache_loaded(
             f"windowed_streaming reader returned mismatched frame counts: "
             f"video={video_frames.shape[0]} mask={mask_frames.shape[0]} expected={missing_frames}"
         )
-    mask_frames = binarize_mask_array(mask_frames)
+    # Exact uint8 mode uses the same RGB decode and first-channel mask
+    # contract as read_mask_array. Gray conversion can shift threshold edges.
+    if mask_frames.ndim == 4:
+        mask_frames = mask_frames[..., 0]
+    if context.streaming_mask_threshold is None:
+        mask_frames = binarize_mask_array(mask_frames)
+    else:
+        mask_frames = np.where(mask_frames <= context.streaming_mask_threshold,
+                               np.uint8(0), np.uint8(255))
     if isinstance(context.video_frame_cache, TensorFrameCache):
         context.video_frame_cache.append_uint8(video_frames)
         context.record_runtime_transfer(

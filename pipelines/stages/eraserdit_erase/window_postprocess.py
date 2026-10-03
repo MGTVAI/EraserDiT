@@ -15,6 +15,7 @@ which writes the colour-aligned frames and feeds the raw ones forward.
 
 from __future__ import annotations
 
+import os
 import torch
 
 from config.server_args import ServerArgs
@@ -51,7 +52,13 @@ class EraserDiTEraseWindowPostprocessStage(PipelineStage):
         input_len = int(batch.extra[MODEL_FRAMES_KEY])
 
         # [1, C, F, H, W] -> [F, C, H, W] cropped to the original frame extent.
-        decoded_frames = decoded[0].permute(1, 0, 2, 3).to(torch.float32)
+        chunked_fp32 = (os.environ.get('MGERASE_POSTPROCESS_CHUNKED_FP32') == '1'
+                        and decoded.is_cuda and decoded.dtype in (torch.bfloat16, torch.float32)
+                        and str(batch.colorfix_type) == 'RGB' and bool(batch.colorfix_per_channel)
+                        and style_video.dtype in (torch.uint8, torch.float32))
+        decoded_frames = decoded[0].permute(1, 0, 2, 3)
+        if not chunked_fp32:
+            decoded_frames = decoded_frames.float()
         # Tail retained for the *next* window's model input: raw, un-colour-fixed,
         # still at the aligned spatial size (baseline keeps the whole padded frame).
         overlap_right = int(spec.get("overlap_right", 0))
@@ -60,7 +67,7 @@ class EraserDiTEraseWindowPostprocessStage(PipelineStage):
             # which the baseline also keeps on CPU between windows.
             with diagnostic_stage_timer(batch.metrics, 'diagnostic.postprocess.raw_tail', device=decoded.device):
                 state.prev_raw_tail = (
-                    decoded_frames[-overlap_right:].detach().cpu().clone()
+                    decoded_frames[-overlap_right:].detach().to(device='cpu', dtype=torch.float32, copy=True)
                 )
 
         # Baseline writes ``output_frames[shift_alpha:][:ori_frames]``: the model
@@ -94,6 +101,7 @@ class EraserDiTEraseWindowPostprocessStage(PipelineStage):
                 style_mask,
                 colorfix_type=str(batch.colorfix_type),
                 per_channel=bool(batch.colorfix_per_channel),
+                chunked_fp32=chunked_fp32,
                 out=patch[0, :, prefix_len:prefix_len + new_frames].permute(1, 0, 2, 3),
             )
 

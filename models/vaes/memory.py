@@ -1,5 +1,7 @@
 """Bound VAE operator temporaries without splitting receptive fields."""
 
+import os
+
 import torch
 from diffusers.models.normalization import RMSNorm
 
@@ -32,11 +34,18 @@ class ChunkedRMSNorm(RMSNorm):
         return output
 
 
-def configure_vae_memory(vae, enabled):
-    from models.vaes.eraserdit_vae import LTXVideoCausalConv3d
+def configure_vae_memory(vae, enabled, chunk_elements=16 * 1024 * 1024):
+    """Set a target element budget; a complete frame/receptive field is the floor."""
+    if isinstance(chunk_elements, bool) or not isinstance(chunk_elements, int) or chunk_elements < 1:
+        raise ValueError("chunk_elements must be a positive integer")
+    from models.vaes.eraserdit_vae import (LTXVideoCausalConv3d, LTXVideoResnetBlock3d,
+                                        LTXVideoUpsampler3d, LTXVideoDecoder3d, LTXVideoDownsampler3d)
+    inplace = bool(enabled and os.environ.get("MGERASE_VAE_INPLACE_ACTIVATIONS") == "1")
     for module in vae.modules():
         if isinstance(module, (ChunkedRMSNorm, LTXVideoCausalConv3d)):
-            module.chunk_size = 16 * 1024 * 1024 if enabled else 0
+            module.chunk_size = chunk_elements if enabled else 0
+        if isinstance(module, (LTXVideoResnetBlock3d, LTXVideoUpsampler3d, LTXVideoDecoder3d, LTXVideoDownsampler3d)):
+            module.memory_inplace = inplace
 
 
 def chunked_causal_conv(module, inputs):
@@ -77,4 +86,36 @@ def chunked_causal_conv(module, inputs):
             output = value.new_empty(shape)
         output[:, :, start:end].copy_(value)
         del value, parts
+    return output
+
+
+def vae_modulate(hidden, scale, shift, *, inplace=False):
+    """Overwrite owned normalization output, preserving both native dtype rounds."""
+    if inplace and not torch.is_grad_enabled() and hidden.dtype == scale.dtype == shift.dtype:
+        return hidden.mul_(1 + scale).add_(shift)
+    return hidden * (1 + scale) + shift
+
+
+def vae_silu(hidden, activation, *, inplace=False):
+    if inplace and not torch.is_grad_enabled() and isinstance(activation, torch.nn.SiLU):
+        return torch.nn.functional.silu(hidden, inplace=True)
+    return activation(hidden)
+
+
+def chunked_downsample_residual(inputs, stride, group_size, chunk_elements):
+    """Keep each channel/stride reduction complete, bound only output frames."""
+    frames = inputs.shape[2] // stride[0]
+    per_frame = inputs.numel() // frames
+    step = max(1, chunk_elements // per_frame)
+    output = None
+    for start in range(0, frames, step):
+        value = inputs[:, :, start * stride[0]:min(frames, start + step) * stride[0]]
+        value = value.unflatten(4, (-1, stride[2])).unflatten(3, (-1, stride[1])).unflatten(2, (-1, stride[0]))
+        value = value.permute(0, 1, 3, 5, 7, 2, 4, 6).flatten(1, 4)
+        value = value.unflatten(1, (-1, group_size)).mean(dim=2)
+        if output is None:
+            shape = list(value.shape)
+            shape[2] = frames
+            output = value.new_empty(shape)
+        output[:, :, start:start + step].copy_(value)
     return output

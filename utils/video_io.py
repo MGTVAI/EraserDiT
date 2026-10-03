@@ -373,10 +373,12 @@ def frames_uint8_to_tensor(frames: np.ndarray) -> torch.Tensor:
             f"Expected uint8 video frames with shape [F,H,W,3], got {tuple(frames.shape)}"
         )
     return (
-        torch.from_numpy(frames.copy())
+        # Own one float32 allocation: no intermediate uint8 copy or second
+        # float32 normalization buffer. NumPy also handles negative strides
+        # and read-only inputs without borrowing their mutable storage.
+        torch.from_numpy(np.array(frames, dtype=np.float32, copy=True, order="C"))
         .permute(0, 3, 1, 2)
-        .to(dtype=torch.float32)
-        / 255.0
+        .div_(255.0)
     )
 
 
@@ -385,7 +387,9 @@ def mask_uint8_to_tensor(mask: np.ndarray) -> torch.Tensor:
         raise ValueError(
             f"Expected uint8 mask frames with shape [F,H,W], got {tuple(mask.shape)}"
         )
-    return torch.from_numpy(mask.copy())[:, None, :, :].to(dtype=torch.float32) / 255.0
+    return torch.from_numpy(
+        np.array(mask, dtype=np.float32, copy=True, order="C")
+    )[:, None, :, :].div_(255.0)
 
 
 def frames_tensor_to_uint8(frames: torch.Tensor) -> np.ndarray:
@@ -1709,3 +1713,25 @@ class WindowedVideoStore:
             shutil.rmtree(self._workdir, ignore_errors=True)
         except Exception:
             pass
+
+
+def read_mask_rgb_max(video_path, *, width, height, num_frames, chunk_frames=16, checkpoint=None):
+    """Find the preload RGB-mask global maximum with bounded memory.
+
+    Stop at 255: no later uint8 frame can raise the threshold. Soft/dark masks
+    require a full scan so chunk boundaries cannot change binarization.
+    """
+    reader = SequentialVideoReader(video_path, width=width, height=height,
+                                   pix_fmt="rgb24", thread_count="auto")
+    maximum = 0
+    try:
+        for start in range(0, num_frames, chunk_frames):
+            if checkpoint is not None:
+                checkpoint()
+            frames = reader.read_frames(min(chunk_frames, num_frames - start))
+            maximum = max(maximum, int(frames[..., 0].max()))
+            if maximum == 255:
+                break
+    finally:
+        reader.close()
+    return maximum

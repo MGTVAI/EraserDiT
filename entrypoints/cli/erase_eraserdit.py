@@ -91,6 +91,8 @@ def _build_parser() -> argparse.ArgumentParser:
         options = {"default": default}
         if name == "transformer_cache_mode":
             options["choices"] = ("off", "teacache", "cache_dit")
+        elif name == "cache_probe_metric":
+            options["choices"] = ("global", "mask_frame_max")
         elif name == "cache_residual_predictor":
             options["choices"] = ("none", "linear")
         elif name == "cache_text_projections" or isinstance(default, bool):
@@ -124,6 +126,8 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="explicit spatial tiling; numerics differ from untiled VAE")
     parser.add_argument("--vae-tile-size", type=int, default=512)
     parser.add_argument("--vae-tile-stride", type=int, default=448)
+    parser.add_argument("--vae-chunk-elements", type=int, default=16 * 1024 * 1024,
+                        help="target VAE temporary element budget with --vae-low-memory; minimum is a full frame/receptive field")
     parser.add_argument("--vae-low-memory", action=argparse.BooleanOptionalAction, default=False,
                         help="bound VAE normalization/convolution temporaries with full spatial/temporal context")
     parser.add_argument(
@@ -132,8 +136,10 @@ def _build_parser() -> argparse.ArgumentParser:
         default="windowed_preload",
         choices=["windowed_preload", "windowed_streaming"],
         help="windowed_preload keeps uint8 frame caches (baseline-exact); "
-        "windowed_streaming uses bf16 caches and is only for very long inputs",
+        "windowed_streaming bounds caches; select uint8 with --streaming-cache-dtype",
     )
+    parser.add_argument("--streaming-cache-dtype", choices=["bf16", "uint8"], default="bf16",
+                        help="uint8 preserves decoded/committed pixels in bounded streaming caches")
     parser.add_argument("--runtime-workdir", type=str, default=None)
     from config.resource_policy import add_memory_arguments
     add_memory_arguments(parser)
@@ -193,7 +199,7 @@ def _build_server_args(args: argparse.Namespace) -> ServerArgs:
         sp_linear_mode=args.sp_linear_mode,
         parallel_devices=args.parallel_devices, vae_tiling=args.vae_tiling,
         vae_tile_size=args.vae_tile_size, vae_tile_stride=args.vae_tile_stride,
-        vae_low_memory=args.vae_low_memory,
+        vae_low_memory=args.vae_low_memory, vae_chunk_elements=args.vae_chunk_elements,
     )
     return ServerArgs(
         model_path=str(Path(args.model_path).expanduser().resolve()),
@@ -266,6 +272,7 @@ def _task_to_sampling_params(
         save_output=True,
         suppress_logs=False,
         runtime_mode=defaults.runtime_mode,
+        streaming_cache_dtype=overrides.pop("streaming_cache_dtype", defaults.streaming_cache_dtype),
         runtime_workdir=(
             str(Path(defaults.runtime_workdir).expanduser().resolve())
             if defaults.runtime_workdir
@@ -341,7 +348,7 @@ def main() -> None:
                 warmup_steps=(
                     int(server_args.warmup_steps) if args.warmup and index == 0 else None
                 ),
-                request_extra={"task_id": task_id},
+                request_extra={"task_id": task_id, "return_output_tensor": False},
             )
             elapsed = time.perf_counter() - started
             # `elapsed` is the raw wall clock of the whole call, warmup

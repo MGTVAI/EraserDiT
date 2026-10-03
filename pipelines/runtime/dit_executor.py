@@ -1,11 +1,12 @@
 """Persistent one-process-per-GPU DiT ranks, isolated from parent T5 FSDP.
 
-CPU tensor IPC is deliberately used at the pipeline boundary for initial
-alignment. GPU collectives between DiT ranks use NCCL. No CUDA IPC lifetime
-assumptions or parent default-process-group replacement are needed.
+CPU tensor IPC remains the default boundary. An opt-in CUDA IPC boundary copies
+into receiver-owned GPU storage before acknowledging each prediction, keeping
+exported tensors alive until the copy finishes. Parent process groups are untouched.
 """
 from copy import copy, deepcopy
 from datetime import timedelta
+import os
 import tempfile
 import time
 import traceback
@@ -16,7 +17,7 @@ import torch.multiprocessing as mp
 from torch.utils._pytree import tree_flatten, tree_unflatten, tree_map
 
 
-def _broadcast_packet(packet, groups, device):
+def _broadcast_packet(packet, groups, device, *, copy_inputs=False):
     if groups.rank == 0:
         leaves, spec = tree_flatten(packet)
         metadata = [(('tensor', tuple(v.shape), v.dtype) if isinstance(v, torch.Tensor)
@@ -31,7 +32,7 @@ def _broadcast_packet(packet, groups, device):
         if entry[0] == 'value':
             received.append(entry[1])
         else:
-            value = leaves[i].to(device).contiguous() if groups.rank == 0 else torch.empty(entry[1], dtype=entry[2], device=device)
+            value = leaves[i].to(device, copy=copy_inputs).contiguous() if groups.rank == 0 else torch.empty(entry[1], dtype=entry[2], device=device)
             dist.broadcast(value, src=0)
             received.append(value)
     return tree_unflatten(received, spec)
@@ -45,6 +46,8 @@ def _worker(rank, plan, args, model_spec, connection, rendezvous):
         enable_deterministic_mode()
         from config.server_args import set_global_server_args
         args.device = str(device)
+        from layers.operator_fusion.registry import resolve_operator_fusion_decision
+        args.operator_fusion_decision = resolve_operator_fusion_decision(args)
         set_global_server_args(args)
         dist.init_process_group('nccl', init_method=rendezvous, rank=rank,
                                 world_size=plan['topology'].world_size, timeout=timedelta(seconds=90))
@@ -93,17 +96,27 @@ def _worker(rank, plan, args, model_spec, connection, rendezvous):
                             lambda name, module: name.startswith('transformer_blocks.') and name.count('.') == 1])
         from models.adapters.eraserdit.nccl_runner import DiTRankRunner
         runner = DiTRankRunner(model, groups, config)
+        from utils.dit_profile import DiTStepProfiler
+        profiler = DiTStepProfiler(rank, device)
+        if runner.sequence is not None:
+            runner.sequence.profiler = profiler
         gpu_timings = []
+        cuda_ipc = plan.get('boundary_transport') == 'cuda_ipc'
+        exported_output = None
         connection.send(('ready', runner.report()))
         while True:
             # Wait on each rank's local pipe, not a collective: an idle
             # resident service must not expire the process-group timeout.
             message = connection.recv()
             command = message[0]
+            # The owner sends another command only after copying and releasing
+            # the previous imported output. Keep producer storage until then.
+            exported_output = None
             if command == 'close':
                 break
             if command == 'reset':
                 runner.reset()
+                profiler.reset()
                 gpu_timings.clear()
                 torch.cuda.reset_peak_memory_stats(device)
                 dist.barrier(group=groups.control)
@@ -112,9 +125,13 @@ def _worker(rank, plan, args, model_spec, connection, rendezvous):
             elif command == 'predict':
                 events = [torch.cuda.Event(enable_timing=True) for _ in range(3)]
                 events[0].record()
-                packet = _broadcast_packet(message[1] if rank == 0 else None, groups, device)
+                packet = _broadcast_packet(message[1] if rank == 0 else None, groups, device,
+                                           copy_inputs=cuda_ipc)
+                # Static conditions must not retain imported owner storage.
+                del message
                 events[1].record()
-                outputs = runner.predict(packet, owner_only=True)
+                with profiler.capture(model):
+                    outputs = runner.predict(packet, owner_only=True)
                 if rank == 0:
                     guidance_scale = packet.get('guidance_scale')
                     if guidance_scale is not None:
@@ -126,12 +143,17 @@ def _worker(rank, plan, args, model_spec, connection, rendezvous):
                 events[2].record()
                 gpu_timings.append(events)
                 if rank == 0:
-                    connection.send(('ok', tree_map(lambda value: value.cpu(), outputs)))
+                    if cuda_ipc:
+                        exported_output = outputs
+                        connection.send(('ok', exported_output))
+                    else:
+                        connection.send(('ok', tree_map(lambda value: value.cpu(), outputs)))
                 del packet, outputs
             elif command == 'report':
                 if gpu_timings:
                     gpu_timings[-1][-1].synchronize()
                 report = runner.report()
+                report['diagnostic_profiles'] = list(profiler.artifacts)
                 report['window_gpu_seconds'] = {
                     'input_broadcast': sum(e[0].elapsed_time(e[1]) for e in gpu_timings) / 1000,
                     'forward_and_output_gather': sum(e[1].elapsed_time(e[2]) for e in gpu_timings) / 1000,
@@ -158,6 +180,10 @@ class DiTProcessPool:
             raise ValueError('NCCL DiT self-launch requires a single pipeline owner process')
         if next(source.parameters()).dtype != torch.bfloat16:
             raise ValueError('NCCL DiT workers require bf16 source weights')
+        self.boundary_transport = os.environ.get('MGERASE_DIT_BOUNDARY_TRANSPORT', 'cpu')
+        if self.boundary_transport not in ('cpu', 'cuda_ipc'):
+            raise ValueError('MGERASE_DIT_BOUNDARY_TRANSPORT must be cpu or cuda_ipc')
+        plan = dict(plan, boundary_transport=self.boundary_transport)
         self.plan = plan
         self.models, self.compiled_forwards = [], []
         self.processes, self.connections = [], []
@@ -216,9 +242,28 @@ class DiTProcessPool:
         if self.closed:
             raise RuntimeError('NCCL DiT process pool is closed')
         try:
+            if command == 'predict' and self.boundary_transport == 'cuda_ipc':
+                # Inputs can be produced on a caller's non-default stream.
+                devices = {v.device for v in tree_flatten(payload)[0]
+                           if isinstance(v, torch.Tensor) and v.is_cuda}
+                for device in devices:
+                    if device != self.plan['devices'][0]:
+                        raise ValueError('CUDA IPC boundary requires inputs on the rank-0 device')
+                    torch.cuda.synchronize(device)
             for rank, connection in enumerate(self.connections):
                 connection.send((command, payload if rank == 0 else None))
-            return self._receive()
+            received = self._receive()
+            if command == 'predict' and self.boundary_transport == 'cuda_ipc':
+                # Never expose imported worker storage to a caller. This also
+                # makes held outputs valid after reset, worker failure or close.
+                try:
+                    result = tree_map(lambda value: value.clone(), received)
+                    torch.cuda.synchronize(self.plan['devices'][0])
+                finally:
+                    # Drop imported handles before any exception closes workers.
+                    received = None
+                return result
+            return received
         except (OSError, EOFError) as error:
             self.close(force=True)
             raise RuntimeError('NCCL DiT worker IPC failed') from error
@@ -252,9 +297,17 @@ class DiTProcessPool:
 class DiTProcessWindow:
     def __init__(self, transformer, plan, *, pool, batch=None, total_steps=0):
         self.pool, self.plan = pool, plan
+        self.batch = batch
+        self.rank_reports = None
         self.steps = 0
+        from config.eraserdit_cache import CACHE_DEFAULTS
+        self.cache_options = {key: getattr(batch, key, default) for key, default in CACHE_DEFAULTS.items()}
+        self.total_steps = total_steps
+        text_setting = self.cache_options['cache_text_projections']
+        self.cache_text_projections = (self.cache_options['transformer_cache_mode'] != 'off'
+                                       if text_setting is None else bool(text_setting))
         self.active = True
-        self.boundary_seconds = dict(input_to_cpu=0., worker_roundtrip=0., output_to_device=0.)
+        self.boundary_seconds = dict(input_to_cpu=0., input_gpu_prepare=0., worker_roundtrip=0., output_to_device=0.)
         self.boundary_bytes = dict(input=0, output=0)
 
     def __enter__(self):
@@ -274,12 +327,16 @@ class DiTProcessWindow:
             static = {name: {key: value for key, value in values.items()
                             if key not in ('hidden_states', 'timestep', 'image_rotary_emb')}
                       for name, values in (('negative', negative), ('positive', positive))}
-        packet = dict(static=static, hidden=positive['hidden_states'], timestep=positive['timestep'])
+        packet = dict(static=static, hidden=positive['hidden_states'], timestep=positive['timestep'],
+                      cache_text_projections=self.cache_text_projections,
+                      residual_cache=self.cache_options, total_steps=self.total_steps, step=self.steps)
         if guidance_scale is not None:
             packet['guidance_scale'] = guidance_scale
         started = time.perf_counter()
-        packet = tree_map(lambda value: value.detach().cpu() if isinstance(value, torch.Tensor) else value, packet)
-        self.boundary_seconds['input_to_cpu'] += time.perf_counter() - started
+        cuda_ipc = self.pool.boundary_transport == 'cuda_ipc'
+        packet = tree_map(lambda value: (value.detach() if cuda_ipc else value.detach().cpu())
+                          if isinstance(value, torch.Tensor) else value, packet)
+        self.boundary_seconds['input_gpu_prepare' if cuda_ipc else 'input_to_cpu'] += time.perf_counter() - started
         self.boundary_bytes['input'] += sum(v.numel() * v.element_size() for v in tree_flatten(packet)[0]
                                             if isinstance(v, torch.Tensor))
         started = time.perf_counter()
@@ -295,15 +352,26 @@ class DiTProcessWindow:
 
     def report(self):
         topology = self.plan['topology']
-        return dict(transport='nccl', boundary_transport='cpu_tensor_ipc', steps=self.steps,
+        self.rank_reports = self.pool.call('report')
+        return dict(transport='nccl', boundary_transport=('cuda_tensor_ipc' if self.pool.boundary_transport == 'cuda_ipc'
+                                                        else 'cpu_tensor_ipc'), steps=self.steps,
                     cfg_degree=topology.cfg, sp_degree=topology.sp, tp_degree=topology.tp,
                     ulysses_degree=topology.ulysses, ring_degree=topology.ring,
                     ring_attention_mode=self.plan['ring_attention_mode'],
                     output_assembly='owner_only',
+                    cache_text_projections=self.cache_text_projections,
                     boundary_wall_seconds=dict(self.boundary_seconds), boundary_tensor_bytes=dict(self.boundary_bytes),
-                    worker_setup_seconds=self.pool.setup_seconds, rank_reports=self.pool.call('report'))
+                    worker_setup_seconds=self.pool.setup_seconds, rank_reports=self.rank_reports)
 
     def __exit__(self, *exc):
         if not self.pool.closed:
             self.pool.call('reset')
+            if self.batch is not None and self.rank_reports and exc[0] is None:
+                reports = [r.get('residual_cache') for r in self.rank_reports]
+                if all(reports):
+                    from cache.eraserdit import aggregate_rank_cache_reports
+                    for report in reports:
+                        report.update(closed=True, aborted=False)
+                    self.batch.extra['transformer_cache'] = aggregate_rank_cache_reports(
+                        reports, sp_degree=self.plan['topology'].sp)
         return False

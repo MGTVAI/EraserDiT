@@ -5,6 +5,7 @@ Other components follow SGLang stage-level Module.to placement. Measurements
 observe current storage; they are not a byte budget or allocator peak.
 """
 from collections import deque
+import os
 import tempfile
 import threading
 import time
@@ -76,7 +77,15 @@ class SGLangMemoryAdapter:
         self.fsdp_modules = []
         self.peak_observed = 0
         self.remainder = []
+        self.vae_residency = None
         try:
+            vae_mode = os.environ.get('MGERASE_VAE_OFFLOAD_MODE', 'full')
+            if vae_mode not in ('full', 'split', 'cached'):
+                raise ValueError('MGERASE_VAE_OFFLOAD_MODE must be full, split or cached')
+            if vae_mode != 'full' and args.vae_cpu_offload and 'vae' in modules:
+                from memory.backends.vae_residency import VAEPhaseResidency
+                self.vae_residency = VAEPhaseResidency(
+                    modules['vae'], self.device, mode=vae_mode, pin_memory=args.pin_cpu_memory)
             if args.dit_layerwise_offload:
                 transformer = modules['transformer']
                 with torch.cuda.device(self.device):
@@ -108,12 +117,14 @@ class SGLangMemoryAdapter:
             self.shutdown(terminal=True)
             raise
 
-    def acquire_component_residency(self, name, *, reason):
+    def acquire_component_residency(self, name, *, reason, phase=None):
         if self.closed or self.active_component_name is not None:
             raise RuntimeError('memory adapter closed or a component is already active')
         started = time.perf_counter()
         try:
-            if name == 'transformer' and self.managers:
+            if name == 'vae' and self.vae_residency is not None:
+                self.vae_residency.acquire(phase)
+            elif name == 'transformer' and self.managers:
                 with torch.cuda.device(self.device):
                     self.modules[name].prepare_for_next_req()
             elif name == 'text_encoder' and self.args.text_encoder_cpu_offload:
@@ -131,7 +142,9 @@ class SGLangMemoryAdapter:
                                    'text_encoder': 'text_encoder_cpu_offload'}[name])
 
     def _release(self, name):
-        if name == 'transformer' and self.managers:
+        if name == 'vae' and self.vae_residency is not None:
+            self.vae_residency.release()
+        elif name == 'transformer' and self.managers:
             with torch.cuda.device(self.device):
                 for manager in self.managers:
                     manager.release_all()
@@ -167,9 +180,21 @@ class SGLangMemoryAdapter:
         pass  # Releases above settle ownership at the stage boundary.
 
     def _record(self, name, action, reason, started):
+        transfer = {}
+        if name == 'vae' and self.args.vae_cpu_offload:
+            if self.vae_residency is not None:
+                transfer = dict(self.vae_residency.stats)
+                transfer['h2d_bytes' if action == 'release' else 'd2h_bytes'] = 0
+            else:
+                tensors = list(self.modules[name].parameters()) + list(self.modules[name].buffers())
+                size = sum(t.numel() * t.element_size() for t in tensors)
+                transfer = dict(mode='full', scope='full', active_weight_bytes=size,
+                                h2d_bytes=size if action == 'acquire' else 0,
+                                d2h_bytes=size if action == 'release' else 0)
         self.events.append(dict(component=name, action=action, reason=reason,
                                 seconds=time.perf_counter()-started,
-                                memory=memory_observation(self.device)))
+                                memory=memory_observation(self.device),
+                                **({'weight_transfers': transfer} if transfer else {})))
 
     def snapshot(self):
         resident, pinned, layers = 0, 0, 0
@@ -186,6 +211,7 @@ class SGLangMemoryAdapter:
                     live_layers=layers, pinned_cpu_bytes=pinned,
                     active_component_name=self.active_component_name,
                     text_encoder_backend='fsdp_cpu_offload' if self.fsdp_modules else 'resident',
+                    vae_offload=self.vae_residency.snapshot() if self.vae_residency else {'mode': 'full'},
                     component_transfers=list(self.events), closed=self.closed)
 
     def shutdown(self, *, terminal=False):

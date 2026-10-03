@@ -176,13 +176,29 @@ def finalize_output(
 def close_runtime_resources(
     context: EraseRuntimeContext,
 ) -> None:
-    if context.sequential_video_reader is not None:
-        context.sequential_video_reader.close()
-    if context.sequential_mask_reader is not None:
-        context.sequential_mask_reader.close()
-    if context.sequential_video_writer is not None:
-        context.sequential_video_writer.close()
-    if context.video_store is not None:
-        context.video_store.close()
-    if context.progress_state is not None:
-        context.progress_state.stop()
+    try:
+        if context.sequential_video_reader is not None:
+            context.sequential_video_reader.close()
+        if context.sequential_mask_reader is not None:
+            context.sequential_mask_reader.close()
+        if context.sequential_video_writer is not None:
+            context.sequential_video_writer.close()
+        if context.video_store is not None:
+            context.video_store.close()
+        if context.progress_state is not None:
+            context.progress_state.stop()
+    finally:
+        # Returned requests used to own this context while it owned the request.
+        # Break that cycle after output publication, without waiting for cyclic
+        # GC to reclaim full-window frame caches. Preserve the returned output
+        # and the diagnostic metadata already copied into batch.extra.
+        batch = context.request_batch
+        if batch is not None and batch.extra.get("runtime_context") is context:
+            batch.extra.pop("runtime_context")
+        context.request_batch = None
+        # Multi-object forwarding callbacks capture both the context and task
+        # states; they have no purpose once the request resources are closed.
+        for state in context.object_states:
+            state.hook_registry.pop_raw_input_hooks.clear()
+            state.hook_registry.pop_modified_hooks.clear()
+            state.hook_registry.pop_scene_hooks.clear()
