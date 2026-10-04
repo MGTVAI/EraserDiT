@@ -2,6 +2,37 @@
 from dataclasses import dataclass
 
 
+def resolve_default_cfg_degree(
+    requested,
+    *,
+    backend='peer',
+    sp_degree=1,
+    tp_degree=1,
+    dit_fsdp_shard_degree=1,
+    dit_fsdp_replicate_degree=1,
+    parallel_devices=None,
+):
+    """Default an explicitly multi-GPU NCCL topology to CFG2.
+
+    A caller-provided degree is always authoritative.  Automatic CFG2 is kept
+    to the resident topology that the production profiles validate; uncommon
+    TP/FSDP layouts must continue to state their CFG degree explicitly.
+    """
+    if requested is not None:
+        return requested
+    if backend != 'nccl':
+        return 1
+    if tp_degree != 1 or dit_fsdp_shard_degree != 1 or dit_fsdp_replicate_degree != 1:
+        return 1
+    import torch
+    device_count = (
+        len(parallel_devices)
+        if parallel_devices is not None
+        else torch.cuda.device_count()
+    )
+    return 2 if device_count >= 2 * int(sp_degree) else 1
+
+
 @dataclass(frozen=True)
 class DiTTopology:
     tp: int = 1

@@ -144,6 +144,17 @@ def _build_server_args(args: argparse.Namespace, pipeline_cls: type) -> ServerAr
             if not hasattr(config, name):
                 raise ValueError(f'{args.pipeline_name} does not support --{name.replace("_", "-")}')
             setattr(config, name, value)
+    if hasattr(config, 'cfg_degree') and args.cfg_degree is None:
+        from config.dit_parallel import resolve_default_cfg_degree
+        config.cfg_degree = resolve_default_cfg_degree(
+            None,
+            backend=getattr(config, 'dit_parallel_backend', 'peer'),
+            sp_degree=getattr(config, 'sp_degree', 1),
+            tp_degree=getattr(config, 'tp_degree', 1),
+            dit_fsdp_shard_degree=getattr(config, 'dit_fsdp_shard_degree', 1),
+            dit_fsdp_replicate_degree=getattr(config, 'dit_fsdp_replicate_degree', 1),
+            parallel_devices=getattr(config, 'parallel_devices', None),
+        )
     return ServerArgs(
         model_path=str(Path(args.model_path).expanduser().resolve()),
         pipeline_class_name=args.pipeline_name,

@@ -120,7 +120,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sp-linear-mode", choices=["reference", "sharded"], default="reference",
                         help="reference preserves full GEMM shape; sharded is experimental BF16 numerics")
     parser.add_argument("--sp-attention-mode", choices=["ulysses", "ring"], default="ulysses")
-    parser.add_argument("--cfg-degree", type=int, default=1)
+    parser.add_argument(
+        "--cfg-degree",
+        type=int,
+        default=None,
+        help=(
+            "CFG parallel degree; defaults to 2 for a sufficiently large NCCL "
+            "topology and to 1 otherwise"
+        ),
+    )
     parser.add_argument("--vae-degree", type=int, default=1)
     parser.add_argument("--parallel-devices", type=lambda s: tuple(int(i) for i in s.split(',')), default=None,
                         help="ordered local CUDA indices, e.g. 0,1,2,3")
@@ -185,13 +193,24 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _build_server_args(args: argparse.Namespace) -> ServerArgs:
+    from config.dit_parallel import resolve_default_cfg_degree
+
+    cfg_degree = resolve_default_cfg_degree(
+        args.cfg_degree,
+        backend=args.dit_parallel_backend,
+        sp_degree=args.sp_degree,
+        tp_degree=args.tp_degree,
+        dit_fsdp_shard_degree=args.dit_fsdp_shard_degree,
+        dit_fsdp_replicate_degree=args.dit_fsdp_replicate_degree,
+        parallel_devices=args.parallel_devices,
+    )
     pipeline_config = EraserDiTPipelineConfig(
         quantization_scope=args.quantization_scope,
         dit_precision=args.dtype,
         vae_precision=args.dtype,
         text_encoder_precision=args.dtype,
         cfg_parallel_device=args.cfg_parallel_device,
-        sp_degree=args.sp_degree, cfg_degree=args.cfg_degree, vae_degree=args.vae_degree,
+        sp_degree=args.sp_degree, cfg_degree=cfg_degree, vae_degree=args.vae_degree,
         dit_parallel_backend=args.dit_parallel_backend, tp_degree=args.tp_degree, tp_linear_mode=args.tp_linear_mode,
         ulysses_degree=args.ulysses_degree, ring_degree=args.ring_degree,
         ring_attention_mode=args.ring_attention_mode,

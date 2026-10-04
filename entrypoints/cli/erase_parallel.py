@@ -30,7 +30,22 @@ def main():
         parser.error("set an explicit, unique CUDA_VISIBLE_DEVICES pool")
     if args.parallel_devices is not None or args.device not in ("cuda", "cuda:0"):
         parser.error("DP assigns worker-local devices; use default --device and --parallel-devices")
-    size = max(args.sp_degree * args.cfg_degree * args.tp_degree,
+    from config.dit_parallel import resolve_default_cfg_degree
+    worker_visible_count = (
+        len(visible) // args.dp_degree
+        if args.dp_degree > 0 and len(visible) % args.dp_degree == 0
+        else 0
+    )
+    cfg_degree = resolve_default_cfg_degree(
+        args.cfg_degree,
+        backend=args.dit_parallel_backend,
+        sp_degree=args.sp_degree,
+        tp_degree=args.tp_degree,
+        dit_fsdp_shard_degree=args.dit_fsdp_shard_degree,
+        dit_fsdp_replicate_degree=args.dit_fsdp_replicate_degree,
+        parallel_devices=tuple(range(worker_visible_count)),
+    )
+    size = max(args.sp_degree * cfg_degree * args.tp_degree,
                args.dit_fsdp_shard_degree * args.dit_fsdp_replicate_degree,
                args.vae_degree, 2 if args.cfg_parallel_device else 1)
     if args.dp_degree < 1 or len(visible) != args.dp_degree * size:

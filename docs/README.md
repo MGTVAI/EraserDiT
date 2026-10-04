@@ -3,7 +3,8 @@
 从[项目 README](../README.md#快速开始)完成首次安装和推理。以下指南描述当前代码，
 带日期的实验记录保留当时的环境、参数、质量目标与测量结果。
 
-本轮 L40S 24 GiB 验收见[最新记录](l40s_validation_20261004.md)和[收敛计划](l40s_completion_plan.md)。
+本轮 L40S 24 GiB 验收见[最新记录](l40s_validation_20261004.md)和[收敛计划](l40s_completion_plan.md)；
+后续同口径消融与候选矩阵见[性能复测方案](performance_retest_plan_20261004.md)。
 前序整体优化见[推进记录](optimization_progress_20261002.md)。
 
 ## 使用与开发

@@ -36,6 +36,11 @@ CLI / HTTP worker → EraseSession → pipeline 装配
 提交稳定帧、释放窗口资源并写出结果。模型专用的预处理、后处理和并行适配位于
 `models/adapters/`，流程 stages 位于 `pipelines/stages/`。
 
+同一对象、场景和正负提示词的 T5 embedding 只在首个实际处理窗口计算一次；后续窗口
+在进入文本编码器的驻留阶段前直接读取请求内 CPU 缓存。显式选择 NCCL 且未指定
+`cfg_degree` 时，只要设备数覆盖 `2 × sp_degree`，默认使用 CFG2 并行计算正负分支；
+显式 `--cfg-degree` 始终覆盖该默认值。
+
 `PipelineRegistry` 选择模型流水线，模型声明的 `service_contract` 提供请求 schema、
 采样参数构造和 capability。服务进度适配位于 `entrypoints/server/control.py`，
 通用取消令牌和同步检查点位于 `nodes/control.py`。

@@ -93,6 +93,55 @@ class StaticConditionTests(unittest.TestCase):
             self.assertEqual(call.call_count, 8)
         self.assertTrue(all(t.device.type == 'cpu' for t in state.extra['text_encoding'][1]))
 
+    def test_window_runtime_text_cache_bypasses_encoder_phase(self):
+        from pipelines.stages.eraserdit_erase._common import EraserDiTTaskState, TASK_STATE_KEY
+        from pipelines.stages.eraserdit_erase.text_encoding import EraserDiTEraseTextEncodingStage
+
+        args = ServerArgs(device='cpu')
+        encoder = torch.nn.Linear(1, 1)
+        encoder.dtype = torch.float32
+        stage = EraserDiTEraseTextEncodingStage(encoder, object())
+        cached = {
+            'prompt_embeds': torch.full((1, 8, 4), 3.),
+            'prompt_attention_mask': torch.ones(1, 8, dtype=torch.bool),
+            'negative_prompt_embeds': torch.full((1, 8, 4), -2.),
+            'negative_attention_mask': torch.zeros(1, 8, dtype=torch.bool),
+        }
+        batch = SimpleNamespace(
+            extra={TASK_STATE_KEY: EraserDiTTaskState(), 'cached_text_embeddings': cached},
+            prompt='positive', negative_prompt='negative', max_sequence_length=8,
+            metrics=None,
+        )
+        with patch.object(stage, '_encode_uncached', side_effect=AssertionError('T5 executed')):
+            result = stage.forward(batch, args)
+
+        self.assertEqual(result.extra['text_encoding_cache_source'], 'window_runtime')
+        torch.testing.assert_close(result.prompt_embeds, cached['prompt_embeds'])
+        torch.testing.assert_close(result.negative_prompt_embeds, cached['negative_prompt_embeds'])
+        self.assertIsNot(result.prompt_embeds, cached['prompt_embeds'])
+
+    def test_nccl_multigpu_defaults_to_cfg2(self):
+        from config.dit_parallel import resolve_default_cfg_degree
+
+        with patch('torch.cuda.device_count', return_value=4):
+            self.assertEqual(
+                resolve_default_cfg_degree(None, backend='nccl', sp_degree=2),
+                2,
+            )
+            self.assertEqual(
+                resolve_default_cfg_degree(None, backend='peer', sp_degree=2),
+                1,
+            )
+            self.assertEqual(
+                resolve_default_cfg_degree(1, backend='nccl', sp_degree=2),
+                1,
+            )
+        with patch('torch.cuda.device_count', return_value=2):
+            self.assertEqual(
+                resolve_default_cfg_degree(None, backend='nccl', sp_degree=2),
+                1,
+            )
+
     def check_rotary_reuse(self, device):
         from models.dits.eraserdit_transformer import EraserDiTLTXVideoTransformer3DModel
         set_global_server_args(ServerArgs(device=device, attention_backend='sdpa'))
