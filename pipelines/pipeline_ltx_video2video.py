@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import inspect
+from functools import wraps
 from typing import Any, Callable, Dict, List, Optional, Union
 
 import numpy as np
@@ -196,6 +197,16 @@ def retrieve_latents(
         raise AttributeError("Could not access latents of provided encoder_output")
 
 
+def _release_stage_models(func):
+    @wraps(func)
+    def wrapped(self, *args, **kwargs):
+        try:
+            return func(self, *args, **kwargs)
+        finally:
+            self.offload_stage_models()
+    return wrapped
+
+
 class LTXVideoToVideoPipeline(DiffusionPipeline, FromSingleFileMixin, LTXVideoLoraLoaderMixin):
     r"""
     Pipeline for image-to-video generation.
@@ -223,6 +234,32 @@ class LTXVideoToVideoPipeline(DiffusionPipeline, FromSingleFileMixin, LTXVideoLo
     model_cpu_offload_seq = "text_encoder->transformer->vae"
     _optional_components = []
     _callback_tensor_inputs = ["latents", "prompt_embeds", "negative_prompt_embeds"]
+
+    def enable_stage_cpu_offload(self, device="cuda"):
+        """Keep only the model used by the current stage on the execution device."""
+        device = torch.device(device)
+        if device.type != "cuda":
+            raise ValueError("Stage CPU offload requires a CUDA execution device")
+        if device.index is None:
+            device = torch.device("cuda", torch.cuda.current_device())
+        self.to("cpu")
+        self._stage_offload_device = device
+
+    def _activate_stage(self, name=None):
+        device = getattr(self, "_stage_offload_device", None)
+        if device is None:
+            return
+        for key in ("text_encoder", "vae", "transformer"):
+            if key != name:
+                getattr(self, key).to("cpu")
+        with torch.cuda.device(device):
+            torch.cuda.empty_cache()
+        if name is not None:
+            getattr(self, name).to(device)
+
+    def offload_stage_models(self):
+        """Release model residency after a window, including failed inference."""
+        self._activate_stage()
 
     def __init__(
         self,
@@ -602,6 +639,7 @@ class LTXVideoToVideoPipeline(DiffusionPipeline, FromSingleFileMixin, LTXVideoLo
         return self._interrupt
 
     @torch.no_grad()
+    @_release_stage_models
     @replace_example_docstring(EXAMPLE_DOC_STRING)
     def __call__(
         self,
@@ -740,9 +778,10 @@ class LTXVideoToVideoPipeline(DiffusionPipeline, FromSingleFileMixin, LTXVideoLo
         else:
             batch_size = prompt_embeds.shape[0]
 
-        device = self._execution_device
+        device = getattr(self, "_stage_offload_device", None) or self._execution_device
 
         # 3. Prepare text embeddings
+        self._activate_stage("text_encoder")
         (
             prompt_embeds,
             prompt_attention_mask,
@@ -797,6 +836,7 @@ class LTXVideoToVideoPipeline(DiffusionPipeline, FromSingleFileMixin, LTXVideoLo
             self.vae_spatial_compression_ratio,
         )
 
+        self._activate_stage("vae")
         latents, video_latents = self.prepare_latents(
             video,
             batch_size * num_videos_per_prompt,
@@ -814,9 +854,11 @@ class LTXVideoToVideoPipeline(DiffusionPipeline, FromSingleFileMixin, LTXVideoLo
         _, _, _, h, w = video_latents.shape
         mask_values = torch.nn.functional.interpolate(masks, [h, w]).to(dtype=video_latents.dtype).to(device=latents.device)
         mask_values = rearrange(mask_values.unsqueeze(0), "b f c h w -> b c f h w")
+        del video
 
 
         # 7. Denoising loop
+        self._activate_stage("transformer")
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 if self.interrupt:
@@ -901,6 +943,7 @@ class LTXVideoToVideoPipeline(DiffusionPipeline, FromSingleFileMixin, LTXVideoLo
         if output_type == "latent":
             video = latents
         else:
+            self._activate_stage("vae")
             latents = self._denormalize_latents(
                 latents, self.vae.latents_mean, self.vae.latents_std, self.vae.config.scaling_factor
             )
@@ -933,4 +976,3 @@ class LTXVideoToVideoPipeline(DiffusionPipeline, FromSingleFileMixin, LTXVideoLo
             return (video,)
 
         return LTXPipelineOutput(frames=video)
-    

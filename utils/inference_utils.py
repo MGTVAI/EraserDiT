@@ -11,7 +11,7 @@ from models import LTXVideoTransformer3DModel
 
 
 @test_time(enable=GlobalValues.ENABLE_PER)
-def init(device, weight_dtype, pre_dir="jieeliu/EraserDiT"):
+def init(device, weight_dtype, pre_dir="jieeliu/EraserDiT", cpu_offload=False, vae_tiling=False):
     base_model_path = f"{pre_dir}"
     noise_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
             base_model_path, subfolder="scheduler")
@@ -34,7 +34,13 @@ def init(device, weight_dtype, pre_dir="jieeliu/EraserDiT"):
         scheduler=noise_scheduler,
     )
 
-    pipeline.to(device, weight_dtype)
+    if vae_tiling:
+        vae.enable_tiling()
+    if cpu_offload:
+        pipeline.to(dtype=weight_dtype)
+        pipeline.enable_stage_cpu_offload(device)
+    else:
+        pipeline.to(device, weight_dtype)
     pipeline.set_progress_bar_config(disable=False)
     return pipeline
 

@@ -42,6 +42,38 @@ Multi‑GPU support is in progress and will be open‑sourced later.
 ```
 python inference.py --vid_path data/10268234.mp4 --mask_path data/10268234_mask.mp4 --prompt "There is a bridge over the lake." 
 ```
+
+### CPU offload
+
+`--cpu_offload` keeps only the active model on the GPU: text encoder → VAE encoder →
+transformer → VAE decoder. Models return to CPU after each window or on failure.
+This preserves the inference operations and adds CPU memory and transfer costs.
+The default remains full GPU residency.
+
+For high-resolution inputs, `--vae_tiling` additionally enables the VAE's existing
+spatial tiling to reduce activation memory. Tiling can change output values at tile
+boundaries; it is separate from CPU offload and disabled by default.
+
+```bash
+HF_HUB_OFFLINE=1 uv run --no-project python inference.py \
+  --model_path data/model --cpu_offload --vae_tiling \
+  --vid_path data/113000356.mp4 --mask_path data/113000356_mask.mp4
+```
+
+The original code uses Diffusers internal APIs. A tested compatibility set is
+Diffusers 0.33.1, Transformers 4.51.3, Tokenizers 0.21.1, Hugging Face Hub 0.30.2,
+and PEFT 0.15.2 (tested with PyTorch 2.6.0/CUDA 12.6). Diffusers 0.40 is incompatible.
+To use this set without replacing an existing environment:
+
+```bash
+uv pip install --target .cache/alg-baseline-deps --no-deps \
+  diffusers==0.33.1 transformers==4.51.3 tokenizers==0.21.1 \
+  huggingface-hub==0.30.2 peft==0.15.2
+export PYTHONPATH="$PWD/.cache/alg-baseline-deps:$PWD${PYTHONPATH:+:$PYTHONPATH}"
+```
+
+GPU integration test (local weights required):
+`uv run --no-project python tests/test_stage_cpu_offload.py`.
 ---
 ## 📜 Citation
 

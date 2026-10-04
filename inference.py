@@ -18,7 +18,8 @@ negative_prompt = "Colorful color tone, overexposure, static, blurry details, su
 
 
 @test_time(enable=GlobalValues.ENABLE_PER)
-def run_batch(video_path,video_mask_path,bbox_path,prompt, vis_flag):
+def run_batch(video_path,video_mask_path,bbox_path,prompt, vis_flag,
+              model_path="jieeliu/EraserDiT", cpu_offload=False, vae_tiling=False):
     print(f"video: {video_path}")
     print(f"mask: {video_mask_path}")
     print(f"prompt: {prompt}")
@@ -56,7 +57,8 @@ def run_batch(video_path,video_mask_path,bbox_path,prompt, vis_flag):
         output_bbox = None
 
     # init inference
-    pipeline = init(device, weight_dtype)
+    pipeline = init(device, weight_dtype, pre_dir=model_path,
+                    cpu_offload=cpu_offload, vae_tiling=vae_tiling)
     generator = None
     if seed is not None:
         generator = torch.Generator(device=device).manual_seed(seed)
@@ -127,10 +129,14 @@ def main():
     # parser.add_argument("--mask_path", type=str, default="data/113000356_mask.mp4", help="Input mask path.") #
     parser.add_argument("--bbox_path", type=str, default=None, help="Input mask path.If the resolution is less than 1080p, the bbox_path can be set to None.") # 
     parser.add_argument("--prompt", type=str, default="There is a bridge over the lake.", help="A brief description of the video content") # 
+    parser.add_argument("--model_path", default="jieeliu/EraserDiT", help="Local model directory or Hugging Face model ID.")
+    parser.add_argument("--cpu_offload", action="store_true", help="Move inactive stage models to CPU.")
+    parser.add_argument("--vae_tiling", action="store_true", help="Use spatial VAE tiling to reduce activation memory.")
 
     args = parser.parse_args()
     
-    output = run_batch(args.vid_path, args.mask_path, args.bbox_path, args.prompt, vis_flag=False)
+    output = run_batch(args.vid_path, args.mask_path, args.bbox_path, args.prompt, vis_flag=False,
+                       model_path=args.model_path, cpu_offload=args.cpu_offload, vae_tiling=args.vae_tiling)
 
     print(output)
 
