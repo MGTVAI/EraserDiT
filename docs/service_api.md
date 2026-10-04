@@ -134,6 +134,22 @@ curl -fsS http://127.0.0.1:30000/v1/models
 
 NCCL DiT 多进程服务通过启动参数 `--dit-parallel-backend nccl` 选择；
 CFG、SP/Ulysses/Ring、TP 与 FSDP/HSDP 的度数在启动时固定，不能按请求改变通信拓扑。
-当前要求 BF16、SDPA、DiT 常驻或 FSDP 分片、关闭编译/量化/手工融合/缓存；不支持的请求会提前拒绝。
+当前要求 BF16、SDPA、关闭编译/量化；常驻 CFG/Ulysses 可使用已支持的融合与缓存。
+`--cuda-memory-limit-gib` 与 CLI 共用；预算模式在去噪窗口外释放共用主卡的 rank 0 权重，
+仍需用 NVML 汇总同卡进程占用。TP/Ring/FSDP 的组合边界见性能说明；不支持的请求会拒绝。
 响应指标中的 `parallel_history` 记录各窗口的实际后端、rank 参数字节、通信次数与显存峰值。
 策略参数、整片质量和性能证据见 [NCCL 并行验收](distributed_parallel_20260928.md)。
+
+## 浏览器工作台
+
+服务启动后访问 `http://127.0.0.1:30000/ui`。页面提供视频与 mask 上传、
+静态区域画笔、提示词、采样参数、任务进度、取消、预览和下载。
+画笔生成的区域固定应用于全部帧；运动目标请上传逐帧 mask 视频。
+
+Multipart `mask` 支持原有 mask 视频或与视频分辨率一致的单帧 PNG。
+PNG 透明区域视为黑色，后端按视频实际帧数与帧率生成无损 mask；尺寸不匹配返回 422。
+JSON 路径请求仍使用 mask 视频。
+
+页面的质量策略关闭去噪缓存；低显存策略使用 65 帧窗口；速度候选使用
+TeaCache 0.1、`mask_frame_max` 局部保护。后两者会改变结果，应检查窗口衔接和擦除区域。
+GPU 数量、FP8、卸载和显存预算由服务启动配置决定，页面不会动态切换常驻模型。

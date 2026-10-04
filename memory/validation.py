@@ -23,8 +23,11 @@ def validate_memory_config(args, batch=None):
             raise ValueError('SGLang offload currently requires single-GPU EraserDiT')
         # EraserDiT compilation covers only local FFNs, with per-layer warmup
         # residency and CUDA graphs disabled. Transfer hooks remain eager.
-        if args.transformer_quantization != 'none' and (memory.dit_cpu_offload or memory.dit_layerwise_offload):
-            raise ValueError('INT8 with DiT weight offload is unsupported; keep DiT resident (T5/VAE CPU offload is allowed)')
+        # Quantization converts one layer on the execution GPU and returns it
+        # to its original storage device before placement hooks are registered.
+        # Its
+        # packed weights, scales and per-block GELU tables are ordinary buffers
+        # tracked by both component and layerwise offload managers.
     if batch is not None and args.dit_layerwise_offload:
         if getattr(batch, 'transformer_cache_mode', 'off') not in ('off', 'teacache'):
             raise ValueError('cache_dit cannot be combined with SGLang cyclic layerwise offload')

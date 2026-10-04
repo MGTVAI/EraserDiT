@@ -39,6 +39,49 @@ FlashAttention 的构建脚本需要导入 Torch，仅将它关闭构建隔离�
 和 [uv 构建隔离说明](https://docs.astral.sh/uv/pip/compatibility/#pep-517-build-isolation)。
 安装后仍默认使用 SDPA，安装扩展不会自动切换注意力后端。
 
+## 可选：L40S 的 FP8 Attention
+
+基础清单中的 `sageattention==1.0.6` 不提供本轮 FP8 attention 内核。
+如需复现实验性的 FP8 attention，单独构建以下固定源码版本（2.2.0），不替换基础环境中的包。
+该近似路径未通过本轮完整素材质量门槛，默认 BF16/SDPA 无需此扩展；见 [最新验收记录](l40s_validation_20261004.md)。
+以下为首次构建命令，要求前面安装的 Torch/构建工具及 CUDA 12.6 Toolkit 可用：
+
+```bash
+git clone https://github.com/thu-ml/SageAttention.git .cache/SageAttention-l40s
+git -C .cache/SageAttention-l40s checkout --detach eb615cf6cf4d221338033340ee2de1c37fbdba4a
+TORCH_CUDA_ARCH_LIST=8.9 MAX_JOBS=4 EXT_PARALLEL=1 \
+uv run --no-project python - <<'PYBUILD'
+import subprocess, sys
+subprocess.run([sys.executable, "setup.py", "build_ext", "--inplace"],
+               cwd=".cache/SageAttention-l40s", check=True)
+PYBUILD
+export PYTHONPATH="$PWD/.cache/SageAttention-l40s${PYTHONPATH:+:$PYTHONPATH}"
+```
+
+`TORCH_CUDA_ARCH_LIST=8.9` 面向 L40S。此版本构建脚本会查找 `CUDA_HOME`；
+无法自动定位时，在构建命令前设置为 CUDA 12.6 Toolkit 的实际目录。
+重新打开终端后需再次设置上述 `PYTHONPATH`，运行 benchmark 工具时也可直接使用
+`--sage-source .cache/SageAttention-l40s`。升级 Torch/Python/Toolkit 后重新构建扩展。
+
+在分配到的 L40S 上执行内核冒烟测试：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 uv run --no-project python - <<'PYCHECK'
+import torch, sageattention
+from sageattention import sageattn_qk_int8_pv_fp8_cuda
+assert torch.cuda.get_device_capability() == (8, 9)
+x = torch.randn(1, 128, 32, 64, device="cuda", dtype=torch.bfloat16)
+y = sageattn_qk_int8_pv_fp8_cuda(x, x, x, tensor_layout="NHD",
+    pv_accum_dtype="fp32+fp32", qk_quant_gran="per_thread", smooth_k=True)
+torch.cuda.synchronize()
+assert y.shape == x.shape and torch.isfinite(y).all()
+print(sageattention.__file__, "SM89 FP8 kernel OK")
+PYCHECK
+```
+
+服务或 CLI 请求需显式选择 `--attention-backend sage_fp8`；FP8 FFN 量化另由
+`--transformer-quantization` 控制。多卡质量对齐路径仍使用 SDPA，无需本节扩展。
+
 ## 环境检查
 
 ```bash
@@ -101,8 +144,8 @@ MAX_JOBS=4 uv pip install --python .venv/bin/python \
 uv pip check --python .venv/bin/python
 ```
 
-历史实验若使用 SageAttention 2 或本机编译的扩展，以对应记录为准；
-统一清单保留 `sageattention==1.0.6`，不能据此直接复现其他扩展版本的性能。
+基础清单保留 `sageattention==1.0.6`；L40S FP8 路径使用上面的固定源码构建。
+导出 pip 清单不会包含通过 `PYTHONPATH` 选择的源码扩展，迁移时必须同时记录其 commit 和构建参数。
 
 ## 容器
 

@@ -26,6 +26,8 @@ def resolve_runtime_resource_policy(args):
 
 def add_memory_arguments(parser):
     import argparse
+    parser.add_argument('--cuda-memory-limit-gib', type=float, default=None,
+                        help='Per-process PyTorch allocator cap on the execution device; excludes external CUDA/NCCL memory')
     for name, default in (("dit-cpu-offload", False), ("dit-layerwise-offload", True),
                           ("text-encoder-cpu-offload", True), ("vae-cpu-offload", True),
                           ("pin-cpu-memory", True)):
@@ -35,4 +37,5 @@ def add_memory_arguments(parser):
 
 
 def memory_arguments(args):
-    return {name: getattr(args, name) for name in RuntimeResourcePolicy.__dataclass_fields__}
+    return {name: getattr(args, name) for name in
+            (*RuntimeResourcePolicy.__dataclass_fields__, 'cuda_memory_limit_gib')}

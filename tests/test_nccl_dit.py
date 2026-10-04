@@ -266,15 +266,30 @@ class DistributedDiTTests(unittest.TestCase):
         with patch.dict(os.environ, MGERASE_NCCL_PACKING='direct', MGERASE_ULYSSES_HEAD_CHUNKS='2'):
             self._check_process_pool(sp_degree=2, text_cache=True, fusion=True, residual_cache=True)
 
+    @unittest.skipUnless(os.environ.get('ERASERDIT_TEST_DIT_NCCL') == '1', 'opt-in real process-pool GPUs')
+    def test_budgeted_process_pool_idle_residency(self):
+        self._check_process_pool(sp_degree=2 if torch.cuda.device_count() >= 4 else 1,
+                                 text_cache=True, residual_cache=True, memory_limit=22)
+
+    @unittest.skipUnless(os.environ.get('ERASERDIT_TEST_DIT_NCCL') == '1', 'opt-in real NCCL GPUs')
+    def test_input_output_overlap_process_pool(self):
+        if torch.cuda.device_count() < 4:
+            self.skipTest('CFG2 x SP2 requires four GPUs')
+        from unittest.mock import patch
+        with patch.dict(os.environ, MGERASE_NCCL_PACKING='direct',
+                        MGERASE_ULYSSES_HEAD_CHUNKS='2', MGERASE_ULYSSES_OUTPUT_OVERLAP='1'):
+            self._check_process_pool(sp_degree=2, text_cache=True, fusion=True,
+                                     residual_cache=True, memory_limit=22)
+
     def _check_process_pool(self, sp_degree, text_cache=False, fusion=False, residual_cache=False,
-                            kill_peer=True, failed_rank=1):
+                            kill_peer=True, failed_rank=1, memory_limit=None):
         from copy import deepcopy
         from config.server_args import ServerArgs, set_global_server_args
         from models.dits.eraserdit_transformer import EraserDiTLTXVideoTransformer3DModel
         from pipelines.runtime.dit_executor import DiTProcessPool, DiTProcessWindow
         config = EraserDiTPipelineConfig(dit_parallel_backend='nccl', cfg_degree=2, sp_degree=sp_degree,
                                         sp_linear_mode='sharded')
-        args = ServerArgs(device='cuda:0', pipeline_config=config,
+        args = ServerArgs(device='cuda:0', pipeline_config=config, cuda_memory_limit_gib=memory_limit,
                           operator_fusion_backend='triton' if fusion else 'disabled')
         set_global_server_args(args)
         torch.manual_seed(42)
@@ -341,6 +356,14 @@ class DistributedDiTTests(unittest.TestCase):
                         self.assertEqual(report['output_assembly'], 'owner_only')
                         self.assertEqual(report['cache_text_projections'], text_cache)
                         for rank_report in report['rank_reports']:
+                            if os.environ.get('MGERASE_ULYSSES_OUTPUT_OVERLAP') == '1':
+                                self.assertTrue(rank_report['ulysses_output_overlap'])
+                            if memory_limit is not None and rank_report['rank'] == 0:
+                                residency = rank_report['weight_residency']
+                                self.assertEqual(residency['mode'], 'shared_rank_idle_cpu')
+                                self.assertTrue(residency['active'])
+                                self.assertEqual(residency['acquisitions'], frames)
+                                self.assertEqual(residency['d2h_weight_bytes'], 0)
                             if fusion:
                                 stats = rank_report['operator_fusion']
                                 self.assertEqual(stats['sp_degree'], sp_degree)

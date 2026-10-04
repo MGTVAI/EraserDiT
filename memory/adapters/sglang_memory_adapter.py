@@ -174,6 +174,8 @@ class SGLangMemoryAdapter:
             self._release(name)
         finally:
             self.active_component_name = None
+        from memory.allocator import release_idle_cuda_cache
+        release_idle_cuda_cache(self.args.cuda_memory_limit_gib, self.device)
         self._record(name, 'release', reason, started)
 
     def settle_component_transfers(self):

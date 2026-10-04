@@ -96,8 +96,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--vae-tile-stride', type=int, default=None)
     parser.add_argument('--vae-chunk-elements', type=int, default=None)
     parser.add_argument('--vae-low-memory', action=argparse.BooleanOptionalAction, default=None)
-    parser.add_argument('--transformer-quantization', choices=['none', 'int8_w8a8_native'], default='none')
-    parser.add_argument('--quantization-scope', choices=['blocks', 'ffn'], default=None)
+    parser.add_argument('--sage-fp8-accum-dtype', choices=['fp32+fp32', 'fp32+fp16'], default='fp32+fp32')
+    parser.add_argument('--sage-fp8-qk-quant-gran', choices=['per_thread', 'per_warp'], default='per_thread')
+    parser.add_argument('--transformer-quantization', choices=['none', 'int8_w8a8_native', 'fp8_w8a8_native', 'fp8_w8a8_tensorwise', 'fp8_w8a8_static'], default='none')
+    parser.add_argument('--quantization-scope', choices=['blocks', 'ffn', 'ffn_up'], default=None)
     parser.add_argument("--operator-fusion-ops", default=None)
     parser.add_argument("--warmup", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--warmup-steps", type=int, default=1)
@@ -151,6 +153,8 @@ def _build_server_args(args: argparse.Namespace, pipeline_cls: type) -> ServerAr
         pipeline_config=config,
         component_architectures=architectures,
         attention_backend=args.attention_backend,
+        sage_fp8_accum_dtype=args.sage_fp8_accum_dtype,
+        sage_fp8_qk_quant_gran=args.sage_fp8_qk_quant_gran,
         transformer_quantization=getattr(args, "transformer_quantization", "none"),
         enable_torch_compile=bool(args.enable_torch_compile),
         torch_compile_scope=getattr(args, "torch_compile_scope", "ffn"),
@@ -198,8 +202,20 @@ def _effective_acceleration(
     fusion = decision.as_dict() if hasattr(decision, "as_dict") else {}
     config = server_args.pipeline_config
     nccl = getattr(config, 'dit_parallel_backend', 'peer') == 'nccl'
+    cache_modes = ['off', 'teacache', 'cache_dit']
+    if server_args.dit_layerwise_offload:
+        cache_modes.remove('cache_dit')
+    if server_args.enable_torch_compile:
+        cache_modes = ['off']
+    if nccl:
+        from config.dit_parallel import resolve_dit_topology, validate_nccl_text_cache
+        try:
+            validate_nccl_text_cache(config, resolve_dit_topology(config))
+        except ValueError:
+            cache_modes = ['off']
     return {
         "resource_policy": server_args.resolve_resource_policy().as_dict(),
+        "cuda_memory_limit_gib": server_args.cuda_memory_limit_gib,
         "memory_runtime": (
             pipeline._memory_adapter.snapshot()
             if getattr(pipeline, "_memory_adapter", None) is not None else {}
@@ -212,7 +228,7 @@ def _effective_acceleration(
         "transformer_cache": {
             "scope": "request",
             "default": "off",
-            "supported_modes": ["off"] if nccl else ["off", "teacache", "cache_dit"],
+            "supported_modes": cache_modes,
             "experimental": True,
             "compatible_with_torch_compile": False,
             "effective_report": "task.metrics.transformer_cache_history",

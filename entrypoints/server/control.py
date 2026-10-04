@@ -16,6 +16,7 @@ class ServiceProgressState:
         self.task_id = task_id
         self._pipeline_completed = 0
         self._pipeline_total = 1
+        self._location: dict[str, int] = {}
 
     def stop(self) -> None:
         return None
@@ -46,11 +47,21 @@ class ServiceProgressState:
             window_count=window_count,
         )
 
-    def reset_denoise_task(self, **_: object) -> None:
-        return None
+    def reset_denoise_task(self, *, object_index: int, object_count: int,
+                           window_index: int, window_count: int, total_steps: int) -> None:
+        self._location = dict(object_index=object_index, object_count=object_count,
+                              window_index=window_index, window_count=window_count)
+        self._update_fraction(0.)
 
-    def update_denoise(self, *_: object, **__: object) -> None:
-        return None
+    def _update_fraction(self, fraction: float) -> None:
+        # Reserve the final tenth of each window for decoding and commit.
+        completed = self._pipeline_completed + .9 * max(0., min(fraction, 1.))
+        progress = min(94, 5 + int(89 * completed / self._pipeline_total))
+        self.task_store.update_progress(self.task_id, phase=TaskPhase.PROCESSING,
+                                        progress=progress, **self._location)
+
+    def update_denoise(self, step_index: int, total_steps: int, **_: object) -> None:
+        self._update_fraction((step_index + 1) / max(total_steps, 1))
 
     def hide_denoise(self) -> None:
         return None

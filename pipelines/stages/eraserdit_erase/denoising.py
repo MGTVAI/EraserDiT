@@ -187,6 +187,7 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
                     latents, latent_num_frames, latent_height, latent_width,
                     rope_interpolation_scale,
                 )
+            progress = batch.extra.get('runtime_progress_state')
             for step_index, timestep in enumerate(timesteps):
                 service_checkpoint(batch, server_args, phase="denoise_step")
                 step_start = time.perf_counter()
@@ -244,6 +245,11 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
                 batch.step_index = step_index
                 if batch.metrics is not None:
                     batch.metrics.record_step(time.perf_counter() - step_start)
+                if progress is not None:
+                    # Report launch progress without reading a CUDA scalar or
+                    # synchronizing the device just for UI updates.
+                    progress.update_denoise(step_index, len(timesteps),
+                                            timestep_value=None)
 
             if mesh.active:
                 batch.extra["dit_parallel"] = mesh.report()

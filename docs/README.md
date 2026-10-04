@@ -3,7 +3,8 @@
 从[项目 README](../README.md#快速开始)完成首次安装和推理。以下指南描述当前代码，
 带日期的实验记录保留当时的环境、参数、质量目标与测量结果。
 
-本轮整体优化的状态、推荐命令与回归汇总见[推进记录](optimization_progress_20261002.md)。
+本轮 L40S 24 GiB 验收见[最新记录](l40s_validation_20261004.md)和[收敛计划](l40s_completion_plan.md)。
+前序整体优化见[推进记录](optimization_progress_20261002.md)。
 
 ## 使用与开发
 
@@ -28,6 +29,11 @@
 
 | 日期 | 记录 | 范围 |
 | --- | --- | --- |
+| 2026-10-04 | [L40S 24 GiB 验收](l40s_validation_20261004.md) | 1/2/4 卡逐卡峰值、缓存初筛、WebUI 与取消恢复 |
+| 2026-10-04 | [Attention 性能优化](attention_optimization_20261004.md) | Sage FP8 与完整 Q/K RMSNorm + RoPE 融合、整请求对照 |
+| 2026-10-04 | [AdaLN 与残差优化](adaln_optimization_20261004.md) | 完整 RMSNorm + AdaLN 融合、门控残差组合与投影筛选 |
+| 2026-10-04 | [FP8 性能优化](fp8_optimization_20261004.md) | GELU 融合、静态激活缩放与快速累加、完整 FFN/DiT 和视频对照 |
+| 2026-10-03 | [INT8 GELU 融合](quantization_gelu_fusion_20261003.md) | 保持量化输出的激活融合、完整 FFN/DiT 测量及卸载与编译验证 |
 | 2026-10-03 | [Ulysses 分块重叠](ulysses_overlap_20261003.md) | GPU kernel 重叠证据、head 分块筛选、数值/生命周期和整片配对 |
 | 2026-10-03 | [CUDA IPC 边界传输](cuda_ipc_boundary_20261003.md) | 去除每步 CPU 张量中转、GPU 所有权与进程生命周期、同条件视频对照 |
 | 2026-10-02 | [同卡数 DP 筛选](dp_topology_20261002.md) | 四卡单 worker 与双 worker 的冷批次吞吐、单条延迟、私有内存及输出差异 |

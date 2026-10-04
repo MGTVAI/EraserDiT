@@ -54,6 +54,8 @@ class EraseSession:
         if distributed_context is None:
             distributed_context = initialize_runtime_distributed(server_args)
         self.distributed_context = distributed_context
+        from memory.allocator import configure_cuda_allocator
+        configure_cuda_allocator(server_args.cuda_memory_limit_gib, server_args.device)
         from layers.operator_fusion.registry import (
             resolve_operator_fusion_decision,
         )

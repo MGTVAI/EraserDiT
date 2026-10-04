@@ -36,6 +36,25 @@ ffmpeg -v error -xerror -i outputs/result.mp4 -f null -
 
 ## 性能对照
 
+L40S 收敛工具直接调用正式 CLI，记录源码、依赖、输入指纹、逐请求计时与从加载开始的 NVML
+进程树采样。输出目录必须不存在；不自动抢占已被其他计算进程使用的 GPU。
+
+```bash
+uv run --no-project python -m entrypoints.cli.benchmark_l40s \
+  --run-dir results/l40s_bf16_new --profile bf16 --devices 0 --repeats 5
+# 双卡 / 四卡分别选择 cfg2 / cfg2_sp2，并提供对应数量的设备。
+# 快速单卡选择 fast_offload；Sage FP8 扩展需事先安装或用 --sage-source 指定。
+uv run --no-project python -m entrypoints.cli.compare_videos \
+  --reference results/l40s_bf16_new/output_0.mp4 \
+  --candidate outputs/candidate.mp4 --mask data/113000356_mask.mp4 \
+  --output results/candidate_quality.json --review-dir results/candidate_review
+```
+
+`sampled_memory_pass` 只表示已观测任务进程峰值通过，不代表质量通过，也不能排除采样间隔内更短的峰值。
+保留 `memory.jsonl`、`memory.json`、`report.json`、`manifest.json` 和质量逐帧报告。
+多进程 RSS 求和包含共享页，不能当作系统独占内存；报告同时保存其他 GPU 的启动占用情况。
+性能统计之外还需检查输出像素、实际执行配置以及 `source_changes_during_run.json`。
+
 固定代码提交、完整权重版本、输入、prompt、seed、采样步数、窗口及确定性设置，
 保存 GPU 型号、驱动、依赖版本和其他进程占用情况。每次仅改变一个待测配置。
 配置及组合限制见 [性能说明](performance.md)。
@@ -94,3 +113,29 @@ seed 42、50 步、strength 0.8（每窗口实际去噪 40 步）、SDPA、fullg
 本地日志、配置、视频及验证报告保存在 `results/remove_ltx095_validation/`。
 
 本机非量化优化测试的命令、覆盖范围与结果见[2026-09-22 优化验证](optimization_validation_20260922.md)。
+
+### 静态 FP8 激活范围审计
+
+`entrypoints.cli.audit_static_fp8` 接受 `--audit-report PATH` 和正常 CLI 参数，
+逐层统计真正送入量化器的激活（包含融合 GELU 后的值）：有限值最大绝对值、
+超过静态范围 ±56 的数量与非有限值数量。例如在正常 FP8 命令的模块名处改为
+`entrypoints.cli.audit_static_fp8 --audit-report results/audit.json`。
+使用 `fp8_w8a8_static`、关闭 compile，并选择已构建的 Sage FP8 路径。
+此诊断会同步每个 Linear，不能用其耗时作性能结果；它不保存大激活、不修改输入。
+审计报告必须同时检查 `observed`、`failed` 与非有限值，不能把未执行的报告计为通过。
+
+### DP 进程树测量
+
+`benchmark_l40s` 支持 `--dp-degree 2` 或 `4`；`--devices` 须包含
+`profile 卡数 × dp-degree` 张互不重复的物理卡，`--repeats` 是总请求数。
+工具读取 dispatcher 下每个 worker 的正式 CLI 报告，分别记录加载时间、
+冷批次吞吐和按最长 worker 请求时间之和估计的热态服务率；后者不包含调度开销，
+不能当作实际持续到达负载测试。NVML 仍覆盖整个进程树和全部物理卡。
+
+### 精度组合筛选
+
+`benchmark_l40s --profile` 另外提供 `sage_bf16`（Sage FP8 attention + BF16 FFN）、
+`sage_fp8_dynamic`（动态 FP8 FFN）及 `sdpa_fast_fusion`（SDPA + BF16 FFN）。
+三者均启用快速 QK/AdaLN 与 gated-residual 融合、组件卸载；这些是实验配置名，非质量通过标记。
+使用 `--cases` 固定原始素材、prompt 与 seed，并与 `bf16` 参考逐帧比较。
+原 `fast*` 配置仍代表静态 FP8 组合；该组合未通过最新完整素材验收，不作为通用推荐。

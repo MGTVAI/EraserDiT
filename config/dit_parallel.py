@@ -104,6 +104,11 @@ def validate_nccl_dit(args, batch=None):
         raise ValueError('MGERASE_ULYSSES_HEAD_CHUNKS must be 1, 2 or 4') from error
     if head_chunks not in (1, 2, 4):
         raise ValueError('MGERASE_ULYSSES_HEAD_CHUNKS must be 1, 2 or 4')
+    output_overlap = os.environ.get('MGERASE_ULYSSES_OUTPUT_OVERLAP', '0')
+    if output_overlap not in ('0', '1'):
+        raise ValueError('MGERASE_ULYSSES_OUTPUT_OVERLAP must be 0 or 1')
+    if output_overlap == '1' and head_chunks == 1:
+        raise ValueError('output overlap requires Ulysses head chunks 2 or 4')
     if head_chunks > 1 and (topology.ulysses not in (2, 4) or topology.ring != 1
             or topology.tp != 1 or topology.replicas != 1
             or config.dit_fsdp_shard_degree * config.dit_fsdp_replicate_degree != 1

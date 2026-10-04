@@ -40,8 +40,9 @@ def main():
     for index, task in enumerate(tasks):
         task.setdefault("id", f"task{index:03d}")
         params = _task_to_sampling_params(task, args)
-        if params.transformer_cache_mode != "off" or params.cache_text_projections:
-            parser.error("parallel workers require all transformer caches disabled")
+        # Each worker owns a separate session and request-local cache lifetime.
+        # Its normal CLI validates cache/topology/compile compatibility before
+        # loading weights; DP itself does not share cache tensors or decisions.
         paths.append(str(Path(params.output_path, params.output_file_name).resolve()))
     if len(set(paths)) != len(paths):
         parser.error("every task must have a distinct output path")

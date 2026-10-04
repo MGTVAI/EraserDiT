@@ -64,7 +64,9 @@ FFN 编译预热按层借用权重，等待复制 event 并记录计算流使用
 正式推理的复制与释放 hook 留在 eager，CUDA graphs 关闭；QK RoPE/AdaLN 融合在编译区域之外。
 CFG/SP mesh 可以使用常驻 DiT 副本，同时保留主卡 T5/VAE CPU 卸载；
 多卡 DiT 权重卸载、多卡 VAE 卸载、旧 `cfg_parallel_device` 卸载路径仍拒绝。
-INT8 与 DiT 卸载的组合尚未开放。
+单卡 INT8/FP8 已支持 DiT 卸载：逐层在执行 GPU 上量化后将压缩权重放回 CPU，
+再注册逐层卸载；独立 GELU 查表与缩放 buffer 一起搬运。当前完整视频验收见
+[L40S 收敛记录](l40s_completion_plan.md)。
 逐层卸载允许显式 TeaCache：探针使用仅首层的执行计划，完整计算使用所有 block 的计划，
 预取不超出计划且不在末端回绕；复制流分配的权重记录计算流使用，退出计划或异常时释放。
 无缓存路径继续使用原有循环预取。`cache_dit` + 逐层卸载仍在执行请求前拒绝。

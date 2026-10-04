@@ -21,6 +21,10 @@ class DistributedSequenceRank(SequenceRank):
         self.packing = os.environ.get('MGERASE_NCCL_PACKING', 'reference')
         self.head_chunks = int(os.environ.get('MGERASE_ULYSSES_HEAD_CHUNKS', '1'))
         self.head_overlap = True
+        output_overlap = os.environ.get('MGERASE_ULYSSES_OUTPUT_OVERLAP', '0')
+        if output_overlap not in ('0', '1'):
+            raise ValueError('MGERASE_ULYSSES_OUTPUT_OVERLAP must be 0 or 1')
+        self.output_overlap = output_overlap == '1'
         self._communication_stream = None
         if self.head_chunks not in (1, 2, 4):
             raise ValueError('MGERASE_ULYSSES_HEAD_CHUNKS must be 1, 2 or 4')
@@ -104,6 +108,8 @@ class DistributedSequenceRank(SequenceRank):
             raise ValueError('head chunks require inference CUDA/direct Ulysses without Ring, '
                              'and heads divisible by Ulysses degree * chunks')
         heads = query.shape[2] // size // self.head_chunks
+        if self.output_overlap and self.head_overlap:
+            return self._head_input_output_pipeline(query, key, value, impl, metadata, size, heads)
         current = torch.cuda.current_stream(query.device)
         outputs = []
         if not self.head_overlap:
@@ -153,6 +159,59 @@ class DistributedSequenceRank(SequenceRank):
         with self._region('ulysses.head_concat'):
             output = torch.cat(outputs, dim=2)
         return self._ulysses_output(output)
+
+    def _head_input_output_pipeline(self, query, key, value, impl, metadata, size, heads):
+        """Exchange completed heads while computing the next head chunk.
+
+        Every rank enqueues input i+1 BEFORE output i on the same communication
+        stream. Compute i+1 waits only for its input event, so output i may run
+        concurrently. No collective order depends on data or completion timing.
+        """
+        current = torch.cuda.current_stream(query.device)
+        if self._communication_stream is None:
+            self._communication_stream = torch.cuda.Stream(device=query.device)
+        communication = self._communication_stream
+        communication.wait_stream(current)
+        receives, computed, outputs = [], [], []
+
+        def receive(index):
+            with torch.cuda.stream(communication):
+                received = self._ulysses_input(query, qkv=(query, key, value),
+                    head_offset=index * heads, head_count=heads, asynchronous=True)
+                ready = torch.cuda.Event()
+                ready.record(communication)
+            receives.append(received)
+            return received, ready
+
+        try:
+            received, ready = receive(0)
+            for chunk in range(self.head_chunks):
+                current.wait_event(ready)
+                q, k, v = received.chunk(3, dim=0)
+                with self._region('self_attention'):
+                    attended = impl.forward(q, k, v, metadata)
+                computed.append(attended)
+                finished = torch.cuda.Event()
+                finished.record(current)
+                if chunk + 1 < self.head_chunks:
+                    received, ready = receive(chunk + 1)
+                with torch.cuda.stream(communication):
+                    communication.wait_event(finished)
+                    outputs.append(self._ulysses_output(attended))
+        finally:
+            # Keep allocations on both streams alive until reads are ordered
+            # before allocator reuse, including the exceptional path.
+            communication.wait_stream(current)
+            current.wait_stream(communication)
+        for output in outputs:
+            output.record_stream(current)
+        with self._region('ulysses.head_concat'):
+            # Each exchange returns [rank0 chunk_i, rank1 chunk_i, ...]. Restore
+            # rank-major, then chunk-major head order before the projection.
+            output = torch.stack([part.unflatten(2, (size, heads)) for part in outputs], dim=3)
+            output = output.flatten(2, 4)
+        self.effective_attention = 'torch_sdpa_head_input_output_pipeline'
+        return output
 
     def _rotate(self, key, value, owner):
         group, ranks, rank = self.groups.get('ring')

@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>EraserDiT 视频擦除</title><link rel="stylesheet" href="/ui/assets/style.css"></head>
+<body><header><strong>EraserDiT</strong><span>视频擦除工作台</span><span id="health" role="status">正在连接服务…</span></header>
+<main><section><h1>让画面留下你想要的内容</h1><p>上传视频，用白色 mask 标出需要移除的区域，并描述擦除后应呈现的背景。</p>
+<form id="form"><div class="columns"><article><h2>1 · 视频与擦除区域</h2><label>输入视频<input id="videoFile" type="file" accept="video/*" required></label>
+<div class="stage"><video id="inputVideo" controls playsinline></video><canvas id="paint" aria-label="擦除区域画布"></canvas></div>
+<label>区域来源<select id="maskMode"><option value="upload">上传逐帧 mask 视频 / 静态 PNG</option><option value="paint">画笔绘制静态区域</option></select></label>
+<div id="uploadControls"><label>Mask 文件<input id="maskFile" type="file" accept="video/*,image/png"></label><video id="maskVideo" controls playsinline hidden></video><img id="maskImage" alt="上传的静态 mask" hidden></div>
+<div id="paintControls" hidden><p>暂停视频后绘制。该区域应用于<strong>所有帧</strong>，不会自动跟踪目标；运动目标请上传逐帧 mask。</p><label>选择预览帧<input id="seek" type="range" min="0" max="1" step="0.001" value="0"></label><div class="tools"><label>画笔大小 <input id="brush" type="range" min="4" max="160" value="40"></label><label><input id="eraser" type="checkbox">橡皮擦</label><button id="clear" type="button">清空</button></div></div></article>
+<article><h2>2 · 内容与参数</h2><label>背景提示词<textarea id="prompt" rows="4" required placeholder="例如：There is a rooftop terrace overlooking the city at sunset."></textarea></label><p>建议用英文描述希望保留或补全的场景。</p>
+<label>推理策略<select id="preset"><option value="quality">质量优先 · 不复用去噪结果</option><option value="memory">低显存 · 缩短窗口</option><option value="speed">速度候选 · TeaCache 局部保护</option></select></label><p id="presetNote">使用 121 帧窗口，缓存关闭。显存预算与硬件加速由服务启动配置决定。</p>
+<details><summary>采样参数</summary><label>随机种子<input id="seed" type="number" value="42" min="0" step="1" required></label><label>推理步数<input id="steps" type="number" value="50" min="1" max="1000" step="1" required></label><label>擦除强度<input id="strength" type="number" value="0.8" min="0.01" max="1" step="0.01" required></label></details>
+<button class="primary" id="submit" type="submit">开始擦除</button><p id="message" role="status" aria-live="polite"></p><progress id="uploadProgress" max="100" value="0" hidden></progress>
+</article></div></form></section>
+<section><div class="sectionHeading"><h2>3 · 任务与结果</h2><button id="refresh" type="button">刷新任务</button></div><p id="taskError" role="alert"></p><div id="tasks"></div></section>
+</main><footer>当前页面连接本机部署的 EraserDiT 服务 · <a href="/docs">API 文档</a></footer><script src="/ui/assets/app.js" defer></script></body></html>

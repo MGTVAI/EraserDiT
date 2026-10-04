@@ -82,6 +82,18 @@ class ServiceAPITest(unittest.TestCase):
         self.assertEqual(record.request_payload["num_inference_steps"], 50)
         self.assertEqual(self.client.post("/v1/videos", json={**self.payload, "model": "missing"}).status_code, 404)
 
+    def test_web_ui_and_static_mask_failure_cleanup(self):
+        self.assertEqual(self.client.get('/ui').status_code, 200)
+        self.assertIn('视频擦除', self.client.get('/ui').text)
+        self.assertEqual(self.client.get('/ui/assets/app.js').status_code, 200)
+        response = self.client.post('/v1/videos', files={
+            'video': ('video.mp4', b'video'),
+            'mask': ('paint.png', b'\x89PNG\r\n\x1a\ncorrupt'),
+        })
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()['error']['code'], 'invalid_static_mask')
+        self.assertEqual(list(self.store.tasks_root.iterdir()), [])
+
     def test_progress_cancel_delete(self):
         task_id = self.create()
         url = f"/v1/videos/{task_id}"

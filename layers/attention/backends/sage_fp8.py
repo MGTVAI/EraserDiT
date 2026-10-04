@@ -1,4 +1,4 @@
-"""Strict sm89 SageAttention FP8 backend matching main xDiT semantics."""
+"""SM89 SageAttention FP8 backend with explicit experimental precision options."""
 
 from __future__ import annotations
 
@@ -106,6 +106,8 @@ class SageFP8AttentionImpl(AttentionImpl):
         causal: bool = False,
         num_kv_heads: int | None = None,
         prefix: str = "",
+        pv_accum_dtype: str = SAGE_FP8_PV_ACCUM_DTYPE,
+        qk_quant_gran: str = SAGE_FP8_QK_QUANT_GRANULARITY,
         **extra_impl_args: Any,
     ) -> None:
         del num_heads, head_size, num_kv_heads, prefix, extra_impl_args
@@ -115,6 +117,12 @@ class SageFP8AttentionImpl(AttentionImpl):
                 AttentionBackendEnum.SAGE_FP8,
                 reason or f"{SAGE_FP8_SYMBOL} is unavailable",
             )
+        if pv_accum_dtype not in {"fp32+fp32", "fp32+fp16"}:
+            raise ValueError("unsupported Sage FP8 accumulation mode")
+        if qk_quant_gran not in {"per_thread", "per_warp"}:
+            raise ValueError("unsupported Sage FP8 QK quantization granularity")
+        self.pv_accum_dtype = pv_accum_dtype
+        self.qk_quant_gran = qk_quant_gran
         self.kernel = kernel
         self.causal = causal
         self.softmax_scale = softmax_scale
@@ -137,8 +145,8 @@ class SageFP8AttentionImpl(AttentionImpl):
             "effective": "sage_fp8",
             "kernel_symbol": SAGE_FP8_SYMBOL,
             "tensor_layout": SAGE_FP8_TENSOR_LAYOUT,
-            "qk_quant_granularity": SAGE_FP8_QK_QUANT_GRANULARITY,
-            "pv_accum_dtype": SAGE_FP8_PV_ACCUM_DTYPE,
+            "qk_quant_granularity": self.qk_quant_gran,
+            "pv_accum_dtype": self.pv_accum_dtype,
             "smooth_k": SAGE_FP8_SMOOTH_K,
             "smooth_v": SAGE_FP8_SMOOTH_V,
             "causal": self.causal,
@@ -171,9 +179,9 @@ class SageFP8AttentionImpl(AttentionImpl):
                 value.contiguous(),
                 tensor_layout=SAGE_FP8_TENSOR_LAYOUT,
                 is_causal=self.causal,
-                qk_quant_gran=SAGE_FP8_QK_QUANT_GRANULARITY,
+                qk_quant_gran=self.qk_quant_gran,
                 sm_scale=self.softmax_scale,
-                pv_accum_dtype=SAGE_FP8_PV_ACCUM_DTYPE,
+                pv_accum_dtype=self.pv_accum_dtype,
                 smooth_k=SAGE_FP8_SMOOTH_K,
                 smooth_v=SAGE_FP8_SMOOTH_V,
                 return_lse=False,

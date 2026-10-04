@@ -30,7 +30,7 @@ from layers.attention.backends.sage_attn import SageAttentionBackend
 from layers.attention.backends.sage_fp8 import SageFP8AttentionBackend
 from layers.attention.backends.sdpa import SDPABackend
 from layers.attention.selector import resolve_attention_backend
-from layers.operator_fusion.config import QK_RMSNORM_ROPE_OP
+from layers.operator_fusion.config import QK_RMSNORM_ROPE_OP, QK_RMSNORM_ROPE_FAST_OP
 from layers.operator_fusion.qk_rmsnorm_rope import apply_fused_qk_rmsnorm_rope
 from layers.operator_fusion.registry import get_operator_fusion_decision
 from config.server_args import get_global_server_args
@@ -86,6 +86,9 @@ class EraserDiTAttentionProcessor:
         if attention_backend is None:
             attention_backend = getattr(server_args, "attention_backend", "sdpa")
         self.attention_backend = normalize_attention_backend(attention_backend)
+        self.sage_fp8_options = dict(
+            pv_accum_dtype=getattr(server_args, "sage_fp8_accum_dtype", "fp32+fp32"),
+            qk_quant_gran=getattr(server_args, "sage_fp8_qk_quant_gran", "per_thread"))
         self.operator_fusion_decision = get_operator_fusion_decision(server_args)
         self._selection_cache: dict[tuple, AttentionSelection] = {}
         self._impl_cache: dict[tuple, AttentionImpl] = {}
@@ -139,6 +142,7 @@ class EraserDiTAttentionProcessor:
                 num_kv_heads=capability.head_size,
                 prefix="eraserdit_attention.impl",
                 dropout_p=0.0,
+                **(self.sage_fp8_options if selection.selected is AttentionBackendEnum.SAGE_FP8 else {}),
             )
             self._impl_cache[selection.selected] = impl
         return selection, impl
@@ -183,6 +187,7 @@ class EraserDiTAttentionProcessor:
             num_kv_heads=num_heads,
             prefix="eraserdit_attention.preflight",
             dropout_p=0.0,
+            **(self.sage_fp8_options if selection.selected is AttentionBackendEnum.SAGE_FP8 else {}),
         )
         self._impl_cache[selection.selected] = impl
         return self.attention_backend_report(impl=impl)
@@ -243,7 +248,9 @@ class EraserDiTAttentionProcessor:
         key = attn.to_k(hidden_states)
         value = attn.to_v(hidden_states)
 
-        if QK_RMSNORM_ROPE_OP in self.operator_fusion_decision.effective_ops:
+        if {QK_RMSNORM_ROPE_OP, QK_RMSNORM_ROPE_FAST_OP}.intersection(
+            self.operator_fusion_decision.effective_ops
+        ):
 
             def reference_qk_norm_rope() -> tuple[torch.Tensor, torch.Tensor]:
                 reference_query = attn.norm_q(query)

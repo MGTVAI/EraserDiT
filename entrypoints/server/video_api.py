@@ -23,6 +23,7 @@ from entrypoints.server.artifacts import (
     resolve_allowed_input,
 )
 from entrypoints.server.task import ServiceError, TaskRecord, TaskStatus
+from entrypoints.server.static_mask import expand_uploaded_png
 
 
 def create_video_router(
@@ -70,7 +71,7 @@ def create_video_router(
             "additionalProperties": False,
             "properties": {
                 "video": {"type": "string", "format": "binary"},
-                "mask": {"type": "string", "format": "binary"},
+                "mask": {"type": "string", "format": "binary", "description": "Mask video or static PNG matching the video dimensions; PNG applies to every frame"},
                 "bbox_path": {"type": "string"},
                 "parameters": {"type": "string", "description": "JSON encoded sampling parameters",
                                "contentMediaType": "application/json",
@@ -175,6 +176,7 @@ def create_video_router(
                         "combined uploads exceed the configured byte limit",
                         status_code=429,
                     )
+                mask_path = await run_in_threadpool(expand_uploaded_png, video_path, mask_path)
                 raw_bbox = form.get("bbox_path")
                 if raw_bbox is not None and not isinstance(raw_bbox, str):
                     raise ServiceError("invalid_request", "bbox_path must be text", status_code=422)

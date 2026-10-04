@@ -42,20 +42,23 @@ class NativeInt8Linear(nn.Module):
         self.register_buffer('weight_int8', weight_int8)
         self.register_buffer('weight_scale', weight_scale)
         self.register_buffer('bias', bias)
+        self.register_buffer('gelu_lut', None)
         self.calls = 0
+        self.fused_calls = 0
+        self.gelu_calls = 0
 
     @classmethod
-    def from_linear(cls, source):
+    def from_linear(cls, source, *, execution_device=None):
         if source.weight.device.type not in ('cpu', 'cuda') or source.weight.dtype != torch.bfloat16:
             raise ValueError('INT8 conversion requires CPU/CUDA BF16 Linear')
         if source.in_features % 32 or source.out_features % 32:
             raise ValueError('INT8 Linear dimensions must be multiples of 32')
         with torch.no_grad():
-            weight = source.weight.detach().float()
+            weight = source.weight.detach().to(device=execution_device or source.weight.device, dtype=torch.float32)
             scale = weight.abs().amax(dim=1).div(127.)
             scale = torch.where(scale > 0, scale, torch.ones_like(scale))
             quant = (weight/scale[:, None]).round().clamp(-127,127).to(torch.int8)
-            bias = source.bias.detach().clone() if source.bias is not None else None
+            bias = source.bias.detach().to(device=weight.device, copy=True) if source.bias is not None else None
         return cls(quant.contiguous(), scale, bias)
 
     def forward(self, value):
@@ -74,8 +77,24 @@ class NativeInt8Linear(nn.Module):
             x = torch.nn.functional.pad(x, (0, 0, 0, padded_rows-rows))
         quant = torch.empty_like(x, dtype=torch.int8)
         scale = torch.empty(padded_rows, device=x.device, dtype=torch.float32)
-        _quant_rows[(padded_rows,)](x, quant, scale, self.in_features,
-                             triton.next_power_of_2(self.in_features), num_warps=8)
+        if self.gelu_lut is None:
+            _quant_rows[(padded_rows,)](x, quant, scale, self.in_features,
+                                 triton.next_power_of_2(self.in_features), num_warps=8)
+        else:
+            from layers.quantization.gelu import _gelu_quant_rows
+            _gelu_quant_rows[(padded_rows,)](x, self.gelu_lut, quant, scale,
+                self.in_features, triton.next_power_of_2(self.in_features), num_warps=8)
+            if not torch.compiler.is_compiling():
+                self.gelu_calls += 1
+        # Expansion layers otherwise write/read a large INT32 intermediate.
+        # Keep cuBLAS for contraction and small matrices where it is faster.
+        if rows >= 1024 and self.out_features >= 2 * self.in_features:
+            from layers.quantization.gemm import int8_scaled_gemm
+            output = int8_scaled_gemm(quant, self.weight_int8, scale, self.weight_scale, self.bias)
+            if not torch.compiler.is_compiling():
+                self.calls += 1
+                self.fused_calls += 1
+            return output[:rows].reshape(*value.shape[:-1], self.out_features)
         accum = torch._int_mm(quant, self.weight_int8.t())
         output = torch.empty((padded_rows,self.out_features),device=x.device,dtype=value.dtype)
         _epilogue[(triton.cdiv(output.numel(),1024),)](

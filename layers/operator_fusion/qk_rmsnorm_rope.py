@@ -7,7 +7,7 @@ from typing import Any
 
 import torch
 
-from .config import QK_RMSNORM_ROPE_OP
+from .config import QK_RMSNORM_ROPE_OP, QK_RMSNORM_ROPE_FAST_OP
 from .registry import OperatorFusionDecision
 from .runtime import record_operator_fusion_call
 
@@ -89,11 +89,21 @@ def apply_fused_qk_rmsnorm_rope(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Use the fused path when selected, otherwise execute the exact caller reference."""
 
+    fast = QK_RMSNORM_ROPE_FAST_OP in decision.effective_ops
+    op = QK_RMSNORM_ROPE_FAST_OP if fast else QK_RMSNORM_ROPE_OP
     failure = _capability_failure(query, key, query_norm, key_norm, freqs)
+    if fast and failure is None:
+        from diffusers.models.normalization import RMSNorm
+        if type(query_norm) is not RMSNorm or type(key_norm) is not RMSNorm:
+            failure = "norm_implementation"
+        elif torch.is_grad_enabled() and any(
+            t.requires_grad for t in (query, key, query_norm.weight, key_norm.weight, *freqs)
+        ):
+            failure = "autograd"
     eligible = failure is None
-    if QK_RMSNORM_ROPE_OP not in decision.effective_ops:
+    if op not in decision.effective_ops:
         record_operator_fusion_call(
-            QK_RMSNORM_ROPE_OP,
+            op,
             shape=tuple(query.shape),
             eligible=eligible,
             fused=False,
@@ -103,10 +113,10 @@ def apply_fused_qk_rmsnorm_rope(
     if failure is not None:
         if decision.forced:
             raise RuntimeError(
-                f"forced {QK_RMSNORM_ROPE_OP} capability check failed: {failure}"
+                f"forced {op} capability check failed: {failure}"
             )
         record_operator_fusion_call(
-            QK_RMSNORM_ROPE_OP,
+            op,
             shape=tuple(query.shape),
             eligible=False,
             fused=False,
@@ -114,20 +124,19 @@ def apply_fused_qk_rmsnorm_rope(
         )
         return reference()
 
-    from .triton.qk_rmsnorm_rope import triton_qk_rope
-
     cos, sin = freqs
-    # Preserve native reduction and BF16 rounding, including the boundary
-    # before the affine weight multiplication. The earlier joint reduction
-    # changed model numerics and failed the video quality gate.
-    fused_query, fused_key = triton_qk_rope(
-        query_norm(query).contiguous(),
-        key_norm(key).contiguous(),
-        cos,
-        sin,
-    )
+    if fast:
+        from .triton.qk_rmsnorm_rope_fast import triton_qk_rmsnorm_rope_fast
+        fused_query, fused_key = triton_qk_rmsnorm_rope_fast(
+            query, key, query_norm.weight, key_norm.weight, cos, sin, query_norm.eps,
+        )
+    else:
+        from .triton.qk_rmsnorm_rope import triton_qk_rope
+        fused_query, fused_key = triton_qk_rope(
+            query_norm(query).contiguous(), key_norm(key).contiguous(), cos, sin,
+        )
     record_operator_fusion_call(
-        QK_RMSNORM_ROPE_OP,
+        op,
         shape=tuple(query.shape),
         eligible=True,
         fused=True,

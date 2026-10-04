@@ -46,6 +46,8 @@ def _worker(rank, plan, args, model_spec, connection, rendezvous):
         enable_deterministic_mode()
         from config.server_args import set_global_server_args
         args.device = str(device)
+        from memory.allocator import configure_cuda_allocator
+        configure_cuda_allocator(args.cuda_memory_limit_gib, device)
         from layers.operator_fusion.registry import resolve_operator_fusion_decision
         args.operator_fusion_decision = resolve_operator_fusion_decision(args)
         set_global_server_args(args)
@@ -79,8 +81,18 @@ def _worker(rank, plan, args, model_spec, connection, rendezvous):
             shard_linear_weights(model, tp_group, tp_rank, len(tp_ranks),
                                  'sharded' if mode == 'aligned' else mode, replicated_names=replicated,
                                  reference_names=reference)
-        model.to(device)
         config = args.pipeline_config
+        idle_residency = None
+        if (rank == 0 and args.cuda_memory_limit_gib is not None
+                and plan['topology'].tp == 1 and plan['topology'].replicas == 1
+                and config.dit_fsdp_shard_degree * config.dit_fsdp_replicate_degree == 1):
+            # The owner runs VAE on this same physical GPU. A per-process cap
+            # alone cannot bound their SUM. Retain CPU checkpoint storage and
+            # materialize rank 0 only while it actually executes DiT windows.
+            from memory.backends.dit_idle_residency import DiTIdleResidency
+            idle_residency = DiTIdleResidency(model, device)
+        else:
+            model.to(device)
         if config.dit_fsdp_shard_degree * config.dit_fsdp_replicate_degree > 1:
             from torch.distributed.device_mesh import init_device_mesh
             from memory.backends.fsdp_offload import shard_model, MixedPrecisionPolicy
@@ -118,11 +130,17 @@ def _worker(rank, plan, args, model_spec, connection, rendezvous):
                 runner.reset()
                 profiler.reset()
                 gpu_timings.clear()
+                if idle_residency is not None:
+                    idle_residency.release()
+                from memory.allocator import release_idle_cuda_cache
+                release_idle_cuda_cache(args.cuda_memory_limit_gib, device)
                 torch.cuda.reset_peak_memory_stats(device)
                 dist.barrier(group=groups.control)
                 if rank == 0:
                     connection.send(('ok', None))
             elif command == 'predict':
+                if idle_residency is not None:
+                    idle_residency.acquire()
                 events = [torch.cuda.Event(enable_timing=True) for _ in range(3)]
                 events[0].record()
                 packet = _broadcast_packet(message[1] if rank == 0 else None, groups, device,
@@ -153,6 +171,7 @@ def _worker(rank, plan, args, model_spec, connection, rendezvous):
                 if gpu_timings:
                     gpu_timings[-1][-1].synchronize()
                 report = runner.report()
+                report['weight_residency'] = idle_residency.report() if idle_residency else {'mode': 'resident'}
                 report['diagnostic_profiles'] = list(profiler.artifacts)
                 report['window_gpu_seconds'] = {
                     'input_broadcast': sum(e[0].elapsed_time(e[1]) for e in gpu_timings) / 1000,
@@ -193,6 +212,8 @@ class DiTProcessPool:
         # The owner does no DiT compute. Release its duplicate GPU weights;
         # keep the module identity/configuration used by the pipeline intact.
         source.to('cpu')
+        from memory.allocator import release_idle_cuda_cache
+        release_idle_cuda_cache(args.cuda_memory_limit_gib, args.device)
         model_spec = {'class': type(source), 'config': dict(source.config),
                       'dtype': next(source.parameters()).dtype, 'state': source.state_dict(),
                       'addition_config': getattr(source, 'addition_config', {})}

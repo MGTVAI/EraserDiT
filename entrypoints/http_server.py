@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException
 
 from config.service_args import ServiceArgs
@@ -39,6 +41,13 @@ def create_http_server_app(
     app = FastAPI(title=f"EraserDiT {capability} Service", version="1")
     app.state.ready = True
     app.state.started_at = time.time()
+    if capability == 'eraserdit_video_erase':
+        assets = Path(__file__).parent / 'server' / 'web'
+        app.mount('/ui/assets', StaticFiles(directory=assets), name='ui-assets')
+
+        @app.get('/ui', include_in_schema=False)
+        async def web_ui():
+            return FileResponse(assets / 'index.html')
 
     @app.exception_handler(ServiceError)
     async def handle_service_error(_: Request, error: ServiceError) -> JSONResponse:

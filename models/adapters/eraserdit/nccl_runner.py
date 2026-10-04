@@ -171,4 +171,6 @@ class DiTRankRunner:
                     ulysses_head_chunks=self.sequence.head_chunks if self.sequence else 1,
                     ulysses_head_overlap=bool(self.sequence and self.sequence.head_chunks > 1
                                               and self.sequence.head_overlap),
+                    ulysses_output_overlap=bool(self.sequence and self.sequence.head_chunks > 1
+                                                and self.sequence.head_overlap and self.sequence.output_overlap),
                     collectives=self.sequence.calls if self.sequence else {})

@@ -351,6 +351,26 @@ for name in ('config', 'distributed', 'parallel', 'models', 'memory', 'nodes', '
                 reader.close()
             np.testing.assert_allclose(frames.mean(axis=(1, 2, 3)), (32, 96, 160, 224), atol=3)
 
+    def test_async_broken_pipe_joins_consumer_after_subprocess_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer = SequentialVideoWriter(str(Path(directory)/'broken.mp4'),
+                width=16, height=16, fps=25, thread_count=1, async_queue_depth=1)
+            writer.process.terminate()
+            writer.process.wait(timeout=5)
+            try:
+                writer.write_frames_owned(np.zeros((64,16,16,3),dtype=np.uint8))
+                writer._async_queue.join()
+                with self.assertRaisesRegex(RuntimeError, 'asynchronous ffmpeg writer failed'):
+                    writer.close()
+                self.assertFalse(writer._async_thread.is_alive())
+                self.assertTrue(writer._closed)
+                with self.assertRaises(RuntimeError):
+                    writer.close()
+            finally:
+                if writer._async_thread.is_alive():
+                    writer._async_queue.put(writer._async_sentinel)
+                    writer._async_thread.join(timeout=5)
+
 
 if __name__ == "__main__":
     unittest.main()

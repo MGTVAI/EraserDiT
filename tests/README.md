@@ -43,7 +43,7 @@ CUDA_VISIBLE_DEVICES='' ERASERDIT_TEST_TWO_GPU=0 ERASERDIT_TEST_INT8=0 \
 | `test_nccl_text_cache.py` | rank 文本缓存条件/权重失效、分支/窗口隔离、抽样 profiler 与异常 hooks 清理；真实多卡检查位于 `test_nccl_dit.py` |
 | `test_window_benchmark.py` | 单窗口计时汇总，拒绝多窗口和非 121 帧报告 |
 | `test_mesh_gpu.py` | 显式两/四卡 Transformer、异常恢复和可选真实 VAE |
-| `test_quantization.py` | 层覆盖及组合约束，显式 INT8 GPU 验证 |
+| `test_quantization.py` | 层覆盖及组合约束，INT8/FP8 GPU 数值验证和融合 GEMM 对照 |
 
 ## GPU 回归
 
@@ -153,3 +153,17 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 ERASERDIT_TEST_DIT_NCCL=1 OMP_NUM_THREADS=1 \
 
 真实权重筛选：`entrypoints.cli.benchmark_dit --variants fusion_direct,heads2_serial,heads2,heads4`。
 `heads2_serial` 仅为基准中的分块串行对照；实际并行与整片收益见[验收记录](../docs/ulysses_overlap_20261003.md)。
+
+Sage FP8 配置与数值检查：`CUDA_VISIBLE_DEVICES=0 ERASERDIT_TEST_SAGE_FP8=1 PYTHONPATH=results/quant_opt_20261003/SageAttention uv run --no-project python -m unittest tests.test_sage_fp8_options`。GPU 部分需要 SM89 和兼容的已构建扩展。
+
+INT8 GELU 融合：`CUDA_VISIBLE_DEVICES=0 ERASERDIT_TEST_INT8=1 OMP_NUM_THREADS=1 uv run --no-project python -m unittest tests.test_quantization`。
+包括有限 BF16 位模式、非连续/不整齐输入、模型转换与激活匹配、独立 LUT buffer，以及 CPU 转换后逐层卸载和局部编译的精确输出。
+
+同一量化专项也覆盖 FP8 动态/静态模式：GELU 融合、固定 scale 与饱和、快速累加参考、
+空输入/非连续张量、CPU 转换和逐层卸载加局部编译。不同量化模式以误差和视频质量比较。
+
+近似完整 Q/K 融合：`CUDA_VISIBLE_DEVICES=0 uv run --no-project python -m unittest tests.test_qk_fast_fusion tests.test_operator_fusion_precision`。
+覆盖误差上限、零输入/多 batch/不同幅度、输入不变、统计归属、契约回退与梯度拒绝；同时保留原精确路径回归。
+
+完整 AdaLN 融合：`CUDA_VISIBLE_DEVICES=0 uv run --no-project python -m unittest tests.test_adaln_fast_fusion tests.test_operator_fusion_precision`。
+覆盖零输入与不同幅度、调制张量切片、数值误差、原始输入不变、自动回退/梯度、完整 block 集成和融合计数。

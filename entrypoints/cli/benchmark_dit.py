@@ -23,7 +23,9 @@ VARIANTS = {'reference': ('disabled', 'reference'),
             'compiled': ('triton', 'direct'),
             'heads2_serial': ('triton', 'direct'),
             'heads2': ('triton', 'direct'),
-            'heads4': ('triton', 'direct')}
+            'heads4': ('triton', 'direct'),
+            'heads2_output': ('triton', 'direct'),
+            'heads4_output': ('triton', 'direct')}
 
 
 def _rank(rank, options, rendezvous):
@@ -82,6 +84,7 @@ def _rank(rank, options, rendezvous):
                         runner.sequence.packing = packing
                         runner.sequence.head_chunks = int(name[5]) if name.startswith('heads') else 1
                         runner.sequence.head_overlap = not name.endswith('_serial')
+                        runner.sequence.output_overlap = name.endswith('_output')
                     from layers.block_compile import configure_block_compile, remove_block_compile
                     if name == 'compiled':
                         configure_block_compile(model, mode='default')

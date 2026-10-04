@@ -97,14 +97,16 @@ class RuntimeProgressState:
         self,
         step_index: int,
         total_steps: int,
-        timestep_value: float,
+        timestep_value: float | None,
         cfg_enabled: bool | None = None,
         guidance_scale: float | None = None,
     ) -> None:
         with self.lock or threading.Lock():
             if self.denoise_task_id is None:
                 return
-            meta = f"step {step_index + 1} t={timestep_value:.2f}"
+            meta = f"step {step_index + 1}"
+            if timestep_value is not None:
+                meta += f" t={timestep_value:.2f}"
             if cfg_enabled is not None:
                 meta += f" cfg={'on' if cfg_enabled else 'off'}"
             if guidance_scale is not None:

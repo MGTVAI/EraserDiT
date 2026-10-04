@@ -5,12 +5,17 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 QK_RMSNORM_ROPE_OP = "qk_rmsnorm_rope"
+QK_RMSNORM_ROPE_FAST_OP = "qk_rmsnorm_rope_fast"
 RMSNORM_ADALN_OP = "rmsnorm_adaln"
+RMSNORM_ADALN_FAST_OP = "rmsnorm_adaln_fast"
 GATED_RESIDUAL_OP = "gated_residual"
 
 OPERATOR_FUSION_BACKENDS = ("disabled", "auto", "triton")
 DEFAULT_OPERATOR_FUSION_OPS = (QK_RMSNORM_ROPE_OP, RMSNORM_ADALN_OP)
-OPERATOR_FUSION_OPS = (*DEFAULT_OPERATOR_FUSION_OPS, GATED_RESIDUAL_OP)
+OPERATOR_FUSION_OPS = (
+    *DEFAULT_OPERATOR_FUSION_OPS, GATED_RESIDUAL_OP,
+    QK_RMSNORM_ROPE_FAST_OP, RMSNORM_ADALN_FAST_OP,
+)
 
 
 def normalize_operator_fusion_backend(value: object) -> str:
@@ -44,4 +49,8 @@ def normalize_operator_fusion_ops(
         raise ValueError(
             f"unknown operator fusion op(s): {unknown}; supported={OPERATOR_FUSION_OPS}"
         )
+    if QK_RMSNORM_ROPE_OP in requested and QK_RMSNORM_ROPE_FAST_OP in requested:
+        raise ValueError("select only one Q/K RMSNorm + RoPE implementation")
+    if RMSNORM_ADALN_OP in requested and RMSNORM_ADALN_FAST_OP in requested:
+        raise ValueError("select only one RMSNorm + AdaLN implementation")
     return tuple(dict.fromkeys(requested))

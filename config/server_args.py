@@ -41,6 +41,7 @@ class ServerArgs:
     text_encoder_cpu_offload: bool = False
     vae_cpu_offload: bool = False
     pin_cpu_memory: bool = True
+    cuda_memory_limit_gib: float | None = None
     comfyui_mode: bool = False
     transformer_weights_path: str | None = None
     use_fsdp_inference: bool = False
@@ -64,6 +65,8 @@ class ServerArgs:
     vae_max_inflight_tiles: int = 1
     official_parallel_context: Any | None = None
     attention_backend: str = "sdpa"
+    sage_fp8_accum_dtype: str = "fp32+fp32"
+    sage_fp8_qk_quant_gran: str = "per_thread"
     attention_backend_report: dict[str, Any] | None = field(default=None, init=False, repr=False)
     transformer_quantization: str = "none"
     text_encoder_quantization: str = "none"
@@ -82,6 +85,12 @@ class ServerArgs:
 
     def __post_init__(self) -> None:
         import math
+        if self.cuda_memory_limit_gib is not None and (
+                isinstance(self.cuda_memory_limit_gib, bool)
+                or not isinstance(self.cuda_memory_limit_gib, (int, float))
+                or not math.isfinite(self.cuda_memory_limit_gib)
+                or self.cuda_memory_limit_gib <= 0):
+            raise ValueError('cuda_memory_limit_gib must be finite and positive')
         from config.dit_parallel import validate_nccl_dit
         validate_nccl_dit(self)
         if self.torch_compile_scope not in ("ffn", "transformer"):
@@ -97,22 +106,30 @@ class ServerArgs:
             raise ValueError("dit_offload_prefetch_size must be finite and non-negative")
         if self.dit_layerwise_offload and (self.dit_cpu_offload or self.use_fsdp_inference):
             raise ValueError("dit_layerwise_offload is incompatible with dit_cpu_offload/FSDP DiT")
+        if self.sage_fp8_accum_dtype not in {"fp32+fp32", "fp32+fp16"}:
+            raise ValueError("unsupported sage_fp8_accum_dtype")
+        if self.sage_fp8_qk_quant_gran not in {"per_thread", "per_warp"}:
+            raise ValueError("unsupported sage_fp8_qk_quant_gran")
+        if self.attention_backend != "sage_fp8" and (
+                self.sage_fp8_accum_dtype != "fp32+fp32"
+                or self.sage_fp8_qk_quant_gran != "per_thread"):
+            raise ValueError("nondefault Sage FP8 options require attention_backend=sage_fp8")
         self.transformer_quantization = str(
             self.transformer_quantization
         ).strip().lower()
-        if self.transformer_quantization not in {"none", "int8_w8a8_native"}:
+        if self.transformer_quantization not in {"none", "int8_w8a8_native", "fp8_w8a8_native", "fp8_w8a8_tensorwise", "fp8_w8a8_static"}:
             raise ValueError(
-                "transformer_quantization must be one of: none, int8_w8a8_native"
+                "transformer_quantization must be one of: none, int8_w8a8_native, fp8_w8a8_native, fp8_w8a8_tensorwise, fp8_w8a8_static"
             )
         self.text_encoder_quantization = str(self.text_encoder_quantization).strip().lower()
         if self.text_encoder_quantization != "none":
             raise ValueError("text_encoder_quantization must be none")
         if (
-            self.transformer_quantization == "int8_w8a8_native"
+            self.transformer_quantization != "none"
             and self.weight_dtype is not None
             and _precision_to_torch_dtype(self.weight_dtype) is not torch.bfloat16
         ):
-            raise ValueError("int8_w8a8_native requires the Transformer load dtype to be bf16")
+            raise ValueError("W8A8 quantization requires the Transformer load dtype to be bf16")
         if type(self.warmup_steps) is not int or self.warmup_steps < 1:
             raise ValueError(
                 "warmup_steps must be a positive non-bool int, got "

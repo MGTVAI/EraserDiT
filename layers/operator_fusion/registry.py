@@ -9,7 +9,9 @@ from typing import Any
 from .config import (
     GATED_RESIDUAL_OP,
     QK_RMSNORM_ROPE_OP,
+    QK_RMSNORM_ROPE_FAST_OP,
     RMSNORM_ADALN_OP,
+    RMSNORM_ADALN_FAST_OP,
     normalize_operator_fusion_backend,
     normalize_operator_fusion_ops,
 )
@@ -46,6 +48,14 @@ class OperatorFusionDecision:
 # Runtime checks still enforce layout, dtype, width and device requirements;
 # the global backend default remains ``disabled``.
 _REGISTRY = {
+    RMSNORM_ADALN_FAST_OP: OperatorFusionRegistration(
+        name=RMSNORM_ADALN_FAST_OP,
+        signed_sp_degrees=frozenset({1}),
+    ),
+    QK_RMSNORM_ROPE_FAST_OP: OperatorFusionRegistration(
+        name=QK_RMSNORM_ROPE_FAST_OP,
+        signed_sp_degrees=frozenset({1}),
+    ),
     GATED_RESIDUAL_OP: OperatorFusionRegistration(
         name=GATED_RESIDUAL_OP,
         signed_sp_degrees=frozenset({1}),

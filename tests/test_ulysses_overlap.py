@@ -37,8 +37,10 @@ def _rank(rank, degree, cfg, rendezvous):
                 qkv[1] = qkv[1].transpose(1, 2).contiguous().transpose(1, 2)
                 sequence.head_chunks = 1
                 reference = sequence.attention(*qkv, impl, metadata)
-                for chunks, overlap in ((2, False), (2, True), (4, True)):
+                for chunks, overlap, output_overlap in ((2, False, False), (2, True, False),
+                        (4, True, False), (2, True, True), (4, True, True)):
                     sequence.head_chunks, sequence.head_overlap = chunks, overlap
+                    sequence.output_overlap = output_overlap
                     output = sequence.attention(*qkv, impl, metadata)
                     torch.testing.assert_close(output, reference, atol=0, rtol=0)
                     held.append((output, output.clone()))
@@ -65,6 +67,16 @@ def _rank(rank, degree, cfg, rendezvous):
 
 
 class UlyssesOverlapTests(unittest.TestCase):
+    def test_output_overlap_requires_valid_chunks(self):
+        from config.eraserdit import EraserDiTPipelineConfig
+        from config.server_args import ServerArgs
+        for output, chunks in (('1', '1'), ('invalid', '2')):
+            with patch.dict(os.environ, MGERASE_ULYSSES_OUTPUT_OVERLAP=output,
+                            MGERASE_ULYSSES_HEAD_CHUNKS=chunks, MGERASE_NCCL_PACKING='direct'):
+                with self.assertRaises(ValueError):
+                    ServerArgs(pipeline_config=EraserDiTPipelineConfig(
+                        dit_parallel_backend='nccl', sp_degree=2))
+
     def test_invalid_chunk_count(self):
         from models.adapters.eraserdit.nccl_sequence import DistributedSequenceRank
         groups = SimpleNamespace(topology=SimpleNamespace(sp=2, ulysses=2), coordinates=(0, 0, 0))

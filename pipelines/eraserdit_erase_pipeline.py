@@ -112,10 +112,10 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
         ):
             if enabled:
                 modules[name].to(device="cpu")
-        if server_args.transformer_quantization == "int8_w8a8_native":
+        if server_args.transformer_quantization != "none":
             from models.dits.eraserdit_quantization import quantize_transformer
             report = quantize_transformer(modules["transformer"], server_args.pipeline_config.quantization_scope,
-                                          execution_device=server_args.device)
+                                          execution_device=server_args.device, mode=server_args.transformer_quantization)
             server_args.effective_transformer_quantization = report["mode"]
             server_args.transformer_quantization_report = report
         self._initialization_memory["after_loading"] = memory_observation(server_args.device)

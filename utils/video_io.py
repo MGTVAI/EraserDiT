@@ -709,10 +709,10 @@ class SequentialVideoWriter:
         self._enqueue_async(frames)
 
     def close(self) -> None:
-        if self._closed:
-            self._raise_async_error()
-            return
-        if self._async_queue is not None:
+        # A broken pipe may already have closed the subprocess from the writer
+        # thread. The queue consumer still needs its sentinel and join.
+        if self._async_thread is not None and self._async_thread.is_alive():
+            assert self._async_queue is not None
             while True:
                 try:
                     self._async_queue.put(self._async_sentinel, timeout=0.1)
@@ -721,10 +721,12 @@ class SequentialVideoWriter:
                     continue
             assert self._async_thread is not None
             self._async_thread.join()
-            if self._async_error is not None:
-                if not self._closed:
-                    self._wait_and_collect_stderr()
-                self._raise_async_error()
+        if self._closed:
+            self._raise_async_error()
+            return
+        if self._async_error is not None:
+            self._wait_and_collect_stderr()
+            self._raise_async_error()
         returncode, stderr, pipe_error = self._wait_and_collect_stderr()
         if returncode != 0 or pipe_error is not None:
             raise RuntimeError(

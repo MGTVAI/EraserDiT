@@ -61,9 +61,6 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_unsupported_features_fail_before_execution(self):
         with patch('torch.cuda.is_available', return_value=True):
-            for kwargs in ({'transformer_quantization': 'int8_w8a8_native'},):
-                with self.assertRaises(ValueError):
-                    validate_memory_config(ServerArgs(device='cuda', dit_layerwise_offload=True, **kwargs))
             validate_memory_config(ServerArgs(device='cuda', dit_layerwise_offload=True,
                                                enable_torch_compile=True))
             validate_memory_config(ServerArgs(device='cuda', dit_layerwise_offload=True),
@@ -72,6 +69,23 @@ class ConfigurationTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'cyclic'):
                     validate_memory_config(ServerArgs(device='cuda', dit_layerwise_offload=True),
                                            SimpleNamespace(transformer_cache_mode=mode))
+
+    def test_quantized_offload_entrypoints(self):
+        from entrypoints.cli.erase_eraserdit import _build_parser, _build_server_args
+        from entrypoints.server import serve
+        from pipelines.eraserdit_erase_pipeline import EraserDiTErasePipeline
+        with patch('torch.cuda.is_available', return_value=True):
+            for mode in ('int8_w8a8_native', 'fp8_w8a8_native',
+                         'fp8_w8a8_tensorwise', 'fp8_w8a8_static'):
+                for flags in (['--dit-layerwise-offload'],
+                              ['--no-dit-layerwise-offload', '--dit-cpu-offload']):
+                    options = ['--model-path', 'data/model', '--transformer-quantization', mode, *flags]
+                    cli = _build_server_args(_build_parser().parse_args(options))
+                    server = serve._build_server_args(serve._build_parser().parse_args(
+                        [*options, '--task-root', '/tmp/eraserdit-test-tasks']), EraserDiTErasePipeline)
+                    for args in (cli, server):
+                        validate_memory_config(args)
+                        self.assertEqual(args.transformer_quantization, mode)
 
     def test_cli_and_service_memory_options(self):
         from entrypoints.cli.erase_eraserdit import _build_parser, _build_server_args

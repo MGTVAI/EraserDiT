@@ -62,8 +62,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run the EraserDiT erase pipeline (windowed, optional dual-GPU CFG)."
     )
-    parser.add_argument("--transformer-quantization", choices=("none", "int8_w8a8_native"), default="none")
-    parser.add_argument("--quantization-scope", choices=("blocks", "ffn"), default="blocks")
+    parser.add_argument('--sage-fp8-accum-dtype', choices=['fp32+fp32', 'fp32+fp16'], default='fp32+fp32')
+    parser.add_argument('--sage-fp8-qk-quant-gran', choices=['per_thread', 'per_warp'], default='per_thread')
+    parser.add_argument("--transformer-quantization", choices=("none", "int8_w8a8_native", "fp8_w8a8_native", "fp8_w8a8_tensorwise", "fp8_w8a8_static"), default="none")
+    parser.add_argument("--quantization-scope", choices=("blocks", "ffn", "ffn_up"), default="blocks")
     parser.add_argument("--model-path", type=str, required=False)
     parser.add_argument("--video-input", type=str, default=None)
     parser.add_argument("--mask-input", type=str, default=None)
@@ -211,6 +213,8 @@ def _build_server_args(args: argparse.Namespace) -> ServerArgs:
         pipeline_config=pipeline_config,
         component_architectures=dict(pipeline_config.component_architectures),
         attention_backend=args.attention_backend,
+        sage_fp8_accum_dtype=args.sage_fp8_accum_dtype,
+        sage_fp8_qk_quant_gran=args.sage_fp8_qk_quant_gran,
         enable_torch_compile=bool(args.enable_torch_compile),
         torch_compile_scope=getattr(args, "torch_compile_scope", "ffn"),
         compile_components=getattr(args, "compile_components", ""),

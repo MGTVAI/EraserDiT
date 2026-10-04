@@ -59,7 +59,7 @@ HF_HUB_OFFLINE=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
 `gated_residual` 保留乘法后的 BF16 舍入，合并乘法和残差加法；收益与输入形状有关，
 暂不加入默认算子集合。`auto` 对不支持的布局或精度回退，`triton` 强制执行契约检查。
 局部 FFN compile 可与上述图外融合及单卡逐层卸载组合，CUDA graphs 关闭。
-SP1 的 INT8 常驻 DiT 也可使用图外融合；INT8 DiT 权重卸载、多卡 DiT 权重卸载仍不支持。
+SP1 的 INT8/FP8 DiT 也可使用图外融合；单卡支持量化与 DiT 卸载，多卡逐层卸载仍不支持。
 
 增加 `--enable-torch-compile` 启用 FFN 编译。默认保留原生 Linear 数值边界；
 允许近似计算时可为进程设置 `MGERASE_COMPILE_LINEAR_BACKEND=inductor`，
@@ -70,6 +70,34 @@ SP1 的 INT8 常驻 DiT 也可使用图外融合；INT8 DiT 权重卸载、多�
 `--cache-text-projections` 可在 `--transformer-cache-mode off` 时单独开启，
 但缓存命中不代表端到端提速，需计入它保存的 K/V 显存并实测。
 验证记录见 [单卡方案实施](single_gpu_optimization_20260927.md)。
+
+## 单卡 Attention 性能路径
+
+L40S 长序列可将 Sage FP8 Attention、静态 FP8 FFN 与完整 Q/K RMSNorm + RoPE 融合组合：
+
+```bash
+--attention-backend sage_fp8 \
+--transformer-quantization fp8_w8a8_static --quantization-scope ffn \
+--operator-fusion-backend triton --operator-fusion-ops qk_rmsnorm_rope_fast \
+--no-dit-layerwise-offload --no-dit-cpu-offload
+```
+
+`qk_rmsnorm_rope_fast` 是显式近似选项，使用 FP32 归约并保留归一化、权重乘法的 BF16 边界；
+不保证逐元素一致，不能与 `qk_rmsnorm_rope` 同选。仅验证单卡推理，要求 BF16、宽度 2048、
+Diffusers RMSNorm、eps=1e-5 和连续布局；`auto` 遇到不支持的契约时回退，`triton` 报错。
+Sage FP8 需要支持该内核的 SM89 扩展，环境与完整视频结果见
+[Attention 优化](attention_optimization_20261004.md)。短序列收益需单独测量。
+
+继续融合非仿射 RMSNorm、AdaLN 和门控残差时，将算子列表改为：
+
+```bash
+--operator-fusion-ops qk_rmsnorm_rope_fast,rmsnorm_adaln_fast,gated_residual
+```
+
+`rmsnorm_adaln_fast` 接收原始 hidden states，使用一次 kernel 完成归一化与调制，
+保留各 BF16 舍入边界，但允许 FP32 归约顺序变化；不能与 `rmsnorm_adaln` 同选。
+要求单 batch、宽度 2048、BF16、非仿射 Diffusers RMSNorm、eps=1e-6；默认不启用。
+整请求测量和 Q/K/V 合并筛选见 [AdaLN 与残差优化](adaln_optimization_20261004.md)。
 
 ## 尾窗口减填充
 
@@ -161,6 +189,7 @@ trace 标记投影、norm、FFN、attention 和 Ulysses 打包/交换/重排；�
 | `--dtype` | `bf16` |
 | `--dit-layerwise-offload` | 默认开启，使用 SGLang 原生循环预取 |
 | `--vae-low-memory` | 默认关闭；VAE 归一化、卷积分批并保留完整邻域，搭配默认卸载用于 [24 GiB 显存预算](memory24_20260930.md) |
+| `--cuda-memory-limit-gib` | 默认不设置；限制每进程执行设备的 PyTorch 分配器，并在阶段边界回收缓存。NCCL CFG/Ulysses 共用主卡的 rank 0 仅在去噪窗口内驻留权重；整卡占用仍需 NVML 验收 |
 | `--text-encoder-cpu-offload` / `--vae-cpu-offload` | 默认开启，分别使用 T5 FSDP 和 VAE 组件搬运 |
 | `--pin-cpu-memory` | 默认开启；无 DiT 字节预算参数 |
 | `--dit-offload-prefetch-size` | 默认 0，代表一层；[0,1) 为层数比例，≥1 为整数层数 |
@@ -168,7 +197,10 @@ trace 标记投影、norm、FFN、attention 和 Ulysses 打包/交换/重排；�
 | `--transformer-cache-mode` | `off`；可选 `teacache` / `cache_dit` |
 | `--teacache-threshold` / `--cache-dit-residual-diff-threshold` | 均为 `0.3`，仅对应缓存模式启用时生效 |
 | `--cache-text-projections` / `--no-cache-text-projections` | 默认 auto：残差缓存开启时复用文本投影，off 时不启用 |
-| `--transformer-quantization` | `none`；实验选项 `int8_w8a8_native` |
+| `--transformer-quantization` | `none`；实验选项 `int8_w8a8_native`、`fp8_w8a8_native`、`fp8_w8a8_tensorwise`、`fp8_w8a8_static`（固定激活 scale，快速累加） |
+| `--quantization-scope` | `blocks`；可选 `ffn`、`ffn_up`（仅 FFN 升维层） |
+| `--sage-fp8-accum-dtype` | `fp32+fp32`；实验选项 `fp32+fp16`，后者需兼容的 SageAttention2++ 构建 |
+| `--sage-fp8-qk-quant-gran` | `per_thread`；可选 `per_warp`；非默认选项要求显式 `--attention-backend sage_fp8` |
 
 全部参数运行 `uv run --no-project python -m entrypoints.cli.erase_eraserdit --help`；任务 JSON 使用下划线命名，例如 `infer_len`。
 模型加载、设备、编译和量化等进程配置通过 CLI 设置。
@@ -229,7 +261,8 @@ CUDA_VISIBLE_DEVICES=0,1 HF_HUB_OFFLINE=1 uv run --no-project python -m entrypoi
 ```
 
 `parallel-run-dir` 必须尚不存在，DP 度数不能超过任务数，每项输出路径必须唯一。
-当前 DP dispatcher 要求所有任务关闭残差与文本投影缓存，子进程强制离线加载。
+DP worker 各自维护独立会话与请求缓存；缓存仍需满足该 worker 的卸载/compile/拓扑限制。
+子进程强制离线加载。
 同四卡 DP 的吞吐、单条延迟及内存取舍见[实测](dp_topology_20261002.md)。单任务并行参数及设备分组见
 [并行说明](performance.md#parallel)。
 
@@ -352,4 +385,6 @@ export MGERASE_ULYSSES_HEAD_CHUNKS=4
 需要在创建进程池前设置；运行中的池不会动态切换。
 `HEAD_CHUNKS` 可选 1/2/4，默认 1 为原路径。分块需要 heads 能被 `SP × chunks` 整除，
 不支持 Ring、TP、FSDP；当前仍要求 BF16/SDPA、关闭编译和量化。
-分块输入通信与 attention 重叠，输出交换仍走原路径。实测与限制见[验收记录](ulysses_overlap_20261003.md)。
+默认只重叠输入交换。可额外设置 `MGERASE_ULYSSES_OUTPUT_OVERLAP=1`，
+将每块输出交换与下一块 attention 重叠；需要 `HEAD_CHUNKS=2` 或 `4`。
+输出重叠仍在整片筛选，不作为默认配置。输入方案历史实测见[验收记录](ulysses_overlap_20261003.md)。

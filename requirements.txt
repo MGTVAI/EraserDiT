@@ -33,6 +33,7 @@ triton==3.2.0
 # Triton JIT imports setuptools at runtime, not only during installation.
 setuptools==75.8.0
 flash-attn==2.8.3
+# L40S FP8 uses the optional pinned source build in docs/setup.md.
 sageattention==1.0.6
 
 # HTTP serving and S3 result publishing.
@@ -44,3 +45,7 @@ boto3
 
 # HTTP API regression tests.
 httpx>=0.27,<1
+
+# Reproducible process-tree CPU/NVML memory measurements.
+psutil>=5.9
+nvidia-ml-py>=12,<14
