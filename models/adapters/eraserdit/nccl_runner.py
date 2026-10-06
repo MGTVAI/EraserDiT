@@ -155,7 +155,10 @@ class DiTRankRunner:
         device = next(self.model.parameters()).device
         weight_bytes = sum((p.to_local() if hasattr(p, 'to_local') else p).numel() * p.element_size()
                            for p in self.model.parameters())
-        return dict(rank=self.groups.rank, coordinates=self.groups.coordinates,
+        from models.dits.eraserdit_quantization import runtime_report
+        return dict(quantization=runtime_report(self.model),
+                    attention_backend=self.model.transformer_blocks[0].attn1.processor.attention_backend_report(),
+                    rank=self.groups.rank, coordinates=self.groups.coordinates,
                     tp_linear_mode=self.config.tp_linear_mode, sp_linear_mode=self.config.sp_linear_mode,
                     sp_linear_policy=getattr(self.sequence, 'linear_report', None),
                     additional_nccl_groups=len(self.groups.owned),

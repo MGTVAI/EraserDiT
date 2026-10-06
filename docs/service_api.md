@@ -134,7 +134,7 @@ curl -fsS http://127.0.0.1:30000/v1/models
 
 NCCL DiT 多进程服务通过启动参数 `--dit-parallel-backend nccl` 选择；
 CFG、SP/Ulysses/Ring、TP 与 FSDP/HSDP 的度数在启动时固定，不能按请求改变通信拓扑。
-当前要求 BF16、SDPA、关闭编译/量化；常驻 CFG/Ulysses 可使用已支持的融合与缓存。
+当前要求 BF16 权重、关闭编译；常驻 CFG/Ulysses SP1/2/4 可使用 SDPA 或 Sage FP8、静态 FP8 FFN、已支持的融合与缓存。TP/Ring/FSDP 仍要求 SDPA、未量化。
 `--cuda-memory-limit-gib` 与 CLI 共用；预算模式在去噪窗口外释放共用主卡的 rank 0 权重，
 仍需用 NVML 汇总同卡进程占用。TP/Ring/FSDP 的组合边界见性能说明；不支持的请求会拒绝。
 响应指标中的 `parallel_history` 记录各窗口的实际后端、rank 参数字节、通信次数与显存峰值。

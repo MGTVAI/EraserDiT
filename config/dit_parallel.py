@@ -170,11 +170,10 @@ def validate_nccl_dit(args, batch=None):
     if args.dit_cpu_offload or args.dit_layerwise_offload:
         raise ValueError('NCCL DiT workers currently require resident or FSDP-sharded weights')
     from config.torch_compile import normalize_compile_components
-    if (args.enable_torch_compile or normalize_compile_components(getattr(args, 'compile_components', ()))
-            or str(args.transformer_quantization).strip().lower() != 'none'):
+    if args.enable_torch_compile or normalize_compile_components(getattr(args, 'compile_components', ())):
         raise ValueError('NCCL quality-alignment path requires compile off and unquantized DiT')
-    if args.attention_backend != 'sdpa':
-        raise ValueError('NCCL quality-alignment path requires SDPA')
+    if args.transformer_quantization != 'none' or args.attention_backend != 'sdpa':
+        validate_nccl_approximate(args, topology)
     if args.operator_fusion_backend != 'disabled':
         validate_nccl_fusion(args, topology)
     if config.cfg_parallel_device is not None:
@@ -207,5 +206,22 @@ def validate_nccl_fusion(args, topology):
     if ops is not None:
         ops = tuple(s.strip() for s in ops.split(',') if s.strip()) if isinstance(ops, str) else tuple(ops)
         if not ops or set(ops) - {'qk_rmsnorm_rope', 'rmsnorm_adaln',
-                                  'qk_rmsnorm_rope_native', 'rmsnorm_adaln_native'}:
-            raise ValueError('NCCL operator fusion supports QK/AdaLN with native reductions only')
+                                  'qk_rmsnorm_rope_native', 'rmsnorm_adaln_native',
+                                  'qk_rmsnorm_rope_fast', 'rmsnorm_adaln_fast', 'gated_residual'}:
+            raise ValueError('unsupported NCCL operator fusion operation')
+        if set(ops) & {'qk_rmsnorm_rope_fast', 'rmsnorm_adaln_fast', 'gated_residual'}:
+            validate_nccl_approximate(args, topology)
+
+
+def validate_nccl_approximate(args, topology):
+    """Explicit approximate path; keep TP/Ring/FSDP and other packing modes closed."""
+    config = args.pipeline_config
+    if (topology.tp != 1 or topology.ring != 1 or topology.replicas != 1
+            or topology.sp not in (1, 2, 4)
+            or config.dit_fsdp_shard_degree * config.dit_fsdp_replicate_degree != 1):
+        raise ValueError('NCCL approximate path requires resident CFG/Ulysses SP1/2/4')
+    if args.attention_backend not in ('sdpa', 'sage_fp8'):
+        raise ValueError('NCCL approximate path supports SDPA or Sage FP8')
+    if args.transformer_quantization != 'none' and (
+            args.transformer_quantization != 'fp8_w8a8_static' or config.quantization_scope != 'ffn'):
+        raise ValueError('NCCL quantization supports static FP8 FFN only')

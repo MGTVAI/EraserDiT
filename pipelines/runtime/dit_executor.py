@@ -65,6 +65,10 @@ def _worker(rank, plan, args, model_spec, connection, rendezvous):
             raise ValueError('unmaterialized DiT buffer in worker model')
         model.addition_config = model_spec['addition_config']
         model.eval().requires_grad_(False)
+        if args.transformer_quantization != 'none':
+            from models.dits.eraserdit_quantization import quantize_transformer
+            quantize_transformer(model, args.pipeline_config.quantization_scope,
+                                 execution_device=device, mode=args.transformer_quantization)
         tp_group, tp_ranks, tp_rank = groups.get('tp')
         if len(tp_ranks) > 1:
             from layers.dit_tensor_parallel import shard_linear_weights

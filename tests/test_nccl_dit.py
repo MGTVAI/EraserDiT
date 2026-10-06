@@ -453,9 +453,8 @@ class DistributedDiTTests(unittest.TestCase):
                         EraserDiTPipelineConfig(dit_parallel_backend='nccl', dit_fsdp_shard_degree=2)):
             with self.assertRaisesRegex(ValueError, 'operator fusion requires resident'):
                 ServerArgs(pipeline_config=blocked, operator_fusion_backend='auto')
-        with self.assertRaisesRegex(ValueError, 'native reductions only'):
-            ServerArgs(pipeline_config=EraserDiTPipelineConfig(dit_parallel_backend='nccl'),
-                       operator_fusion_backend='triton', operator_fusion_ops='gated_residual')
+        ServerArgs(pipeline_config=EraserDiTPipelineConfig(dit_parallel_backend='nccl'),
+                   operator_fusion_backend='triton', operator_fusion_ops='gated_residual')
 
     def run_ranks(self, topology, cuda=False, fsdp=False, ring_mode='reference', tp_mode='reference', text_cache=False, fusion=False, residual_cache=False):
         print('checking', topology, 'cuda', cuda, 'fsdp', fsdp, flush=True)

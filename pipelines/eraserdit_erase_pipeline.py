@@ -112,7 +112,8 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
         ):
             if enabled:
                 modules[name].to(device="cpu")
-        if server_args.transformer_quantization != "none":
+        if (server_args.transformer_quantization != "none"
+                and server_args.pipeline_config.dit_parallel_backend != "nccl"):
             from models.dits.eraserdit_quantization import quantize_transformer
             report = quantize_transformer(modules["transformer"], server_args.pipeline_config.quantization_scope,
                                           execution_device=server_args.device, mode=server_args.transformer_quantization)

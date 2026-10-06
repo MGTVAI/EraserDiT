@@ -13,7 +13,8 @@ def validate_quantization(args, batch=None):
     c = args.pipeline_config
     if getattr(args, 'use_fsdp_inference', False):
         raise ValueError('EraserDiT W8A8 cannot wrap FSDP models')
-    if args.operator_fusion_backend != 'disabled' and getattr(c, 'sp_degree', 1) > 1:
+    if (args.operator_fusion_backend != 'disabled' and getattr(c, 'sp_degree', 1) > 1
+            and getattr(c, 'dit_parallel_backend', None) != 'nccl'):
         raise ValueError('EraserDiT W8A8 with SP requires operator fusion disabled')
     if c.cfg_parallel_device:
         raise ValueError('use cfg_degree for composable W8A8 CFG')

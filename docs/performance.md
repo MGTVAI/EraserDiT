@@ -213,7 +213,7 @@ CacheDiT 需关闭 DiT 逐层卸载；隔离残差缓存收益时同时关闭文
 | 路径 | 入口 / 参数 | 用途与限制 |
 | --- | --- | --- |
 | peer（默认） | `--cfg-degree 2` 或 `--sp-degree 2` | 单任务 CFG/SP；常驻 DiT，可使用支持的局部编译与缓存组合 |
-| NCCL DiT 进程池 | `--dit-parallel-backend nccl` | CFG、Ulysses、Ring/USP、TP、FSDP/HSDP；BF16、SDPA，关闭编译、量化；常驻 CFG/Ulysses 可用文本/残差缓存及限定算子融合 |
+| NCCL DiT 进程池 | `--dit-parallel-backend nccl` | CFG、Ulysses、Ring/USP、TP、FSDP/HSDP；BF16、SDPA，关闭编译；常驻 CFG/Ulysses SP1/2/4 另支持静态 FP8 FFN、Sage FP8、快速融合及文本/残差缓存 |
 | DP dispatcher | `entrypoints.cli.erase_parallel --dp-degree N` | 将独立视频分配给不同 GPU 组；每组使用独立请求缓存，遵守各自拓扑限制 |
 | VAE 并行 | `--vae-degree 2 / 4` | 未启用 tiling 时按高度分片、逐层交换边界；不能与组件卸载或 VAE 编译组合 |
 
@@ -254,7 +254,7 @@ NCCL 单任务与 DP 的完整命令见 [CLI](cli.md#加速与多卡)。
 转换为 INT8 W8A8，也可选择 `ffn` 范围。`fp8_w8a8_native` 使用 E4M3 W8A8，
 权重按输出通道、激活按 token 缩放；要求 CUDA capability ≥8.9，INT8 要求 ≥8.0。
 单卡支持 DiT 整组件或逐层卸载；T5/VAE 卸载可保留。
-SP>1 时关闭手工融合；完整 DiT 编译和 NCCL 路径不支持该量化。
+INT8 的 peer SP>1 路径关闭手工融合；完整 DiT 编译和 NCCL 路径不支持 INT8。
 量化节省权重不保证降低完整请求峰值或加速，转换耗时与实际调用计数需单列；
 INT8 对 token 数 ≥1024、输出宽度 ≥2×输入宽度的扩展层使用融合 GEMM，减少 INT32 中间张量。
 `ffn` / `blocks` 范围自动融合 tanh GELU 与降维层激活量化，保持原 INT8 输出舍入；
@@ -300,3 +300,5 @@ VAE 阶段驻留/CPU 权重复用减少权重传输并降低 owner 峰值 alloca
 明确区分局部转换内存、阶段末 RSS 和纯模型推理耗时；保留 Python 默认张量输出契约。
 
 本轮同条件五组配对：[融合与 direct 打包](fusion_memory_optimization_20261002.md)在四卡 CFG2×SP2 上去噪降低 13.5%，输出文件完全一致。
+
+2026-10-06 复测补齐常驻 NCCL CFG/Ulysses 的静态 FP8 FFN（`--transformer-quantization fp8_w8a8_static --quantization-scope ffn`）、Sage FP8 attention 与强制 Triton 快速融合。每个 worker 从原 BF16 权重独立转换，保留 rank 0 窗口间卸载、aligned、自动分块、输出通信重叠和已选缓存；TP/Ring/FSDP、编译及其他 NCCL 量化模式仍拒绝。正式完整视频证据及独立质量记录见 README 和 `results/readme_retest_20261006/`。

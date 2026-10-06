@@ -231,8 +231,8 @@ SP 使用 `--sp-degree 2 --cfg-degree 1 --sp-linear-mode sharded`；
 
 独立 NCCL DiT 进程池使用 `--dit-parallel-backend nccl`，新增 TP、Ulysses×Ring、
 FSDP/HSDP 正交分组。参数组合、限制和整片 SSIM 验收状态见
-[NCCL 并行实施记录](distributed_parallel_20260928.md)。新路径目前要求 BF16、SDPA、常驻或 FSDP 分片的 DiT、
-关闭编译/量化；T5/VAE CPU offload 可以保留。常驻 CFG/Ulysses 已支持限定融合和残差缓存，见本页末尾实验选项。
+[NCCL 并行实施记录](distributed_parallel_20260928.md)。新路径要求 BF16 权重、常驻或 FSDP 分片的 DiT、关闭编译；常驻 CFG/Ulysses SP1/2/4 另支持
+静态 FP8 FFN、Sage FP8 和强制 Triton 快速融合，其他拓扑仍要求 SDPA、未量化。T5/VAE CPU offload 可以保留。常驻 CFG/Ulysses 已支持限定融合和残差缓存，见本页末尾实验选项。
 常驻 CFG/Ulysses 可增加 `--cache-text-projections`，每窗/CFG 分支独立保存文本投影与 K/V，
 窗口结束清理；正常权重版本或条件变化会使缓存失效。TP、Ring、FSDP 暂不支持此缓存组合。
 
@@ -378,7 +378,7 @@ Python `EraseSession.run` 默认仍保留原返回行为；保存文件且不需
 
 `--sp-linear-mode aligned` 在已筛查形状上仅保护敏感投影，让其他 BF16 投影按本地 token
 计算；默认仍为 `reference`。仅支持常驻 NCCL Ulysses SP2/4，可组合 CFG2，不支持
-TP、Ring、FSDP、编译或量化。CLI 和服务启动参数均支持该模式。
+TP、Ring、FSDP 或编译；常驻 CFG/Ulysses 的静态 FP8 FFN 可组合 aligned。CLI 和服务启动参数均支持该模式。
 
 当前加速范围为 L40S、PyTorch 2.6.0 / CUDA 12.6、确定性模式、EraserDiT 2048 宽度、
 batch 1、32640 或 10200 token。其他环境、模型、形状或激活 dtype 回退为完整 reference
@@ -413,7 +413,7 @@ export MGERASE_ULYSSES_HEAD_CHUNKS=4
 `HEAD_CHUNKS` 可选 `auto` 或 1/2/4，默认 1 为原路径。`auto` 配合 direct 和输出重叠，
 在已测 L40S 形状上为 SP4 短序列选两块，其他已测 SP2/SP4 形状选四块，未覆盖形状用一块。
 详见[分块与补零优化](sp_finish_20261006.md)。分块需要 heads 能被 `SP × chunks` 整除，
-不支持 Ring、TP、FSDP；当前仍要求 BF16/SDPA、关闭编译和量化。
+不支持 Ring、TP、FSDP；要求 BF16 权重、关闭编译，支持 SDPA 或 Sage FP8 及静态 FP8 FFN。
 默认只重叠输入交换。可额外设置 `MGERASE_ULYSSES_OUTPUT_OVERLAP=1`，
 将每块输出交换与下一块 attention 重叠；需要实际选择的块数为 2 或 4。
 输出重叠不作为通用默认配置。输入方案历史实测见[验收记录](ulysses_overlap_20261003.md)，

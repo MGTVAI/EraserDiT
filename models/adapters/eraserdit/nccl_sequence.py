@@ -156,7 +156,7 @@ class DistributedSequenceRank(SequenceRank):
                 # wait on communication to avoid a cyclic dependency.
                 communication.wait_stream(current)
                 current.wait_stream(communication)
-        self.effective_attention = 'torch_sdpa_head_chunks'
+        self.effective_attention = type(impl).__name__ + '_head_chunks'
         # Restore the original head order before the existing output exchange.
         with self._region('ulysses.head_concat'):
             output = torch.cat(outputs, dim=2)
@@ -212,7 +212,7 @@ class DistributedSequenceRank(SequenceRank):
             # rank-major, then chunk-major head order before the projection.
             output = torch.stack([part.unflatten(2, (size, heads)) for part in outputs], dim=3)
             output = output.flatten(2, 4)
-        self.effective_attention = 'torch_sdpa_head_input_output_pipeline'
+        self.effective_attention = type(impl).__name__ + '_head_input_output_pipeline'
         return output
 
     def _rotate(self, key, value, owner):
@@ -233,7 +233,7 @@ class DistributedSequenceRank(SequenceRank):
         return recv_k, recv_v, next_owner
 
     def attention(self, query, key, value, impl, metadata):
-        if impl.causal or impl.dropout or metadata.attn_mask is not None:
+        if impl.causal or getattr(impl, 'dropout', 0) or metadata.attn_mask is not None:
             raise ValueError('distributed DiT self-attention requires unmasked noncausal SDPA with dropout=0')
         if self.head_chunk_policy == 'auto':
             from layers.attention.ulysses_policy import select_head_chunks
@@ -255,7 +255,7 @@ class DistributedSequenceRank(SequenceRank):
             q, k, v = query, key, value
         _, ranks, owner = self.groups.get('ring')
         if len(ranks) == 1:
-            self.effective_attention = 'torch_sdpa'
+            self.effective_attention = type(impl).__name__
             with self._region('self_attention'):
                 output = impl.forward(q, k, v, metadata)
         elif self.ring_mode == 'reference':
