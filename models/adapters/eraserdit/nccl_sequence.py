@@ -19,7 +19,9 @@ class DistributedSequenceRank(SequenceRank):
         self.partial_attention_dtype = None
         self.effective_attention = None
         self.packing = os.environ.get('MGERASE_NCCL_PACKING', 'reference')
-        self.head_chunks = int(os.environ.get('MGERASE_ULYSSES_HEAD_CHUNKS', '1'))
+        chunks = os.environ.get('MGERASE_ULYSSES_HEAD_CHUNKS', '1')
+        self.head_chunk_policy = 'auto' if chunks == 'auto' else 'fixed'
+        self.head_chunks = 1 if chunks == 'auto' else int(chunks)
         self.head_overlap = True
         output_overlap = os.environ.get('MGERASE_ULYSSES_OUTPUT_OVERLAP', '0')
         if output_overlap not in ('0', '1'):
@@ -27,7 +29,7 @@ class DistributedSequenceRank(SequenceRank):
         self.output_overlap = output_overlap == '1'
         self._communication_stream = None
         if self.head_chunks not in (1, 2, 4):
-            raise ValueError('MGERASE_ULYSSES_HEAD_CHUNKS must be 1, 2 or 4')
+            raise ValueError('MGERASE_ULYSSES_HEAD_CHUNKS must be auto, 1, 2 or 4')
         self.profiler = None
         if self.packing not in ('reference', 'packed', 'direct'):
             raise ValueError('MGERASE_NCCL_PACKING must be reference, packed or direct')
@@ -233,6 +235,10 @@ class DistributedSequenceRank(SequenceRank):
     def attention(self, query, key, value, impl, metadata):
         if impl.causal or impl.dropout or metadata.attn_mask is not None:
             raise ValueError('distributed DiT self-attention requires unmasked noncausal SDPA with dropout=0')
+        if self.head_chunk_policy == 'auto':
+            from layers.attention.ulysses_policy import select_head_chunks
+            self.head_chunks = select_head_chunks(query, self.degree, self.length,
+                packing=self.packing, ring_size=len(self.groups.get('ring')[1]))
         if self.head_chunks > 1:
             return self._head_chunk_attention(query, key, value, impl, metadata)
         if len(self.groups.get('ulysses')[1]) > 1:

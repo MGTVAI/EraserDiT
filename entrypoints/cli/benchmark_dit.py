@@ -26,6 +26,15 @@ VARIANTS = {'reference': ('disabled', 'reference'),
             'heads4': ('triton', 'direct'),
             'heads2_output': ('triton', 'direct'),
             'heads4_output': ('triton', 'direct')}
+VARIANTS.update({name: ('triton', 'direct') for name in
+                 ('aligned', 'aligned_heads2_output', 'aligned_heads4_output')})
+VARIANTS.update({f'aligned_heads4_output_{suffix}': ('triton', 'direct')
+                 for suffix in ('native_qk', 'native_adaln', 'native_rms')})
+VARIANTS.update({f'aligned_heads{chunks}_output_native_rms': ('triton', 'direct')
+                 for chunks in (1, 2)})
+VARIANTS['aligned_auto_output_native_rms'] = ('triton', 'direct')
+VARIANTS.update({f'{name}_compact': VARIANTS[name] for name in tuple(VARIANTS)
+                 if name.endswith('native_rms')})
 
 
 def _rank(rank, options, rendezvous):
@@ -46,7 +55,7 @@ def _rank(rank, options, rendezvous):
                             world_size=topology.world_size, timeout=timedelta(seconds=180))
     try:
         config = EraserDiTPipelineConfig(dit_parallel_backend='nccl', cfg_degree=topology.cfg,
-                                         sp_degree=topology.sp, sp_linear_mode='sharded')
+                                         sp_degree=topology.sp, sp_linear_mode=options['sp_linear_mode'])
         set_global_server_args(ServerArgs(device=f'cuda:{rank}', pipeline_config=config,
                                           dit_cpu_offload=False, dit_layerwise_offload=False))
         groups = DiTGroups(topology)
@@ -73,8 +82,14 @@ def _rank(rank, options, rendezvous):
                 names = options['variants'] if repeat % 2 == 0 else list(reversed(options['variants']))
                 for name in names:
                     backend, packing = VARIANTS[name]
+                    variant = name.removesuffix('_compact')
+                    fusion_ops = None
+                    if '_native_' in variant:
+                        fusion_ops = (
+                            'qk_rmsnorm_rope_native' if variant.endswith(('native_qk', 'native_rms')) else 'qk_rmsnorm_rope',
+                            'rmsnorm_adaln_native' if variant.endswith(('native_adaln', 'native_rms')) else 'rmsnorm_adaln')
                     decision = resolve_operator_fusion_decision(SimpleNamespace(
-                        operator_fusion_backend=backend, operator_fusion_ops=None, sp_degree=topology.sp))
+                        operator_fusion_backend=backend, operator_fusion_ops=fusion_ops, sp_degree=topology.sp))
                     # Benchmark-only mutation on an idle rank; serving keeps
                     # this decision fixed for the lifetime of the process pool.
                     model.operator_fusion_decision = decision
@@ -82,9 +97,13 @@ def _rank(rank, options, rendezvous):
                         block.attn1.processor.operator_fusion_decision = decision
                     if runner.sequence is not None:
                         runner.sequence.packing = packing
-                        runner.sequence.head_chunks = int(name[5]) if name.startswith('heads') else 1
+                        runner.sequence.compact_ffn_down = name.endswith('_compact')
+                        runner.sequence.head_chunk_policy = 'auto' if '_auto_' in name else 'fixed'
+                        chunk_name = name.removeprefix('aligned_')
+                        runner.sequence.head_chunks = int(chunk_name[5]) if chunk_name.startswith('heads') else 1
                         runner.sequence.head_overlap = not name.endswith('_serial')
-                        runner.sequence.output_overlap = name.endswith('_output')
+                        runner.sequence.output_overlap = '_output' in name
+                    runner.config.sp_linear_mode = 'aligned' if name.startswith('aligned') else options['sp_linear_mode']
                     from layers.block_compile import configure_block_compile, remove_block_compile
                     if name == 'compiled':
                         configure_block_compile(model, mode='default')
@@ -141,6 +160,8 @@ def main():
     parser.add_argument('--model-path', type=Path, default=Path('data/model'))
     parser.add_argument('--cfg', type=int, choices=(1, 2), default=2)
     parser.add_argument('--sp', type=int, choices=(1, 2, 4), default=2)
+    parser.add_argument('--sp-linear-mode', choices=('reference', 'sharded', 'aligned'), default='reference',
+                        help='Match the serving GEMM policy; sharded changes BF16 rounding')
     parser.add_argument('--variants', default='reference,fusion,direct,fusion_direct')
     parser.add_argument('--repeats', type=int, default=5)
     parser.add_argument('--latent-frames', default='16,5')
@@ -150,7 +171,7 @@ def main():
     variants = args.variants.split(',')
     if not variants or len(set(variants)) != len(variants) or set(variants) - VARIANTS.keys():
         parser.error('variants must be unique supported names: ' + ','.join(VARIANTS))
-    if any(v.startswith('heads') for v in variants) and args.sp not in (2, 4):
+    if any('heads' in v or v.startswith('aligned') for v in variants) and args.sp not in (2, 4):
         parser.error('head chunk variants require SP2 or SP4')
     frames = [int(v) for v in args.latent_frames.split(',')]
     if not frames or min(frames) < 1:
@@ -158,7 +179,8 @@ def main():
     root = args.run_dir.resolve()
     root.mkdir(parents=True, exist_ok=False)
     options = dict(run_dir=str(root), model_path=str(args.model_path.resolve()),
-                   cfg=args.cfg, sp=args.sp, repeats=args.repeats, latent_frames=frames, variants=variants)
+                   cfg=args.cfg, sp=args.sp, sp_linear_mode=args.sp_linear_mode,
+                   repeats=args.repeats, latent_frames=frames, variants=variants)
     files = subprocess.check_output(['git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z']).decode().split('\0')
     hashes = {p: hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in files if p.endswith('.py') and Path(p).is_file()}
     (root / 'manifest.json').write_text(json.dumps(dict(options=options, source_sha256=hashes,

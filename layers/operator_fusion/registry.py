@@ -10,8 +10,10 @@ from .config import (
     GATED_RESIDUAL_OP,
     QK_RMSNORM_ROPE_OP,
     QK_RMSNORM_ROPE_FAST_OP,
+    QK_RMSNORM_ROPE_NATIVE_OP,
     RMSNORM_ADALN_OP,
     RMSNORM_ADALN_FAST_OP,
+    RMSNORM_ADALN_NATIVE_OP,
     normalize_operator_fusion_backend,
     normalize_operator_fusion_ops,
 )
@@ -48,6 +50,10 @@ class OperatorFusionDecision:
 # Runtime checks still enforce layout, dtype, width and device requirements;
 # the global backend default remains ``disabled``.
 _REGISTRY = {
+    QK_RMSNORM_ROPE_NATIVE_OP: OperatorFusionRegistration(
+        name=QK_RMSNORM_ROPE_NATIVE_OP, signed_sp_degrees=frozenset({1, 2, 4})),
+    RMSNORM_ADALN_NATIVE_OP: OperatorFusionRegistration(
+        name=RMSNORM_ADALN_NATIVE_OP, signed_sp_degrees=frozenset({1, 2, 4})),
     RMSNORM_ADALN_FAST_OP: OperatorFusionRegistration(
         name=RMSNORM_ADALN_FAST_OP,
         signed_sp_degrees=frozenset({1}),

@@ -14,6 +14,101 @@ L40S推荐配置与完整命令见[README](../README.md#快速开始)。同一14
 四卡采用`MGERASE_ULYSSES_HEAD_CHUNKS=4 MGERASE_ULYSSES_OUTPUT_OVERLAP=1`；通用默认仍关闭重叠。
 多视频吞吐优先DP4，单请求延迟优先CFG2×DP2；完整计时、质量范围与候选淘汰见[L40S验收记录](l40s_validation_20261004.md)。
 
+## SP 扩展性排查
+
+先核对 `sp_linear_mode`。`reference` 在每个 rank 上将本地 token 补回全长，执行 QKV、
+attention 输出投影和 FFN，再截取本地结果；这些 GEMM 并没有随 SP 度数缩小。
+这是保持 BF16 原结果的兼容路径，不能按标准 Ulysses 的计算分片比例估算加速。
+`sharded` 才直接执行本地 token 的线性层，但已有完整视频质量测试未通过当前门槛，不能直接替换推荐配置。
+CFG2 将两个 CFG 分支分卡并发；CFG1×SP2 则依次执行两个分支，其 reference 线性层仍重复全长计算。
+因此当前质量约束下，双卡优先 CFG2，四卡再考虑 CFG2×SP2。
+
+显式 `--sp-linear-mode aligned` 新增选择性 GEMM 保护：符合筛查条件的投影执行本地 token，
+保留首尾投影及 SP4 短序列 FFN 下投影的全长计算。当前限 L40S、PyTorch 2.6.0 / CUDA 12.6、
+确定性模式、batch 1、32640 / 10200 token，其他情况回退 reference；不改变默认配置。
+实现、配对 forward 数据、完整视频验收与复现命令见 [SP2/SP4 优化记录](sp_aligned_20261005.md)。
+
+进一步可显式选择 `qk_rmsnorm_rope_native,rmsnorm_adaln_native`，保留 PyTorch 归约并融合
+RMSNorm 前后的逐元素计算。新基准 profile 为 `sp2_native_rms` / `sp4_native_rms`，
+使用范围和测量见[原生归约融合](sp_native_rms_20261005.md)。
+
+后续增加 `MGERASE_ULYSSES_HEAD_CHUNKS=auto` 按已测形状选择通信分块，并将 SP4 短序列
+FFN 下投影的保护补零缩至 3072 行；见[分块与补零优化及 B1 对照](sp_finish_20261006.md)。
+
+带显存预算的 NCCL rank 0 只在窗口之间释放 GPU 权重，窗口内所有去噪步保持驻留；
+其他 rank 常驻。`weight_residency.acquisitions` 是整个 worker 生命周期的累计值，包含预热，
+不能当作单请求或每步的搬运次数。2026-10-04 的 M2 报告中，两窗口 forward/output gather
+合计 276.302 s，去噪合计 281.973 s，差值 5.671 s 还包含输入传输、调度和其他边界开销。
+这项运行的主要瓶颈在 forward 内，不能归因于每步卸载；原始报告为
+`results/readme_retest_20261004/M2/report.json`。
+
+本地 sglang 对照（`3187993aa3a3031ab3858db25074578a0567a087`）：
+`runtime/layers/attention/layer.py` 的 Ulysses 合并 QKV 通信，
+`turbo_layer.py` 使用异步 all-to-all 和独立 stream；本仓库已有对应的合并/direct 打包及 head 流水。
+`runtime/pipelines_core/stages/denoising.py` 的编译通信重排开关作用于编译图，
+不能直接消除本仓库 eager NCCL、进程 IPC 和全长 GEMM 的成本。
+上述路径相对 `sglang/python/sglang/multimodal_gen/`。
+
+微基准必须与实际运行使用相同的线性层模式。`benchmark_dit` 现在显式支持
+`--sp-linear-mode reference|sharded|aligned`，默认 `reference`；旧版本写死 `sharded`。
+例如在双卡上交替比较未分块、仅输入重叠、输入与输出重叠：
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 HF_HUB_OFFLINE=1 OMP_NUM_THREADS=1 \
+uv run --no-project python -m entrypoints.cli.benchmark_dit \
+  --run-dir outputs/sp2_overlap --cfg 1 --sp 2 --sp-linear-mode reference \
+  --variants fusion_direct,heads2,heads4,heads2_output,heads4_output \
+  --latent-frames 16 --repeats 5
+```
+
+这是常驻权重、固定合成输入的 forward 筛选；最终取舍仍需完整视频、输出一致性及整卡显存验证。
+
+2026-10-05 新增 reference 补零工作区复用：同一次 forward、同一形状/dtype/设备/stream
+只初始化一次零行，各投影覆盖本地 token；正常退出及异常时清理，不跨窗口保留。
+CPU 与启用梯度的调用沿用原生 padding。GEMM 形状、行偏移与计算精度保持不变。
+真实权重、五组交替测量、每组同输入逐元素一致的结果如下（秒，中位数）：
+
+| 拓扑与通信 | Token | 原补零 | 复用工作区 | 耗时下降 |
+| --- | ---: | ---: | ---: | ---: |
+| CFG1×SP2，未分块 | 32640 | 3.3913 | 3.2483 | 4.22% |
+| CFG1×SP2，未分块 | 10200 | 0.7147 | 0.7023 | 1.73% |
+| CFG2×SP2，四块输入/输出重叠 | 32640 | 1.6616 | 1.5957 | 3.97% |
+| CFG2×SP2，四块输入/输出重叠 | 10200 | 0.3724 | 0.3629 | 2.54% |
+
+同轮另测双卡 SP2 通信配置：未分块 3.4348 s、仅输入两块/四块 3.4396/3.4146 s、
+输入与输出两块/四块 3.4023/3.3681 s；这些测量尚未使用补零复用。
+直接写入最终输出的重排内核候选没有稳定收益，已撤回，未改变运行时。
+记录、冻结候选、脚本及 profiler 诊断位于 `outputs/sp_optimization_20261005/`；
+其中 `padding_sp2` / `padding_cfg2_sp2` 的 `padding_fused` 标签指工作区复用，并非新 GEMM 内核。
+双卡诊断 trace 中，两个 CFG 分支合计的原生 padding 调用从 394 次降至 0；
+启用四块输入/输出重叠后，各 rank 的 NCCL 与 Flash attention kernel 区间交集约 189–194 ms，
+未分块基线为 0。GEMM kernel 合计仍约 0.86 s，说明该优化没有消除全长 GEMM。
+这些是 profiler 扰动下的诊断值，不用于计算性能提升。
+
+完整 145 帧 1080p、seed 42、两窗口各 40 实际步，双卡 SP2 reference 配对筛选：
+
+| 配置 | 请求（不含加载/预热） | DiT 去噪 | 最高单卡任务峰值 |
+| --- | ---: | ---: | ---: |
+| 原补零、未分块 | 341.610 s | 284.333 s | 21.527 GiB |
+| 复用工作区＋四块输入/输出重叠 | 319.287 s | 262.562 s | 21.527 GiB |
+
+组合请求/去噪耗时分别下降 6.53% / 7.66%，两个视频 SHA256 完全一致。
+每配置一次请求，属于筛选，不代替多次正式统计，也不将组合收益全部归因于工作区复用。
+两组加载为 48.18/54.17 s、预热为 69.79/67.99 s；表中显存覆盖完整进程生命周期。
+目标 GPU 无外部进程、采样无错误，冻结运行时源码仅修改补零实现及调用处；
+其他卡存在无关进程，整机并非独占。检查记录：`outputs/sp_optimization_20261005/e2e_audit.json`。
+
+工作区复用随 `reference` 自动生效。双卡 Ulysses SP2 可显式筛选四块通信重叠，
+通用分块默认仍为 1；完整基准命令如下（需要未使用的输出目录）：
+
+```bash
+MGERASE_ULYSSES_HEAD_CHUNKS=4 MGERASE_ULYSSES_OUTPUT_OVERLAP=1 \
+uv run --no-project python -m entrypoints.cli.benchmark_l40s \
+  --run-dir outputs/sp2_optimized --profile m2 --devices 0,1 --repeats 5
+```
+
+该基准自动设置 `MGERASE_NCCL_PACKING=direct`；直接调用推理 CLI 时还需显式设置此变量。
+
 <a id="offload"></a>
 ## 显存与卸载
 

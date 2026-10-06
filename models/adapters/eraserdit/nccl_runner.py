@@ -157,6 +157,7 @@ class DiTRankRunner:
                            for p in self.model.parameters())
         return dict(rank=self.groups.rank, coordinates=self.groups.coordinates,
                     tp_linear_mode=self.config.tp_linear_mode, sp_linear_mode=self.config.sp_linear_mode,
+                    sp_linear_policy=getattr(self.sequence, 'linear_report', None),
                     additional_nccl_groups=len(self.groups.owned),
                     successful_forwards=self.forwards, local_parameter_bytes=weight_bytes,
                     text_cache={branch: cache.stats() for branch, cache in self.text_caches.items()},
@@ -169,6 +170,7 @@ class DiTRankRunner:
                     actual_self_attention=self.sequence.effective_attention if self.sequence else 'torch_sdpa',
                     ulysses_packing=self.sequence.packing if self.sequence else None,
                     ulysses_head_chunks=self.sequence.head_chunks if self.sequence else 1,
+                    ulysses_head_chunk_policy=self.sequence.head_chunk_policy if self.sequence else 'fixed',
                     ulysses_head_overlap=bool(self.sequence and self.sequence.head_chunks > 1
                                               and self.sequence.head_overlap),
                     ulysses_output_overlap=bool(self.sequence and self.sequence.head_chunks > 1

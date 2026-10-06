@@ -7,12 +7,37 @@ from typing import Any
 
 import torch
 
-from .config import RMSNORM_ADALN_OP
+from .config import RMSNORM_ADALN_OP, RMSNORM_ADALN_NATIVE_OP
 from .registry import OperatorFusionDecision
 from .runtime import record_operator_fusion_call
 
 _EraserDiT_WIDTH = 2048
 _EraserDiT_NORM_EPS = 1e-6
+
+
+def native_norm_failure(norm):
+    from diffusers.models.normalization import RMSNorm
+    if type(norm) is not RMSNorm or getattr(norm.forward, '__func__', None) is not RMSNorm.forward:
+        return 'norm_implementation'
+    if torch.is_grad_enabled():
+        return 'autograd'
+    return None
+
+
+def apply_fused_rmsnorm_adaln_native(hidden, scale, shift, norm, *, decision):
+    """Keep native variance/rsqrt and fuse the remaining RMSNorm/AdaLN work."""
+    failure = _capability_failure(hidden, scale, shift, norm) or native_norm_failure(norm)
+    enabled = RMSNORM_ADALN_NATIVE_OP in decision.effective_ops
+    if enabled and failure is not None and decision.forced:
+        raise RuntimeError(f'forced {RMSNORM_ADALN_NATIVE_OP} capability check failed: {failure}')
+    fused = enabled and failure is None
+    record_operator_fusion_call(RMSNORM_ADALN_NATIVE_OP, shape=tuple(hidden.shape),
+        eligible=failure is None, fused=fused,
+        fallback_reason=None if fused else failure or 'op_not_effective')
+    if not fused:
+        return norm(hidden) * (1 + scale) + shift
+    from .triton.rmsnorm_native import triton_rmsnorm_adaln_native
+    return triton_rmsnorm_adaln_native(hidden, scale, shift, norm.eps)
 
 
 def _capability_failure(

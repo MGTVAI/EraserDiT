@@ -87,7 +87,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--dit-fsdp-shard-degree', type=int, default=None)
     parser.add_argument('--dit-fsdp-replicate-degree', type=int, default=None)
     parser.add_argument('--cfg-degree', type=int, default=None)
-    parser.add_argument('--sp-linear-mode', choices=['reference', 'sharded'], default=None)
+    parser.add_argument('--sp-linear-mode', choices=['reference', 'sharded', 'aligned'], default=None)
     parser.add_argument('--sp-attention-mode', choices=['ulysses', 'ring'], default=None)
     parser.add_argument('--parallel-devices', type=lambda s: tuple(int(i) for i in s.split(',')), default=None)
     parser.add_argument('--vae-degree', type=int, default=None)

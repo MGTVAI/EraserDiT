@@ -7,7 +7,7 @@ from typing import Any
 
 import torch
 
-from .config import QK_RMSNORM_ROPE_OP, QK_RMSNORM_ROPE_FAST_OP
+from .config import QK_RMSNORM_ROPE_OP, QK_RMSNORM_ROPE_FAST_OP, QK_RMSNORM_ROPE_NATIVE_OP
 from .registry import OperatorFusionDecision
 from .runtime import record_operator_fusion_call
 
@@ -90,8 +90,12 @@ def apply_fused_qk_rmsnorm_rope(
     """Use the fused path when selected, otherwise execute the exact caller reference."""
 
     fast = QK_RMSNORM_ROPE_FAST_OP in decision.effective_ops
-    op = QK_RMSNORM_ROPE_FAST_OP if fast else QK_RMSNORM_ROPE_OP
+    native = QK_RMSNORM_ROPE_NATIVE_OP in decision.effective_ops
+    op = QK_RMSNORM_ROPE_NATIVE_OP if native else QK_RMSNORM_ROPE_FAST_OP if fast else QK_RMSNORM_ROPE_OP
     failure = _capability_failure(query, key, query_norm, key_norm, freqs)
+    if native and failure is None:
+        from .rmsnorm_adaln import native_norm_failure
+        failure = native_norm_failure(query_norm) or native_norm_failure(key_norm)
     if fast and failure is None:
         from diffusers.models.normalization import RMSNorm
         if type(query_norm) is not RMSNorm or type(key_norm) is not RMSNorm:
@@ -125,7 +129,11 @@ def apply_fused_qk_rmsnorm_rope(
         return reference()
 
     cos, sin = freqs
-    if fast:
+    if native:
+        from .triton.rmsnorm_native import triton_qk_rmsnorm_rope_native
+        fused_query, fused_key = triton_qk_rmsnorm_rope_native(
+            query, key, query_norm.weight, key_norm.weight, cos, sin, query_norm.eps)
+    elif fast:
         from .triton.qk_rmsnorm_rope_fast import triton_qk_rmsnorm_rope_fast
         fused_query, fused_key = triton_qk_rmsnorm_rope_fast(
             query, key, query_norm.weight, key_norm.weight, cos, sin, query_norm.eps,

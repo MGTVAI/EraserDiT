@@ -123,18 +123,21 @@ def validate_nccl_dit(args, batch=None):
     if getattr(config, 'dit_parallel_backend', 'peer') not in ('peer', 'nccl'):
         raise ValueError('dit_parallel_backend must be peer or nccl')
     if getattr(config, 'dit_parallel_backend', 'peer') != 'nccl':
+        if getattr(config, 'sp_linear_mode', 'reference') == 'aligned':
+            raise ValueError('aligned SP requires resident NCCL Ulysses SP2/4')
         if any(getattr(config, name, 1) != 1 for name in
                ('tp_degree', 'ring_degree', 'dit_fsdp_shard_degree', 'dit_fsdp_replicate_degree')) or getattr(config, 'ulysses_degree', None) is not None:
             raise ValueError('explicit TP/USP/FSDP degrees require --dit-parallel-backend nccl')
         return None
     topology = resolve_dit_topology(config)
     import os
+    chunk_policy = os.environ.get('MGERASE_ULYSSES_HEAD_CHUNKS', '1')
     try:
-        head_chunks = int(os.environ.get('MGERASE_ULYSSES_HEAD_CHUNKS', '1'))
+        head_chunks = 2 if chunk_policy == 'auto' else int(chunk_policy)
     except ValueError as error:
-        raise ValueError('MGERASE_ULYSSES_HEAD_CHUNKS must be 1, 2 or 4') from error
+        raise ValueError('MGERASE_ULYSSES_HEAD_CHUNKS must be auto, 1, 2 or 4') from error
     if head_chunks not in (1, 2, 4):
-        raise ValueError('MGERASE_ULYSSES_HEAD_CHUNKS must be 1, 2 or 4')
+        raise ValueError('MGERASE_ULYSSES_HEAD_CHUNKS must be auto, 1, 2 or 4')
     output_overlap = os.environ.get('MGERASE_ULYSSES_OUTPUT_OVERLAP', '0')
     if output_overlap not in ('0', '1'):
         raise ValueError('MGERASE_ULYSSES_OUTPUT_OVERLAP must be 0 or 1')
@@ -148,8 +151,13 @@ def validate_nccl_dit(args, batch=None):
     import torch
     if args.resolve_component_dtype('transformer') is not torch.bfloat16:
         raise ValueError('NCCL DiT currently requires bf16 model precision')
-    if config.sp_linear_mode not in ('reference', 'sharded'):
-        raise ValueError('sp_linear_mode must be reference or sharded')
+    if config.sp_linear_mode not in ('reference', 'sharded', 'aligned'):
+        raise ValueError('sp_linear_mode must be reference, sharded or aligned')
+    if config.sp_linear_mode == 'aligned' and (
+            topology.ulysses not in (2, 4) or topology.ring != 1 or topology.tp != 1
+            or topology.replicas != 1
+            or config.dit_fsdp_shard_degree * config.dit_fsdp_replicate_degree != 1):
+        raise ValueError('aligned SP requires resident NCCL Ulysses SP2/4 without TP/Ring/FSDP')
     if config.tp_linear_mode not in ('reference', 'sharded', 'aligned'):
         raise ValueError('tp_linear_mode must be reference, sharded or aligned')
     if type(config.vae_degree) is not int or config.vae_degree not in (1, 2, 4):
@@ -198,5 +206,6 @@ def validate_nccl_fusion(args, topology):
     ops = args.operator_fusion_ops
     if ops is not None:
         ops = tuple(s.strip() for s in ops.split(',') if s.strip()) if isinstance(ops, str) else tuple(ops)
-        if not ops or set(ops) - {'qk_rmsnorm_rope', 'rmsnorm_adaln'}:
-            raise ValueError('NCCL operator fusion currently supports qk_rmsnorm_rope and rmsnorm_adaln only')
+        if not ops or set(ops) - {'qk_rmsnorm_rope', 'rmsnorm_adaln',
+                                  'qk_rmsnorm_rope_native', 'rmsnorm_adaln_native'}:
+            raise ValueError('NCCL operator fusion supports QK/AdaLN with native reductions only')

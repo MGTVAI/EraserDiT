@@ -30,7 +30,7 @@ from layers.attention.backends.sage_attn import SageAttentionBackend
 from layers.attention.backends.sage_fp8 import SageFP8AttentionBackend
 from layers.attention.backends.sdpa import SDPABackend
 from layers.attention.selector import resolve_attention_backend
-from layers.operator_fusion.config import QK_RMSNORM_ROPE_OP, QK_RMSNORM_ROPE_FAST_OP
+from layers.operator_fusion.config import QK_RMSNORM_ROPE_OP, QK_RMSNORM_ROPE_FAST_OP, QK_RMSNORM_ROPE_NATIVE_OP
 from layers.operator_fusion.qk_rmsnorm_rope import apply_fused_qk_rmsnorm_rope
 from layers.operator_fusion.registry import get_operator_fusion_decision
 from config.server_args import get_global_server_args
@@ -248,7 +248,7 @@ class EraserDiTAttentionProcessor:
         key = attn.to_k(hidden_states)
         value = attn.to_v(hidden_states)
 
-        if {QK_RMSNORM_ROPE_OP, QK_RMSNORM_ROPE_FAST_OP}.intersection(
+        if {QK_RMSNORM_ROPE_OP, QK_RMSNORM_ROPE_FAST_OP, QK_RMSNORM_ROPE_NATIVE_OP}.intersection(
             self.operator_fusion_decision.effective_ops
         ):
 

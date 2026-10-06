@@ -453,7 +453,7 @@ class DistributedDiTTests(unittest.TestCase):
                         EraserDiTPipelineConfig(dit_parallel_backend='nccl', dit_fsdp_shard_degree=2)):
             with self.assertRaisesRegex(ValueError, 'operator fusion requires resident'):
                 ServerArgs(pipeline_config=blocked, operator_fusion_backend='auto')
-        with self.assertRaisesRegex(ValueError, 'qk_rmsnorm_rope and rmsnorm_adaln only'):
+        with self.assertRaisesRegex(ValueError, 'native reductions only'):
             ServerArgs(pipeline_config=EraserDiTPipelineConfig(dit_parallel_backend='nccl'),
                        operator_fusion_backend='triton', operator_fusion_ops='gated_residual')
 

@@ -30,6 +30,7 @@ CUDA_VISIBLE_DEVICES='' ERASERDIT_TEST_TWO_GPU=0 ERASERDIT_TEST_INT8=0 \
 | `test_vae_memory.py` | VAE 分块预算、归一化/卷积邻域、原位激活及残差分块的精确性、输入不变、梯度回退和 CLI/服务参数 |
 | `test_static_condition_reuse.py` | 请求内文本编码缓存失效和隔离、预计算 RoPE 的 CPU/GPU 数值一致性 |
 | `test_operator_fusion_precision.py` | QK RoPE、gated residual 舍入一致性，布局/梯度回退，完整 block 与文本缓存、逐层卸载组合 |
+| `test_native_rms_fusion.py` | RMSNorm 原生归约融合逐元素一致、实际 SP 长度、stream 顺序、梯度与自定义实现回退 |
 | `test_service_api.py` | HTTP 契约、任务和产物；使用 scheduler stub，无权重 |
 | `test_component_offload.py` | 组件租约、异常清理；CUDA 可用时附加设备验证 |
 | `test_layerwise_offload.py` | 迁移管理器的循环预取、布局、重复推理、T5 FSDP、异常清理；CUDA 用例需 GPU |
@@ -40,6 +41,9 @@ CUDA_VISIBLE_DEVICES='' ERASERDIT_TEST_TWO_GPU=0 ERASERDIT_TEST_INT8=0 \
 | `test_nccl_dit.py` | 正交拓扑、真实 NCCL Ulysses/Ring/TP/FSDP/混合组、父进程组隔离及 worker 故障清理 |
 | `test_ulysses_overlap.py` | 真实 NCCL head 分块流水，SP2/CFG2×SP2/SP4、非等长分片、stream 生命周期与异常后复用 |
 | `test_nccl_packing.py` | Ulysses 新旧打包的收发数据精确一致性，覆盖等长/不等长分片及非连续布局 |
+| `test_sequence_padding.py` | SP reference 补零工作区复用、特殊浮点位模式、梯度回退、stream 隔离及异常清理 |
+| `test_sequence_linear.py` | SP aligned 选择性投影保护、未知形状回退、嵌套 FFN 恢复、统计与拓扑限制 |
+| `test_ulysses_policy.py` | SP2/SP4 自动通信分块、未覆盖环境回退与显式配置 |
 | `test_nccl_text_cache.py` | rank 文本缓存条件/权重失效、分支/窗口隔离、抽样 profiler 与异常 hooks 清理；真实多卡检查位于 `test_nccl_dit.py` |
 | `test_window_benchmark.py` | 单窗口计时汇总，拒绝多窗口和非 121 帧报告 |
 | `test_mesh_gpu.py` | 显式两/四卡 Transformer、异常恢复和可选真实 VAE |

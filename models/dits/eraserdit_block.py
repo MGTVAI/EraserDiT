@@ -18,16 +18,18 @@ from typing import Optional, Tuple
 
 import torch
 
-from layers.operator_fusion.config import RMSNORM_ADALN_FAST_OP
+from layers.operator_fusion.config import RMSNORM_ADALN_FAST_OP, RMSNORM_ADALN_NATIVE_OP
 from layers.operator_fusion.rmsnorm_adaln_fast import apply_fused_rmsnorm_adaln_fast
 from layers.operator_fusion.registry import OperatorFusionDecision
-from layers.operator_fusion.rmsnorm_adaln import apply_fused_rmsnorm_adaln
+from layers.operator_fusion.rmsnorm_adaln import apply_fused_rmsnorm_adaln, apply_fused_rmsnorm_adaln_native
 from layers.operator_fusion.gated_residual import apply_fused_gated_residual
 
 __all__ = ["forward_eraserdit_block"]
 
 
 def _normalize_modulate(hidden, scale, shift, norm, decision):
+    if RMSNORM_ADALN_NATIVE_OP in decision.effective_ops:
+        return apply_fused_rmsnorm_adaln_native(hidden, scale, shift, norm, decision=decision)
     if RMSNORM_ADALN_FAST_OP in decision.effective_ops:
         return apply_fused_rmsnorm_adaln_fast(hidden, scale, shift, norm, decision=decision)
     normalized = norm(hidden)

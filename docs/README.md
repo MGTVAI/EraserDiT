@@ -21,6 +21,7 @@
 | [SGLang 内存管理](sglang_memory.md) / [逐层卸载](layerwise_offload.md) | 源码来源、预取、T5/VAE 卸载与统计口径 |
 | [回归测试](../tests/README.md) | CPU/GPU 测试、专项开关与跳过条件 |
 | [开发路线](roadmap.md) | 后续性能、质量、低显存与交互入口工作 |
+| [SP2 / SP4 优化路线](sp_roadmap.md) | 当前 B1 加速、剩余优化优先级、性能剖析与验收标准 |
 
 ## 实验与验证记录
 
@@ -30,6 +31,9 @@
 
 | 日期 | 记录 | 范围 |
 | --- | --- | --- |
+| 2026-10-05 | [SP2/SP4 选择性 GEMM 保护](sp_aligned_20261005.md) | aligned 数值边界、真实权重配对 forward、完整素材一致性与显存 |
+| 2026-10-05 | [SP2/SP4 原生归约融合](sp_native_rms_20261005.md) | 保留 RMSNorm 原生归约，融合逐元素计算，配对测量与验收 |
+| 2026-10-06 | [SP2/SP4 分块与补零优化](sp_finish_20261006.md) | 自动分块、3072 行 FFN 保护及 B1 同输入验收 |
 | 2026-10-04 | [L40S 24 GiB 验收](l40s_validation_20261004.md) | 1/2/4 卡逐卡峰值、缓存初筛、WebUI 与取消恢复 |
 | 2026-10-04 | [Attention 性能优化](attention_optimization_20261004.md) | Sage FP8 与完整 Q/K RMSNorm + RoPE 融合、整请求对照 |
 | 2026-10-04 | [AdaLN 与残差优化](adaln_optimization_20261004.md) | 完整 RMSNorm + AdaLN 融合、门控残差组合与投影筛选 |

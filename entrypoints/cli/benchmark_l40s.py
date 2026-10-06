@@ -18,6 +18,19 @@ import time
 
 
 PROFILES = {
+    's0': (1, ['--runtime-mode', 'windowed_preload', '--dit-layerwise-offload',
+               '--no-dit-cpu-offload', '--attention-backend', 'sdpa',
+               '--operator-fusion-backend', 'disabled']),
+    's1': (1, ['--runtime-mode', 'windowed_streaming', '--streaming-cache-dtype', 'uint8',
+               '--dit-layerwise-offload', '--no-dit-cpu-offload', '--attention-backend', 'sdpa',
+               '--operator-fusion-backend', 'disabled']),
+    's2': (1, ['--runtime-mode', 'windowed_streaming', '--streaming-cache-dtype', 'uint8',
+               '--no-dit-layerwise-offload', '--dit-cpu-offload', '--attention-backend', 'sdpa',
+               '--operator-fusion-backend', 'disabled']),
+    's3': (1, ['--runtime-mode', 'windowed_streaming', '--streaming-cache-dtype', 'uint8',
+               '--no-dit-layerwise-offload', '--dit-cpu-offload', '--attention-backend', 'sdpa',
+               '--operator-fusion-backend', 'triton',
+               '--operator-fusion-ops', 'qk_rmsnorm_rope,rmsnorm_adaln']),
     'bf16': (1, ['--dit-layerwise-offload', '--attention-backend', 'sdpa']),
     'bf16_component': (1, ['--no-dit-layerwise-offload', '--dit-cpu-offload', '--attention-backend', 'sdpa']),
     'bf16_fused': (1, ['--no-dit-layerwise-offload', '--dit-cpu-offload', '--attention-backend', 'sdpa',
@@ -49,6 +62,65 @@ PROFILES = {
     'cfg2_sp2_reference': (4, ['--dit-parallel-backend', 'nccl', '--cfg-degree', '2',
                                '--sp-degree', '2', '--sp-linear-mode', 'reference']),
     'sp4': (4, ['--dit-parallel-backend', 'nccl', '--sp-degree', '4']),
+    'sp2_aligned': (2, ['--dit-parallel-backend', 'nccl', '--cfg-degree', '1',
+                        '--sp-degree', '2', '--sp-linear-mode', 'aligned']),
+    'sp4_aligned': (4, ['--dit-parallel-backend', 'nccl', '--cfg-degree', '1',
+                        '--sp-degree', '4', '--sp-linear-mode', 'aligned']),
+    'sp4_reference': (4, ['--dit-parallel-backend', 'nccl', '--cfg-degree', '1',
+                          '--sp-degree', '4', '--sp-linear-mode', 'reference']),
+    'sp2_native_rms': (2, ['--dit-parallel-backend', 'nccl', '--cfg-degree', '1',
+                          '--sp-degree', '2', '--sp-linear-mode', 'aligned', '--operator-fusion-ops',
+                          'qk_rmsnorm_rope_native,rmsnorm_adaln_native']),
+    'sp4_native_rms': (4, ['--dit-parallel-backend', 'nccl', '--cfg-degree', '1',
+                          '--sp-degree', '4', '--sp-linear-mode', 'aligned', '--operator-fusion-ops',
+                          'qk_rmsnorm_rope_native,rmsnorm_adaln_native']),
+    'm1': (2, ['--dit-parallel-backend', 'nccl', '--cfg-degree', '2']),
+    'm2': (2, ['--dit-parallel-backend', 'nccl', '--sp-degree', '2',
+               '--sp-linear-mode', 'reference']),
+    'm3': (4, ['--dit-parallel-backend', 'nccl', '--cfg-degree', '2',
+               '--sp-degree', '2', '--sp-linear-mode', 'reference']),
+    'm4': (4, ['--dit-parallel-backend', 'nccl', '--cfg-degree', '2',
+               '--sp-degree', '2', '--sp-linear-mode', 'reference']),
+    # Spatial VAE parallelism cannot share component offload hooks. Keep its
+    # VAE1 controls resident too, so each pair changes only the VAE degree.
+    'v0': (2, ['--dit-parallel-backend', 'nccl', '--cfg-degree', '2', '--vae-degree', '1',
+               '--no-text-encoder-cpu-offload', '--no-vae-cpu-offload', '--no-vae-tiling']),
+    'v1': (2, ['--dit-parallel-backend', 'nccl', '--cfg-degree', '2', '--vae-degree', '2',
+               '--no-text-encoder-cpu-offload', '--no-vae-cpu-offload', '--no-vae-tiling']),
+    'v2': (2, ['--dit-parallel-backend', 'nccl', '--sp-degree', '2', '--sp-linear-mode', 'reference',
+               '--vae-degree', '1', '--no-text-encoder-cpu-offload', '--no-vae-cpu-offload', '--no-vae-tiling']),
+    'v3': (2, ['--dit-parallel-backend', 'nccl', '--sp-degree', '2', '--sp-linear-mode', 'reference',
+               '--vae-degree', '2', '--no-text-encoder-cpu-offload', '--no-vae-cpu-offload', '--no-vae-tiling']),
+    'v4': (4, ['--dit-parallel-backend', 'nccl', '--cfg-degree', '2', '--sp-degree', '2',
+               '--sp-linear-mode', 'reference', '--vae-degree', '1',
+               '--no-text-encoder-cpu-offload', '--no-vae-cpu-offload', '--no-vae-tiling']),
+    'v5': (4, ['--dit-parallel-backend', 'nccl', '--cfg-degree', '2', '--sp-degree', '2',
+               '--sp-linear-mode', 'reference', '--vae-degree', '4',
+               '--no-text-encoder-cpu-offload', '--no-vae-cpu-offload', '--no-vae-tiling']),
+    'q1': (1, ['--no-dit-layerwise-offload', '--dit-cpu-offload', '--attention-backend', 'sdpa',
+               '--transformer-quantization', 'int8_w8a8_native', '--quantization-scope', 'ffn',
+               '--operator-fusion-backend', 'triton',
+               '--operator-fusion-ops', 'qk_rmsnorm_rope,rmsnorm_adaln']),
+    'q2': (1, ['--no-dit-layerwise-offload', '--dit-cpu-offload', '--attention-backend', 'sdpa',
+               '--transformer-quantization', 'fp8_w8a8_native', '--quantization-scope', 'ffn',
+               '--operator-fusion-backend', 'triton',
+               '--operator-fusion-ops', 'qk_rmsnorm_rope,rmsnorm_adaln']),
+    'q3': (1, ['--no-dit-layerwise-offload', '--dit-cpu-offload', '--attention-backend', 'sdpa',
+               '--transformer-quantization', 'fp8_w8a8_static', '--quantization-scope', 'ffn',
+               '--operator-fusion-backend', 'triton',
+               '--operator-fusion-ops', 'qk_rmsnorm_rope,rmsnorm_adaln']),
+    'q4': (1, ['--no-dit-layerwise-offload', '--dit-cpu-offload', '--attention-backend', 'sage_fp8',
+               '--transformer-quantization', 'fp8_w8a8_static', '--quantization-scope', 'ffn',
+               '--operator-fusion-backend', 'triton',
+               '--operator-fusion-ops', 'qk_rmsnorm_rope,rmsnorm_adaln']),
+    'q5': (1, ['--no-dit-layerwise-offload', '--dit-cpu-offload', '--attention-backend', 'sage_fp8',
+               '--transformer-quantization', 'fp8_w8a8_static', '--quantization-scope', 'ffn',
+               '--operator-fusion-backend', 'triton',
+               '--operator-fusion-ops', 'qk_rmsnorm_rope_fast,rmsnorm_adaln']),
+    'q6': (1, ['--no-dit-layerwise-offload', '--dit-cpu-offload', '--attention-backend', 'sage_fp8',
+               '--transformer-quantization', 'fp8_w8a8_static', '--quantization-scope', 'ffn',
+               '--operator-fusion-backend', 'triton',
+               '--operator-fusion-ops', 'qk_rmsnorm_rope_fast,rmsnorm_adaln_fast,gated_residual']),
 }
 
 
@@ -72,24 +144,33 @@ def read_report(path):
 
 
 def summarize(report):
+    stage_names = {
+        'text_seconds': 'TextEncodingStage',
+        'vae_encode_seconds': 'ConditionEncodingStage',
+        'denoise_seconds': 'DenoisingStage',
+        'vae_decode_seconds': 'DecodingStage',
+    }
     rows = []
     for task in report['tasks']:
         timing = task['timing']
+        stages = timing['pure_inference_stage_breakdown_ms']
         output = task['output_file_path']
         row = dict(id=task['id'], output=output, output_sha256=sha256(output),
                    metadata=task['runtime_video_metadata'],
                    request_seconds=task['e2e_seconds_excluding_warmup'],
                    warmup_seconds=float(task.get('warmup', {}).get('duration_seconds') or 0),
                    pure_seconds=timing['pure_inference_seconds'],
-                   denoise_seconds=sum(v for k, v in timing['pure_inference_stage_breakdown_ms'].items()
-                                       if 'DenoisingStage' in k) / 1000,
                    owner_peak_allocated_gib=timing['extra']['peak_allocated_gib'],
                    owner_peak_reserved_gib=timing['extra']['peak_reserved_gib'])
+        row.update({field: sum(v for key, v in stages.items() if suffix in key) / 1000
+                    for field, suffix in stage_names.items()})
         rows.append(row)
     return dict(samples=rows, load_seconds=report['tasks'][0]['timing']['extra']['load_seconds'],
-                statistics={key: dict(median=statistics.median(r[key] for r in rows),
+                statistics={key: dict(mean=statistics.mean(r[key] for r in rows),
+                                      median=statistics.median(r[key] for r in rows),
                                       min=min(r[key] for r in rows), max=max(r[key] for r in rows))
-                            for key in ('request_seconds', 'pure_seconds', 'denoise_seconds')})
+                            for key in ('request_seconds', 'pure_seconds', 'text_seconds',
+                                        'vae_encode_seconds', 'denoise_seconds', 'vae_decode_seconds')})
 
 
 def monitored_run(command, env, devices, directory, *, interval=.1, cwd=None):
@@ -194,14 +275,16 @@ def main():
     parser.add_argument('--video', type=Path, default=Path('data/113000356.mp4'))
     parser.add_argument('--mask', type=Path, default=Path('data/113000356_mask.mp4'))
     parser.add_argument('--model-path', type=Path, default=Path('data/model'))
-    parser.add_argument('--prompt', default='There is a rooftop terrace overlooking the city at sunset.')
+    parser.add_argument('--prompt', default='There is a bridge over the lake.')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--repeats', type=int, default=5)
     parser.add_argument('--dp-degree', type=int, choices=(1, 2, 4), default=1,
                         help='Disjoint resident workers; repeats are total submitted requests')
     parser.add_argument('--cases', type=Path, help='JSON array of named request overrides; alternate case order each repeat')
-    parser.add_argument('--allocator-gib', type=float, default=22.)
-    parser.add_argument('--memory-target-gib', type=float, default=24.)
+    parser.add_argument('--allocator-gib', type=float,
+                        help='Per-process allocator cap; default 44 GiB for resident VAE profiles, 22 otherwise')
+    parser.add_argument('--memory-target-gib', type=float,
+                        help='Sampled memory target; default 46 GiB for resident VAE profiles, 24 otherwise')
     parser.add_argument('--sage-source', type=Path, help='Optional isolated compatible SageAttention build')
     parser.add_argument('--source-root', type=Path, help='Reuse a previous run/source snapshot for an unchanged experiment batch')
     parser.add_argument('--cache', choices=('off', 'teacache', 'cache_dit'), default='off')
@@ -211,6 +294,11 @@ def main():
     parser.add_argument('--compile', action='store_true')
     parser.add_argument('--prepare-only', action='store_true')
     args = parser.parse_args()
+    resident_vae = args.profile in {'v0', 'v1', 'v2', 'v3', 'v4', 'v5'}
+    if args.allocator_gib is None:
+        args.allocator_gib = 44. if resident_vae else 22.
+    if args.memory_target_gib is None:
+        args.memory_target_gib = 46. if resident_vae else 24.
     devices = args.devices.split(',')
     degree, options = PROFILES[args.profile]
     total_devices = degree * args.dp_degree
@@ -257,7 +345,7 @@ def main():
            '--runtime-mode', 'windowed_streaming', '--streaming-cache-dtype', 'uint8',
            '--infer-len', '121', '--overlap', '9', '--no-compact-tail-padding',
            '--num-inference-steps', '50', '--strength', '.8', '--guidance-scale', '3',
-           '--no-cache-text-projections', '--warmup', '--warmup-steps', '2',
+           '--no-cache-text-projections', '--warmup', '--warmup-steps', '1',
            '--transformer-cache-mode', args.cache, '--cache-probe-metric', 'mask_frame_max',
            '--teacache-threshold', str(args.cache_threshold),
            '--cache-dit-residual-diff-threshold', str(args.cache_threshold),

@@ -355,7 +355,10 @@ Python `EraseSession.run` 默认仍保留原返回行为；保存文件且不需
 ### 2026-10-02 实验选项
 
 - 常驻 NCCL CFG/Ulysses SP1/2/4 可组合 `--operator-fusion-backend triton` 与
-  `MGERASE_NCCL_PACKING=direct`。仅支持 `qk_rmsnorm_rope,rmsnorm_adaln`，不含 gated residual。
+  `MGERASE_NCCL_PACKING=direct`。支持 `qk_rmsnorm_rope,rmsnorm_adaln` 及显式选择的
+  `qk_rmsnorm_rope_native,rmsnorm_adaln_native`，不含 gated residual 和近似 `*_fast`。
+  后者保留原生归约、进一步融合逐元素计算；使用 `sp2_native_rms` / `sp4_native_rms`
+  profile 复现，详见[原生归约融合](sp_native_rms_20261005.md)。
 - `MGERASE_POSTPROCESS_CHUNKED_FP32=1` 按颜色校正块转 FP32，减少后处理临时激活。
 - `MGERASE_VAE_INPLACE_ACTIVATIONS=1` 配合 `--vae-low-memory` 复用 VAE 临时激活，并分块计算下采样残差；保持原归约与舍入。
 - `--vae-low-memory --vae-chunk-elements 16777216` 设置 VAE 分块目标元素预算；完整帧/邻域为下限。
@@ -371,9 +374,33 @@ Python `EraseSession.run` 默认仍保留原返回行为；保存文件且不需
 该实现仍有接收端 GPU 拷贝与同步，改变环境变量不会切换已有进程池。
 验证范围、性能和生命周期约束见[边界传输记录](cuda_ipc_boundary_20261003.md)。
 
+### SP2 / SP4 选择性 GEMM 保护（实验性）
+
+`--sp-linear-mode aligned` 在已筛查形状上仅保护敏感投影，让其他 BF16 投影按本地 token
+计算；默认仍为 `reference`。仅支持常驻 NCCL Ulysses SP2/4，可组合 CFG2，不支持
+TP、Ring、FSDP、编译或量化。CLI 和服务启动参数均支持该模式。
+
+当前加速范围为 L40S、PyTorch 2.6.0 / CUDA 12.6、确定性模式、EraserDiT 2048 宽度、
+batch 1、32640 或 10200 token。其他环境、模型、形状或激活 dtype 回退为完整 reference
+计算。首尾投影保留全长；SP4 的 10200-token FFN 下投影也保留全长。
+每个 rank 的 `sp_linear_policy` 报告实际执行模式、回退原因和本地/保护调用次数；计数是
+最近一次分支 forward 的包装调用次数，不是整个请求的 GEMM 数。
+
+```bash
+# 双卡完整视频基准；四卡改为 sp4_aligned 和 0,1,2,3。
+MGERASE_ULYSSES_HEAD_CHUNKS=4 MGERASE_ULYSSES_OUTPUT_OVERLAP=1 \
+uv run --no-project python -m entrypoints.cli.benchmark_l40s \
+  --run-dir outputs/sp2_aligned --profile sp2_aligned --devices 0,1 --repeats 5
+```
+
+基准自动设置 direct 打包；直接调用推理 CLI 时还需 `MGERASE_NCCL_PACKING=direct`，并显式
+设置 `--cfg-degree 1 --sp-degree 2`（四卡纯 SP 使用 `--sp-degree 4`）。长短序列应分别
+筛选通信分块；微基准可用 `--variants fusion_direct,aligned,aligned_heads2_output,aligned_heads4_output`
+交替测量并逐元素比较。
+
 ### Ulysses 通信计算重叠（实验性）
 
-当前 L40S 整片筛选变慢，不作为速度推荐；保留以下入口用于复现和其他配置验证。
+历史仅输入重叠候选在 L40S 整片筛选中变慢；输入/输出联合重叠需按拓扑和序列长度分别测量。
 
 在常驻 NCCL Ulysses SP2/4 的命令前设置：
 
@@ -383,8 +410,11 @@ export MGERASE_ULYSSES_HEAD_CHUNKS=4
 ```
 
 需要在创建进程池前设置；运行中的池不会动态切换。
-`HEAD_CHUNKS` 可选 1/2/4，默认 1 为原路径。分块需要 heads 能被 `SP × chunks` 整除，
+`HEAD_CHUNKS` 可选 `auto` 或 1/2/4，默认 1 为原路径。`auto` 配合 direct 和输出重叠，
+在已测 L40S 形状上为 SP4 短序列选两块，其他已测 SP2/SP4 形状选四块，未覆盖形状用一块。
+详见[分块与补零优化](sp_finish_20261006.md)。分块需要 heads 能被 `SP × chunks` 整除，
 不支持 Ring、TP、FSDP；当前仍要求 BF16/SDPA、关闭编译和量化。
 默认只重叠输入交换。可额外设置 `MGERASE_ULYSSES_OUTPUT_OVERLAP=1`，
-将每块输出交换与下一块 attention 重叠；需要 `HEAD_CHUNKS=2` 或 `4`。
-输出重叠仍在整片筛选，不作为默认配置。输入方案历史实测见[验收记录](ulysses_overlap_20261003.md)。
+将每块输出交换与下一块 attention 重叠；需要实际选择的块数为 2 或 4。
+输出重叠不作为通用默认配置。输入方案历史实测见[验收记录](ulysses_overlap_20261003.md)，
+当前已验证配置见[性能说明](performance.md)。

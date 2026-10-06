@@ -117,8 +117,8 @@ def _build_parser() -> argparse.ArgumentParser:
                         help='reference gathers full KV; streaming keeps FP32 state; online is an experimental rounded-output merge')
     parser.add_argument('--dit-fsdp-shard-degree', type=int, default=1)
     parser.add_argument('--dit-fsdp-replicate-degree', type=int, default=1)
-    parser.add_argument("--sp-linear-mode", choices=["reference", "sharded"], default="reference",
-                        help="reference preserves full GEMM shape; sharded is experimental BF16 numerics")
+    parser.add_argument("--sp-linear-mode", choices=["reference", "sharded", "aligned"], default="reference",
+                        help="reference preserves full GEMM shape; aligned selectively protects screened NCCL SP2/4 shapes; sharded changes BF16 numerics")
     parser.add_argument("--sp-attention-mode", choices=["ulysses", "ring"], default="ulysses")
     parser.add_argument(
         "--cfg-degree",

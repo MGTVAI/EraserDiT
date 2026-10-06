@@ -175,20 +175,62 @@ class SequenceRank:
         Only local rows survive each projection. This deliberately computes
         dummy rows and sacrifices linear-layer speed/memory for compatibility;
         the attention heads and resident hidden states remain partitioned.
+        Aligned mode skips padding only for a screened numerical profile, with
+        separate protection for the final output and short-SP4 FFN down GEMM.
         """
         saved = []
+        pad_sequence = None
+        aligned_lengths, fallback = (), None
+        if mode == 'aligned':
+            from layers.sequence_linear import aligned_sequence_lengths
+            aligned_lengths, fallback = aligned_sequence_lengths(model, self.degree)
+        self.linear_report = dict(requested=mode, effective='reference' if mode == 'aligned' else mode,
+                                  fallback_reason=fallback, local_calls=0, reference_calls=0,
+                                  protected_ffn_down_calls=0, compact_ffn_down_calls=0)
         try:
-            if mode == "reference":
-                modules = [model.proj_out]
+            if mode in ("reference", "aligned"):
+                from layers.sequence_padding import ReferenceSequencePadding
+                pad_sequence = ReferenceSequencePadding()
+                modules = [(model.proj_out, 'output')]
                 for block in model.transformer_blocks:
-                    modules.extend([block.attn1.to_q, block.attn1.to_k, block.attn1.to_v,
-                                    block.attn1.to_out[0], block.attn2.to_q, block.attn2.to_out[0],
-                                    block.ff])
-                for module in modules:
+                    modules.extend((module, 'linear') for module in (
+                        block.attn1.to_q, block.attn1.to_k, block.attn1.to_v,
+                        block.attn1.to_out[0], block.attn2.to_q, block.attn2.to_out[0]))
+                    modules.append((block.ff, 'ffn'))
+                    if mode == 'aligned':
+                        modules.append((block.ff.net[2], 'ffn_down'))
+                for module, role in modules:
                     saved.append((module, module.__dict__.get("forward")))
                     original = module.forward
-                    def forward(value, original=original):
-                        padded = torch.nn.functional.pad(value, (0, 0, self.start, self.length - self.end))
+                    def forward(value, original=original, role=role):
+                        aligned = (self.length in aligned_lengths and value.ndim == 3
+                                   and value.shape[0] == 1 and value.dtype == torch.bfloat16
+                                   and value.shape[1] == self.end - self.start)
+                        if mode == 'aligned':
+                            self.linear_report['tokens'] = self.length
+                            if not aligned and not self.linear_report['local_calls']:
+                                self.linear_report['fallback_reason'] = (
+                                    fallback or 'unvalidated sequence shape or activation dtype')
+                        # Unknown profiles keep the entire FFN reference path;
+                        # its nested down projection must not pad a second time.
+                        if role == 'ffn_down':
+                            if not (aligned and self.degree == 4 and self.length == 10200):
+                                return original(value)
+                            self.linear_report['protected_ffn_down_calls'] += 1
+                            if getattr(self, 'compact_ffn_down', True):
+                                # L40S's 2550-row BF16 down GEMM selects a different
+                                # reduction. 3072 rows reproduce the screened full
+                                # 10200-row result without calculating every shard.
+                                self.linear_report['compact_ffn_down_calls'] += 1
+                                self.linear_report['reference_calls'] += 1
+                                padded = pad_sequence(value, 0, 3072)
+                                return original(padded)[:, :value.shape[1]].contiguous()
+                        elif aligned and role != 'output':
+                            self.linear_report['local_calls'] += 1
+                            self.linear_report.update(effective='aligned', fallback_reason=None)
+                            return original(value)
+                        self.linear_report['reference_calls'] += 1
+                        padded = pad_sequence(value, self.start, self.length)
                         return original(padded)[:, self.start:self.end].contiguous()
                     module.forward = forward
             yield
@@ -198,6 +240,8 @@ class SequenceRank:
                     del module.forward
                 else:
                     module.forward = previous
+            if pad_sequence is not None:
+                pad_sequence.clear()
 
     def attention(self, query, key, value, impl, metadata):
         if self.attention_mode == 'ring':
