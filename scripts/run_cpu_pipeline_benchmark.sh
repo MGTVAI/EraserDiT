@@ -40,11 +40,11 @@ if [[ $run_dir != /* ]]; then run_dir="$repo_dir/$run_dir"; fi
 if [[ -e $run_dir ]]; then printf 'Run directory already exists: %s\n' "$run_dir" >&2; exit 2; fi
 mkdir -p "$run_dir/reproduction"
 printf 'RESULT_DIR=%s\n' "$run_dir"
-cp scripts/activate_cpu_pipeline.sh scripts/cpu_pipeline_audit.py scripts/cpu_pipeline_benchmark.py scripts/run_cpu_pipeline_benchmark.sh scripts/summarize_cpu_pipeline.py "$run_dir/reproduction/"
+cp scripts/activate_cpu_pipeline.sh scripts/cpu_pipeline_config.py scripts/cpu_pipeline_audit.py scripts/cpu_pipeline_benchmark.py scripts/run_cpu_pipeline_benchmark.sh scripts/summarize_cpu_pipeline.py "$run_dir/reproduction/"
 git rev-parse HEAD > "$run_dir/commit.txt"
 git diff > "$run_dir/source_diff.patch"
 git status --short > "$run_dir/git_status.txt"
-uv run --no-project python -m entrypoints.cli.benchmark_l40s --profile s3 --devices "$gpu" --cache off --repeats 1 --prepare-only --run-dir "$run_dir/prepared" > "$run_dir/prepare.log" 2>&1
+uv run --no-project python "$run_dir/reproduction/cpu_pipeline_benchmark.py" --profile s3 --devices "$gpu" --cache off --repeats 1 --prepare-only --run-dir "$run_dir/prepared" > "$run_dir/prepare.log" 2>&1
 if ((prepare_only)); then printf 'Prepared only; no inference launched.\n'; exit 0; fi
 for ((run=1; run<=runs; run++)); do
   export ERASERDIT_CPU_PIPELINE_AUDIT="$run_dir/run_$run-runtime.json"

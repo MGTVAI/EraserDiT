@@ -1,10 +1,11 @@
 """Use the existing S3 benchmark with a metadata-only CLI observer."""
 from pathlib import Path
-import runpy
 import subprocess
 import sys
 
 sys.path.insert(0, str(Path.cwd()))
+from entrypoints.cli import benchmark_l40s
+from cpu_pipeline_config import benchmark_environment
 original_popen = subprocess.Popen
 observer = Path(__file__).with_name("cpu_pipeline_audit.py")
 
@@ -17,6 +18,13 @@ def launched(command, *args, **kwargs):
     return original_popen(command, *args, **kwargs)
 
 
-if __name__ == "__main__":
+def main():
     subprocess.Popen = launched
-    runpy.run_module("entrypoints.cli.benchmark_l40s", run_name="__main__")
+    try:
+        benchmark_l40s.main(extra_env=benchmark_environment())
+    finally:
+        subprocess.Popen = original_popen
+
+
+if __name__ == "__main__":
+    main()

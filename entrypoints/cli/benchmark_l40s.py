@@ -267,7 +267,7 @@ def monitored_run(command, env, devices, directory, *, interval=.1, cwd=None):
         nv.nvmlShutdown()
 
 
-def main():
+def main(*, extra_env=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run-dir', type=Path, required=True)
     parser.add_argument('--profile', choices=PROFILES, required=True)
@@ -393,25 +393,13 @@ def main():
                      MGERASE_FFMPEG_THREADS='auto')
     # Preserve and record benchmark-relevant optional transport switches.
     # Do not copy unrelated environment variables (for example service secrets).
-    for name, default in (('MGERASE_VIDEO_UINT8_GPU_NORMALIZE', '0'),
-                          ('MGERASE_VIDEO_UINT8_GPU_CLEAR_CACHE', '0'),
-                          ('MGERASE_PIPE_READ_THREADS', '1'),
-                          ('MGERASE_MASK_PIPE_R_ONLY', '0'),
-                          ('MGERASE_STREAMING_COPY_OPT', '0'),
-                          ('MGERASE_MASK_WINDOW_BUFFER_OPT', '0'),
-                          ('MGERASE_OUTPUT_UINT8_GPU_CONVERT', '0'),
-                          ('MGERASE_WRITER_HANDOFF_OPT', '0'),
-                          ('MGERASE_MASK_THRESHOLD_INPLACE', '0'),
-                          ('MGERASE_STYLE_UINT8_GPU_UPLOAD', '0'),
-                          ('MGERASE_MASK_DILATE_CAST_OPT', '0'),
-                          ('MGERASE_WINDOW_UINT8_VALIDATION_OPT', '0'),
-                          ('MGERASE_FIRST_WINDOW_BORROW', '0'),
-                          ('MGERASE_TEXT_SESSION_CACHE', '0'),
-                          ('MGERASE_MASK_SCAN_REUSE', '0'),
-                          ('MGERASE_ULYSSES_HEAD_CHUNKS', '1'),
+    for name, default in (('MGERASE_ULYSSES_HEAD_CHUNKS', '1'),
                           ('MGERASE_ULYSSES_OUTPUT_OVERLAP', '0'),
                           ('MGERASE_DIT_BOUNDARY_TRANSPORT', 'cpu')):
         overrides[name] = os.environ.get(name, default)
+    # Experiment callers can explicitly supply additional recorded settings.
+    if extra_env:
+        overrides.update(extra_env)
     manifest = dict(profile=args.profile, command=command, env=overrides, cases=cases, repeats=args.repeats,
                     dp_degree=args.dp_degree,
                     cwd=str(frozen), source_root=str(source_root),

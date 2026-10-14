@@ -14,6 +14,11 @@ source scripts/activate_cpu_pipeline.sh
 
 以下文件随仓库分发，不依赖 `outputs/setup/` 或用户目录。已有实验结果、模型、视频和环境仍保存在本机。
 
+S4 的 15 个设置读取及核验清单集中在 `scripts/cpu_pipeline_config.py`。脚本适配入口通过
+`benchmark_l40s.main(extra_env=...)` 传入需要记录的设置；通用 benchmark 不包含 S4 开关名。
+准备和推理均走该适配入口，保证冻结记录、实际子进程环境和汇总核验一致。
+直接使用通用 CLI 时不会自动登记这些 S4 设置；S4 复测请使用本页脚本入口。
+
 ## 保留功能与开关
 
 | 开关 | 启用值 | 行为与边界 |
