@@ -14,6 +14,7 @@
 | [安装与部署](setup.md) | Python 3.10 / uv、统一依赖安装顺序、模型下载、容器与排错 |
 | [CLI](cli.md) | 单视频、任务 JSON、缓存、编译、peer/NCCL 多卡与 DP |
 | [服务 API](service_api.md) | 启动、路径输入/上传、队列、进度、取消和结果下载 |
+| [S4：CPU读取与缓存复用](cpu_pipeline_optimization.md) | 并行读取、减少复制、GPU uint8 搬运、文本/扫描复用与两次完整 S3 复测 |
 | [性能配置](performance.md) | 当前默认值、优化组合边界、质量与性能口径 |
 | [测量与验证](validation.md) | 环境检查、CPU 回归、完整视频与同条件性能对照 |
 | [配置说明](../config/README.md) | 模型、请求、服务与运行配置的职责 |

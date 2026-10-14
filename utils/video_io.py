@@ -8,7 +8,9 @@ import queue
 import subprocess
 import tempfile
 import threading
+import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -304,6 +306,31 @@ def binarize_mask_array(
     )
 
 
+def threshold_mask_array(
+    mask: np.ndarray,
+    threshold: float,
+    *,
+    inplace: bool = False,
+) -> np.ndarray:
+    """Return exact 0/255 values; optionally consume an owned uint8 buffer.
+
+    Streaming callers may pass a freshly decoded writable buffer. They must
+    not require its unthresholded pixels after this ownership transfer.
+    """
+    if not inplace:
+        return np.where(mask <= threshold, np.uint8(0), np.uint8(255))
+    if mask.dtype != np.uint8 or not mask.flags.writeable:
+        raise ValueError("In-place threshold requires a writable uint8 mask")
+    # For uint8 pixels > is the complement of <=, except a NaN threshold:
+    # np.where(mask <= NaN, 0, 255) must remain all 255.
+    if np.isnan(threshold):
+        mask.fill(255)
+    else:
+        np.greater(mask, threshold, out=mask)
+        np.multiply(mask, np.uint8(255), out=mask)
+    return mask
+
+
 def read_mask_rgb_array(
     video_path: str,
     threshold_ratio: float = 0.3,
@@ -382,6 +409,51 @@ def frames_uint8_to_tensor(frames: np.ndarray) -> torch.Tensor:
     )
 
 
+def frames_uint8_to_cpu_tensor(frames: np.ndarray) -> torch.Tensor:
+    """Keep decoded RGB pixels in uint8 for upload and device normalization.
+
+    Window caches hand over owned arrays. Borrow their storage when possible;
+    torch retains the NumPy array, so its lifetime covers the input tensor.
+    Unsupported strides or read-only input receive an owned uint8 copy.
+    """
+    if frames.ndim != 4 or frames.shape[-1] != 3 or frames.dtype != np.uint8:
+        raise ValueError("Expected uint8 video frames with shape [F,H,W,3]")
+    array = frames
+    if not array.flags.c_contiguous or not array.flags.writeable:
+        array = np.array(array, dtype=np.uint8, copy=True, order="C")
+    return torch.from_numpy(array).permute(0, 3, 1, 2)
+
+
+def video_input_to_float32(video: torch.Tensor, device: torch.device | str) -> torch.Tensor:
+    """Upload uint8 pixels before casting, or preserve normalized float input."""
+    if video.dtype == torch.uint8:
+        uploaded = video.to(device=device)
+        # A device tensor divisor preserves the CPU path's FP32 rounding.
+        # CUDA scalar division uses a reciprocal and differs for 126/256 values.
+        divisor = torch.tensor(255.0, dtype=torch.float32, device=uploaded.device)
+        return uploaded.to(dtype=torch.float32).div_(divisor)
+    return video.to(device=device, dtype=torch.float32)
+
+
+
+def maybe_clear_video_upload_cache(video_input: torch.Tensor, video: torch.Tensor) -> dict[str, Any]:
+    """Optional once-per-window cache release after the uint8 upload returns."""
+    requested = os.environ.get("MGERASE_VIDEO_UINT8_GPU_CLEAR_CACHE") == "1"
+    result = {"requested": requested, "applied": False, "seconds": 0.0}
+    if not (requested and video_input.dtype == torch.uint8 and video.is_cuda):
+        return result
+    with torch.cuda.device(video.device):
+        result["allocated_before_bytes"] = torch.cuda.memory_allocated(video.device)
+        result["reserved_before_bytes"] = torch.cuda.memory_reserved(video.device)
+        started = time.perf_counter()
+        torch.cuda.empty_cache()
+        result["seconds"] = time.perf_counter() - started
+        result["allocated_after_bytes"] = torch.cuda.memory_allocated(video.device)
+        result["reserved_after_bytes"] = torch.cuda.memory_reserved(video.device)
+    result["applied"] = True
+    return result
+
+
 def mask_uint8_to_tensor(mask: np.ndarray) -> torch.Tensor:
     if mask.ndim != 3:
         raise ValueError(
@@ -394,6 +466,20 @@ def mask_uint8_to_tensor(mask: np.ndarray) -> torch.Tensor:
 
 def frames_tensor_to_uint8(frames: torch.Tensor) -> np.ndarray:
     ensure_nchw_video(frames, channels=3)
+    if frames.is_cuda and os.environ.get("MGERASE_OUTPUT_UINT8_GPU_CONVERT") == "1":
+        # Preserve clamp/mul/round, then cast and arrange writer pixels on GPU.
+        # Same-dtype contiguous D2H avoids the blocking float32 CPU temporary.
+        return (
+            frames.detach()
+            .clamp(0.0, 1.0)
+            .mul(255.0)
+            .round()
+            .to(dtype=torch.uint8)
+            .permute(0, 2, 3, 1)
+            .contiguous()
+            .to(device="cpu")
+            .numpy()
+        )
     return (
         frames.detach()
         .clamp(0.0, 1.0)
@@ -430,12 +516,20 @@ class SequentialVideoReader:
         pix_fmt: str = "rgb24",
         squeeze_single_channel: bool = False,
         thread_count: int = 4,
+        extract_red: bool = False,
+        read_into: bool = False,
     ) -> None:
+        if extract_red and pix_fmt != "rgb24":
+            raise ValueError("Red extraction requires the original RGB decode format")
+        self.extract_red = bool(extract_red)
+        self.read_into = bool(read_into)
+        self.array_copy_bytes = 0
+        self.frames_read = 0
         self.video_path = os.path.abspath(video_path)
         self.width = int(width)
         self.height = int(height)
-        self.pix_fmt = pix_fmt
-        self.channels = 3 if pix_fmt == "rgb24" else 1
+        self.pix_fmt = "gray" if extract_red else pix_fmt
+        self.channels = 3 if self.pix_fmt == "rgb24" else 1
         self.squeeze_single_channel = bool(squeeze_single_channel and self.channels == 1)
         self.thread_count = _validate_video_io_thread_count(thread_count)
         self._closed = False
@@ -446,16 +540,15 @@ class SequentialVideoReader:
             "error",
             "-threads",
             str(self.thread_count),
-            "-i",
-            self.video_path,
-            "-vsync",
-            "0",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            self.pix_fmt,
-            "pipe:1",
         ]
+        filters = []
+        cmd += ["-i", self.video_path, "-vsync", "0"]
+        if extract_red:
+            filters += ["format=rgb24", "extractplanes=r"]
+        if filters:
+            cmd += ["-vf", ",".join(filters)]
+        cmd += ["-f", "rawvideo", "-pix_fmt", self.pix_fmt, "pipe:1"]
+        self.command = list(cmd)
         self.process = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
@@ -474,26 +567,61 @@ class SequentialVideoReader:
             raise RuntimeError("video decoder stdout is unavailable")
         frame_size = self.width * self.height * self.channels
         expected = frame_size * int(num_frames)
-        payload = self.process.stdout.read(expected)
-        if len(payload) != expected:
+        shape = (int(num_frames), self.height, self.width, self.channels)
+        if self.read_into:
+            array = np.empty(shape, dtype=np.uint8)
+            target = memoryview(array).cast("B")
+            received = 0
+            while received < expected:
+                count = self.process.stdout.readinto(target[received:])
+                if not count:
+                    break
+                received += count
+            target.release()
+        else:
+            payload = self.process.stdout.read(expected)
+            received = len(payload)
+        if received != expected:
             stderr = (
                 self.process.stderr.read().decode("utf-8", errors="ignore")
                 if self.process.stderr is not None
                 else ""
             )
             raise RuntimeError(
-                f"Decoded payload mismatch for {self.video_path}: expected {expected} bytes, got {len(payload)}. ffmpeg stderr: {stderr}"
+                f"Decoded payload mismatch for {self.video_path}: expected {expected} bytes, got {received}. ffmpeg stderr: {stderr}"
             )
-        array = np.frombuffer(payload, np.uint8).reshape(
-            int(num_frames),
-            self.height,
-            self.width,
-            self.channels,
-        )
-        array = array.copy()
+        if not self.read_into:
+            array = np.frombuffer(payload, np.uint8).reshape(shape).copy()
+            self.array_copy_bytes += int(array.nbytes)
+        self.frames_read += int(num_frames)
         if self.squeeze_single_channel:
             return array[..., 0]
         return array
+
+    def read_frames_into(self, array: np.ndarray) -> None:
+        """Fill an owned uint8 destination without allocating another chunk."""
+        expected_tail = ((self.height, self.width) if self.squeeze_single_channel
+                         else (self.height, self.width, self.channels))
+        if (array.dtype != np.uint8 or not array.flags.c_contiguous
+                or not array.flags.writeable or array.shape[1:] != expected_tail):
+            raise ValueError("Decoder destination must be writable contiguous uint8 frames")
+        if self.process.stdout is None:
+            raise RuntimeError("video decoder stdout is unavailable")
+        target = memoryview(array).cast("B")
+        expected, received = array.nbytes, 0
+        try:
+            while received < expected:
+                count = self.process.stdout.readinto(target[received:])
+                if not count:
+                    break
+                received += count
+        finally:
+            target.release()
+        if received != expected:
+            stderr = (self.process.stderr.read().decode("utf-8", errors="ignore")
+                      if self.process.stderr is not None else "")
+            raise RuntimeError(f"Decoded payload mismatch for {self.video_path}: expected {expected} bytes, got {received}. ffmpeg stderr: {stderr}")
+        self.frames_read += int(array.shape[0])
 
     def close(self) -> None:
         if self._closed:
@@ -510,6 +638,44 @@ class SequentialVideoReader:
             except subprocess.TimeoutExpired:
                 self.process.kill()
                 self.process.wait()
+
+
+def read_paired_video_frames(video_reader, mask_reader, num_frames: int, *, parallel: bool = False):
+    """Read matching frame-index intervals; publish data only after both finish."""
+    video_start = getattr(video_reader, "frames_read", None)
+    mask_start = getattr(mask_reader, "frames_read", None)
+    if video_start is not None and mask_start is not None and video_start != mask_start:
+        raise RuntimeError("Video/mask reader frame positions differ before read")
+    durations = {}
+    def read(reader, role):
+        started = time.perf_counter()
+        try:
+            return reader.read_frames(num_frames)
+        finally:
+            durations[role] = time.perf_counter() - started
+    started = time.perf_counter()
+    if parallel:
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="eraserdit-reader") as executor:
+            video_future = executor.submit(read, video_reader, "video")
+            mask_future = executor.submit(read, mask_reader, "mask")
+            video_frames = video_future.result()
+            mask_frames = mask_future.result()
+    else:
+        video_frames = read(video_reader, "video")
+        mask_frames = read(mask_reader, "mask")
+    wall_seconds = time.perf_counter() - started
+    if video_frames.shape[0] != num_frames or mask_frames.shape[0] != num_frames:
+        raise RuntimeError(f"Paired reader frame count mismatch: video={video_frames.shape[0]} mask={mask_frames.shape[0]} expected={num_frames}")
+    video_end = getattr(video_reader, "frames_read", None)
+    mask_end = getattr(mask_reader, "frames_read", None)
+    if video_end is not None and mask_end is not None and video_end != mask_end:
+        raise RuntimeError("Video/mask reader frame positions differ after read")
+    return video_frames, mask_frames, {
+        "parallel": parallel, "start_frame": video_start, "end_frame": video_end,
+        "frames": int(num_frames), "wall_seconds": wall_seconds,
+        "video_seconds": durations["video"], "mask_seconds": durations["mask"],
+        "video_pipe_bytes": int(video_frames.nbytes), "mask_pipe_bytes": int(mask_frames.nbytes),
+    }
 
 
 class SequentialVideoWriter:
@@ -556,7 +722,7 @@ class SequentialVideoWriter:
         self._closed = False
         self._async_error: BaseException | None = None
         self._async_sentinel = object()
-        self._async_queue: queue.Queue[np.ndarray | object] | None = None
+        self._async_queue: queue.Queue[np.ndarray | list[np.ndarray] | object] | None = None
         self._async_thread: threading.Thread | None = None
         os.makedirs(os.path.dirname(self.output_path), exist_ok=True)
         cmd = [
@@ -625,8 +791,17 @@ class SequentialVideoWriter:
                 if item is self._async_sentinel:
                     return
                 if self._async_error is None:
-                    assert isinstance(item, np.ndarray)
-                    self._write_frames_sync(item)
+                    if isinstance(item, list):
+                        try:
+                            for block in item:
+                                self._write_frames_sync(block)
+                        finally:
+                            # Release transferred buffers before waiting for the next batch.
+                            block = None
+                            item = None
+                    else:
+                        assert isinstance(item, np.ndarray)
+                        self._write_frames_sync(item)
             except BaseException as exc:
                 self._async_error = exc
             finally:
@@ -639,7 +814,7 @@ class SequentialVideoWriter:
                 f"{self._async_error}"
             ) from self._async_error
 
-    def _enqueue_async(self, item: np.ndarray | object) -> None:
+    def _enqueue_async(self, item: np.ndarray | list[np.ndarray] | object) -> None:
         assert self._async_queue is not None
         while True:
             self._raise_async_error()
@@ -707,6 +882,23 @@ class SequentialVideoWriter:
             self._write_frames_sync(frames)
             return
         self._enqueue_async(frames)
+
+    def write_frame_blocks_owned(self, blocks: list[np.ndarray]) -> None:
+        """Transfer frame buffers as one queue item, without pixel concatenation.
+
+        The caller must not access or mutate the buffers after this call. The
+        list container is copied so the caller may clear its own reference list.
+        """
+        for block in blocks:
+            self._validate_frames(block)
+        self._raise_async_error()
+        if not blocks:
+            return
+        if self._async_queue is None:
+            for block in blocks:
+                self._write_frames_sync(block)
+            return
+        self._enqueue_async(list(blocks))
 
     def close(self) -> None:
         # A broken pipe may already have closed the subprocess from the writer
@@ -896,16 +1088,62 @@ class ChunkedFrameCache:
         self._chunks.append(frames)
         return copied_bytes
 
+    def borrow_head(self, start_frame: int, end_frame: int) -> np.ndarray | None:
+        """Borrow an exact, contiguous head block without changing its owner."""
+        if start_frame != self.start_index or not self._chunks:
+            return None
+        chunk = self._chunks[0]
+        if (end_frame != start_frame + chunk.shape[0] or not chunk.flags.c_contiguous
+                or not chunk.flags.writeable or chunk.dtype != self.dtype):
+            return None
+        return chunk
+
+    def detach_borrowed_head(self, frames: np.ndarray, retain_start: int) -> int:
+        """Transfer a borrowed block; isolate the raw tail before output writes."""
+        if not self._chunks or self._chunks[0] is not frames:
+            raise ValueError("borrowed head no longer belongs to this cache")
+        end = self.start_index + int(frames.shape[0])
+        if not self.start_index <= retain_start <= end:
+            raise ValueError("invalid borrowed-head retention frontier")
+        offset = retain_start - self.start_index
+        # Allocate before mutating cache state, so failed allocations leave it intact.
+        retained = frames[offset:].copy() if retain_start < end else None
+        self._chunks.popleft()
+        if retained is not None:
+            self._chunks.appendleft(retained)
+        self.start_index = retain_start
+        return 0 if retained is None else int(retained.nbytes)
+
     def slice(self, start_frame: int, end_frame: int) -> np.ndarray:
         if start_frame < self.start_index or end_frame > self.end_index or end_frame < start_frame:
             raise ValueError(
                 f"Invalid cache slice [{start_frame}, {end_frame}) for cache range [{self.start_index}, {self.end_index})"
             )
-        length = end_frame - start_frame
-        if length == 0:
-            return np.empty((0, *self.shape_tail), dtype=self.dtype)
+        result = np.empty((end_frame - start_frame, *self.shape_tail), dtype=self.dtype)
+        self.slice_into(start_frame, end_frame, result)
+        return result
 
-        result = np.empty((length, *self.shape_tail), dtype=self.dtype)
+    def slice_into(self, start_frame: int, end_frame: int, result: np.ndarray, *,
+                   crop_bbox: tuple[int, int, int, int] | None = None,
+                   allow_cast: bool = False) -> None:
+        """Copy a range into caller-owned storage, without an intermediate array."""
+        if start_frame < self.start_index or end_frame > self.end_index or end_frame < start_frame:
+            raise ValueError("Invalid cache slice range")
+        expected_tail = self.shape_tail
+        crop_slices = None
+        if crop_bbox is not None:
+            x, y, width, height = crop_bbox
+            crop_slices = (slice(y, y + height), slice(x, x + width))
+            # A zero-frame view gives Python slice bounds without allocating pixels.
+            expected_tail = np.empty((0, *self.shape_tail), dtype=self.dtype)[
+                :, crop_slices[0], crop_slices[1]
+            ].shape[1:]
+        dtype_ok = (np.can_cast(self.dtype, result.dtype, casting="safe")
+                    if allow_cast else result.dtype == self.dtype)
+        if result.shape != (end_frame - start_frame, *expected_tail) or not dtype_ok:
+            raise ValueError("Cache slice destination shape or dtype mismatch")
+        if not result.flags.writeable:
+            raise ValueError("Cache slice destination must be writable")
         cursor = self.start_index
         for chunk in self._chunks:
             chunk_end = cursor + chunk.shape[0]
@@ -916,11 +1154,38 @@ class ChunkedFrameCache:
                 src_end = overlap_end - cursor
                 dst_begin = overlap_start - start_frame
                 dst_end = overlap_end - start_frame
-                result[dst_begin:dst_end] = chunk[src_begin:src_end]
+                source = chunk[src_begin:src_end]
+                if crop_slices is not None:
+                    source = source[:, crop_slices[0], crop_slices[1]]
+                # NumPy casts into the destination; no full-size float temporary.
+                result[dst_begin:dst_end] = source
             cursor = chunk_end
             if cursor >= end_frame:
                 break
-        return result
+
+    def discard_before(self, end_frame: int) -> int:
+        """Evict without materializing removed frames; return retained-copy bytes.
+
+        Copy only a partial chunk's kept tail so it does not retain the full
+        decoded window allocation. Writer drains still use pop_before.
+        """
+        if end_frame <= self.start_index:
+            return 0
+        if end_frame > self.end_index:
+            raise ValueError("Invalid cache discard end")
+        copied_bytes = 0
+        while self._chunks and self.start_index < end_frame:
+            chunk = self._chunks[0]
+            chunk_end = self.start_index + chunk.shape[0]
+            if chunk_end <= end_frame:
+                self._chunks.popleft()
+                self.start_index = chunk_end
+            else:
+                kept = chunk[end_frame - self.start_index:].copy()
+                copied_bytes += int(kept.nbytes)
+                self._chunks[0] = kept
+                self.start_index = end_frame
+        return copied_bytes
 
     def overwrite(self, start_frame: int, frames: np.ndarray) -> None:
         end_frame = start_frame + int(frames.shape[0])
@@ -973,6 +1238,37 @@ class ChunkedFrameCache:
             cursor = chunk_end
             if cursor >= end_frame:
                 break
+
+    def pop_before_owned(self, end_frame: int) -> tuple[list[np.ndarray], int]:
+        """Transfer removed blocks and report bytes copied for a retained tail.
+
+        Complete blocks are returned directly. A partial prefix is a view of
+        the removed buffer; only the retained suffix is copied so cache writes
+        cannot change a writer-owned prefix. No output concatenation is done.
+        """
+        if end_frame <= self.start_index:
+            return [], 0
+        if end_frame > self.end_index:
+            raise ValueError(
+                f"Invalid cache pop end {end_frame} for cache range [{self.start_index}, {self.end_index})"
+            )
+        blocks: list[np.ndarray] = []
+        copied_bytes = 0
+        while self._chunks and self.start_index < end_frame:
+            chunk = self._chunks[0]
+            chunk_end = self.start_index + chunk.shape[0]
+            if chunk_end <= end_frame:
+                blocks.append(self._chunks.popleft())
+                self.start_index = chunk_end
+                continue
+            take = end_frame - self.start_index
+            blocks.append(chunk[:take])
+            retained = chunk[take:].copy()
+            self._chunks[0] = retained
+            copied_bytes += int(retained.nbytes)
+            self.start_index = end_frame
+            break
+        return blocks, copied_bytes
 
     def pop_before(self, end_frame: int) -> np.ndarray:
         if end_frame <= self.start_index:
@@ -1715,6 +2011,95 @@ class WindowedVideoStore:
             shutil.rmtree(self._workdir, ignore_errors=True)
         except Exception:
             pass
+
+
+class PrimedVideoReader:
+    """Replay a bounded decoded prefix, then continue the same FFmpeg pipe.
+
+    frames_read is the consumer's logical position. The underlying decoder may
+    be ahead by the unconsumed prefix, so paired video/mask reads stay aligned.
+    """
+    def __init__(self, reader, prefix):
+        self.reader = reader
+        self.prefix = prefix
+        self.prefix_offset = 0
+        self.frames_read = 0
+        self.prefix_copy_bytes = 0
+
+    def __getattr__(self, name):
+        return getattr(self.reader, name)
+
+    def read_frames(self, num_frames):
+        if num_frames <= 0 or self.prefix is None:
+            result = self.reader.read_frames(num_frames)
+            self.frames_read += int(result.shape[0])
+            return result
+        result = np.empty((int(num_frames), *self.prefix.shape[1:]), dtype=np.uint8)
+        count = min(int(num_frames), self.prefix.shape[0] - self.prefix_offset)
+        result[:count] = self.prefix[self.prefix_offset:self.prefix_offset+count]
+        self.prefix_copy_bytes += int(result[:count].nbytes)
+        self.prefix_offset += count
+        if self.prefix_offset == self.prefix.shape[0]:
+            self.prefix = None
+        if count < num_frames:
+            if self.reader.read_into:
+                self.reader.read_frames_into(result[count:])
+            else:
+                result[count:] = self.reader.read_frames(num_frames-count)
+        self.frames_read += int(num_frames)
+        return result
+
+    def close(self):
+        self.prefix = None
+        self.reader.close()
+
+
+def open_mask_reader_with_scan(video_path, *, width, height, num_frames,
+                               read_into=False, extract_red=False,
+                               chunk_frames=16, checkpoint=None):
+    """Find the exact global R maximum and reuse at most one scan chunk.
+
+    At 255 the threshold is final. Small clips also have a known maximum after
+    their only chunk. Otherwise discard the prefix, complete the bounded scan,
+    and reopen the stream; soft/dark clips never force whole-video buffering.
+    """
+    if int(num_frames) <= 0 or int(chunk_frames) <= 0:
+        raise ValueError("Mask scan requires positive frame and chunk counts")
+    def open_reader():
+        return SequentialVideoReader(video_path, width=width, height=height,
+            pix_fmt="rgb24", thread_count="auto", squeeze_single_channel=True,
+            read_into=read_into, extract_red=extract_red)
+    reader = open_reader()
+    try:
+        if checkpoint is not None:
+            checkpoint()
+        first = reader.read_frames(min(chunk_frames, num_frames))
+        maximum = int((first[..., 0] if first.ndim == 4 else first).max())
+        reused = maximum == 255 or reader.frames_read == num_frames
+        retained_bytes = int(first.nbytes) if reused else 0
+        if reused:
+            stats = dict(reused=True, scanned_frames=reader.frames_read, maximum=maximum,
+                prefix_frames=int(first.shape[0]), retained_prefix_bytes=retained_bytes,
+                scan_channels=reader.channels, reopened=False)
+            return maximum, PrimedVideoReader(reader, first), stats
+        del first
+        for start in range(chunk_frames, num_frames, chunk_frames):
+            if checkpoint is not None:
+                checkpoint()
+            frames = reader.read_frames(min(chunk_frames, num_frames-start))
+            maximum = max(maximum, int((frames[..., 0] if frames.ndim == 4 else frames).max()))
+            if maximum == 255:
+                break
+        scanned = reader.frames_read
+        channels = reader.channels
+        reader.close()
+        replacement = open_reader()
+        return maximum, replacement, dict(reused=False, scanned_frames=scanned,
+            maximum=maximum, prefix_frames=0, retained_prefix_bytes=0,
+            scan_channels=channels, reopened=True, fallback_reason="prefix_budget")
+    except BaseException:
+        reader.close()
+        raise
 
 
 def read_mask_rgb_max(video_path, *, width, height, num_frames, chunk_frames=16, checkpoint=None):

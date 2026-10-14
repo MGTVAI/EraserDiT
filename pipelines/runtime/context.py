@@ -473,10 +473,24 @@ def prepare_runtime_context(
             ffmpeg_thread_count = _resolve_ffmpeg_thread_count(batch)
             # Match the preload FFmpeg decoder policy for exact uint8 caches.
             decode_threads = "auto" if params.streaming_cache_dtype == "uint8" else ffmpeg_thread_count
+            sequential_mask_reader = None
+            scan_reuse_requested = (params.streaming_cache_dtype == "uint8"
+                                    and os.environ.get("MGERASE_MASK_SCAN_REUSE") == "1")
             if params.streaming_cache_dtype == "uint8":
-                from utils.video_io import read_mask_rgb_max
-                maximum = read_mask_rgb_max(mask_path, width=width, height=height, num_frames=num_frames,
-                    checkpoint=lambda: service_checkpoint(batch, server_args, phase="streaming_mask_scan"))
+                from utils.video_io import read_mask_rgb_max, open_mask_reader_with_scan
+                checkpoint = lambda: service_checkpoint(batch, server_args, phase="streaming_mask_scan")
+                if scan_reuse_requested:
+                    maximum, sequential_mask_reader, scan_stats = open_mask_reader_with_scan(
+                        mask_path, width=width, height=height, num_frames=num_frames,
+                        read_into=os.environ.get("MGERASE_STREAMING_COPY_OPT") == "1",
+                        extract_red=os.environ.get("MGERASE_MASK_PIPE_R_ONLY") == "1",
+                        checkpoint=checkpoint,
+                    )
+                    batch.extra["mask_scan_reuse"] = dict(requested=True, **scan_stats)
+                else:
+                    maximum = read_mask_rgb_max(mask_path, width=width, height=height, num_frames=num_frames,
+                        checkpoint=checkpoint)
+                    batch.extra["mask_scan_reuse"] = {"requested": False, "reused": False, "maximum": maximum}
                 streaming_mask_threshold = maximum * float(params.mask_threshold) / 2.0
             sequential_video_reader = SequentialVideoReader(
                 video_path,
@@ -484,15 +498,19 @@ def prepare_runtime_context(
                 height=height,
                 pix_fmt="rgb24",
                 thread_count=decode_threads,
+                read_into=os.environ.get("MGERASE_STREAMING_COPY_OPT") == "1",
             )
-            sequential_mask_reader = SequentialVideoReader(
-                mask_path,
-                width=width,
-                height=height,
-                pix_fmt="rgb24" if params.streaming_cache_dtype == "uint8" else "gray",
-                squeeze_single_channel=True,
-                thread_count=decode_threads,
-            )
+            if sequential_mask_reader is None:
+                sequential_mask_reader = SequentialVideoReader(
+                    mask_path,
+                    width=width,
+                    height=height,
+                    pix_fmt="rgb24" if params.streaming_cache_dtype == "uint8" else "gray",
+                    squeeze_single_channel=True,
+                    thread_count=decode_threads,
+                    extract_red=(params.streaming_cache_dtype == "uint8" and os.environ.get("MGERASE_MASK_PIPE_R_ONLY") == "1"),
+                    read_into=os.environ.get("MGERASE_STREAMING_COPY_OPT") == "1",
+                )
             sequential_video_writer = (
                 SequentialVideoWriter(
                     output_file_path,

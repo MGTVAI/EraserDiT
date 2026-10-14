@@ -67,7 +67,12 @@ class WindowRuntimeTests(unittest.TestCase):
         def execute(stages, window, args):
             calls.append((window.extra['object_index'], window.extra['window_index']))
             window.crop_bbox = (0, 0, 32, 32)
-            window.crop_video_modified = (window.video + 16 / 255).clamp(0, 1)
+            # This CPU stub replaces preprocess + model execution. Match the
+            # retained uint8 upload contract before applying the synthetic edit.
+            video = window.video
+            if video.dtype == torch.uint8:
+                video = video.to(torch.float32).div(255.0)
+            window.crop_video_modified = (video + 16 / 255).clamp(0, 1)
             window.output = window.crop_video_modified
             return window
 
@@ -160,7 +165,7 @@ class WindowRuntimeTests(unittest.TestCase):
                     if streaming and cache_dtype == 'uint8':
                         from pipelines.runtime.io.streaming import ensure_window_cache_loaded
                         from utils.video_io import read_mask_rgb_array
-                        ensure_window_cache_loaded(context, SimpleNamespace(load_start=0, load_end=9))
+                        ensure_window_cache_loaded(context, SimpleNamespace(load_start=0, load_end=9, window_index=0))
                         expected_mask, _ = read_mask_rgb_array(params.mask_input_path, threshold_ratio=params.mask_threshold / 2)
                         np.testing.assert_array_equal(context.mask_frame_cache.slice(0, 9), expected_mask[:9])
                     run_windowed_runtime(**inputs)

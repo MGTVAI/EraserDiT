@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Source this file to enable the validated streaming CPU/data-path options.
+# Environment installation, device selection and model arguments remain caller-owned.
+export MGERASE_VIDEO_UINT8_GPU_NORMALIZE=1
+export MGERASE_VIDEO_UINT8_GPU_CLEAR_CACHE=1
+export MGERASE_PIPE_READ_THREADS=2
+export MGERASE_MASK_PIPE_R_ONLY=1
+export MGERASE_STREAMING_COPY_OPT=1
+export MGERASE_MASK_WINDOW_BUFFER_OPT=1
+export MGERASE_OUTPUT_UINT8_GPU_CONVERT=1
+export MGERASE_WRITER_HANDOFF_OPT=1
+export MGERASE_MASK_THRESHOLD_INPLACE=1
+export MGERASE_STYLE_UINT8_GPU_UPLOAD=1
+export MGERASE_MASK_DILATE_CAST_OPT=1
+export MGERASE_WINDOW_UINT8_VALIDATION_OPT=1
+export MGERASE_TEXT_SESSION_CACHE=1
+export MGERASE_MASK_SCAN_REUSE=1
+export MGERASE_FIRST_WINDOW_BORROW=1
+# Select the retained CPU decode path and clear stale withdrawn-experiment exports.
+unset MGERASE_VIDEO_DECODE_BACKEND MGERASE_WINDOW_PREFETCH MGERASE_WINDOW_RECLAIM_YOUNG_GC

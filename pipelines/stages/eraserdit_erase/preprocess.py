@@ -33,6 +33,7 @@ from pipelines.stages.eraserdit_erase._common import (
 )
 from models.adapters.eraserdit.preprocess import preprocess_eraserdit_window, compact_tail_infer_len
 from utils.windowing import infer_latent_frames
+from utils.video_io import video_input_to_float32, maybe_clear_video_upload_cache
 
 
 class EraserDiTErasePreprocessStage(PipelineStage):
@@ -49,7 +50,18 @@ class EraserDiTErasePreprocessStage(PipelineStage):
 
         # The runtime stores frames as [B, C, F, H, W]; the baseline works in
         # [F, C, H, W].
-        video = batch.video[0].permute(1, 0, 2, 3).to(device=device, dtype=torch.float32)
+        video_input = batch.video[0].permute(1, 0, 2, 3)
+        video = video_input_to_float32(video_input, device)
+        upload_cleanup = maybe_clear_video_upload_cache(video_input, video)
+        batch.extra["video_input_transfer"] = {
+            "input_dtype": str(video_input.dtype),
+            "input_device": str(video_input.device),
+            "input_bytes": int(video_input.numel() * video_input.element_size()),
+            "output_dtype": str(video.dtype),
+            "output_device": str(video.device),
+            "normalize_on_device": video_input.dtype == torch.uint8,
+            "cache_cleanup": upload_cleanup,
+        }
         mask = batch.mask[0].permute(1, 0, 2, 3).to(device=device, dtype=torch.float32)
         prefix_len = min(overlap_left, video.shape[0])
         new_frames = video.shape[0] - prefix_len

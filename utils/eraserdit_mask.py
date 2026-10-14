@@ -16,6 +16,8 @@ wrong and are deliberately preserved:
 
 from __future__ import annotations
 
+import os
+
 import torch
 import torch.nn.functional as F
 
@@ -62,6 +64,13 @@ def _gray_kernel(device: torch.device) -> torch.Tensor:
     )
 
 
+def _binarize_for_dilation(mask, threshold, dtype, *, cast_opt):
+    # The comparison is identical; only the intermediate 0/1 storage changes.
+    if cast_opt:
+        return (mask > threshold).to(dtype=dtype)
+    return torch.where(mask > threshold, 1, 0).to(dtype=dtype)
+
+
 def binarize_and_dilate(
     mask: torch.Tensor,
     *,
@@ -85,19 +94,27 @@ def binarize_and_dilate(
     half_h, half_w = ksize[0] // 2, ksize[1] // 2
     span = ksize[0] + ksize[1] - 1
 
-    mask = torch.where(mask > (255 / 2 * threshold), 1, 0).to(torch.float16)
+    cast_opt = os.environ.get("MGERASE_MASK_DILATE_CAST_OPT") == "1"
+    mask = _binarize_for_dilation(
+        mask, 255 / 2 * threshold, torch.float16, cast_opt=cast_opt
+    )
     max_approximate = 1
     for iteration in range(dilate_iter):
         mask = F.conv2d(
             mask, kernel, stride=1, padding=(half_h, half_w), groups=mask.shape[1]
         )
         max_approximate *= span
+        output_dtype = torch.uint8 if iteration == (dilate_iter - 1) else torch.float16
         if enable_approximate:
             if iteration == (dilate_iter - 1) or (span * max_approximate) > 64000:
-                mask = torch.where(mask > (max_approximate * threshold), 1, 0)
+                mask = _binarize_for_dilation(
+                    mask, max_approximate * threshold, output_dtype, cast_opt=cast_opt
+                )
                 max_approximate = 1
         else:
-            mask = torch.where(mask > (span * threshold), 1, 0)
+            mask = _binarize_for_dilation(
+                mask, span * threshold, output_dtype, cast_opt=cast_opt
+            )
         mask = mask.to(torch.uint8) if iteration == (dilate_iter - 1) else mask.to(torch.float16)
     return mask
 
