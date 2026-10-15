@@ -49,6 +49,25 @@ CUDA_VISIBLE_DEVICES='' ERASERDIT_TEST_TWO_GPU=0 ERASERDIT_TEST_INT8=0 \
 | `test_mesh_gpu.py` | 显式两/四卡 Transformer、异常恢复和可选真实 VAE |
 | `test_quantization.py` | 层覆盖及组合约束，INT8/FP8 GPU 数值验证和融合 GEMM 对照 |
 
+## CPU 数据路径优化回归
+
+无需模型，使用临时媒体或小型模拟张量；FFmpeg 测试检查帧序和编码结果。
+下列命令显式隐藏 GPU，CUDA 数值用例将跳过，跳过不代表 GPU 验证通过：
+
+```bash
+CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 uv run --no-project python -m unittest \
+  tests.test_uint8_gpu_video_input tests.test_uint8_video_cache_cleanup \
+  tests.test_decode_routes tests.test_streaming_copy_opt tests.test_cpu_mask_buffer \
+  tests.test_writer_handoff_opt tests.test_mask_threshold_inplace tests.test_prepost_opt \
+  tests.test_text_scan_reuse tests.test_first_window_borrow \
+  tests.test_runtime_boundaries.WindowRuntimeTests tests.test_runtime_cleanup -v
+```
+
+覆盖 uint8 转换、清理条件、双管道/R 通道、短读/EOF、缓存和 writer 所有权、
+掩码构造/阈值、验证回退、文本缓存失效、扫描复用、首窗原始尾部独立及窗口生命周期。
+指定已分配单卡后，可运行同一组命令中的专项文件以启用小张量 CUDA 数值检查。
+完整模型复测见 [CPU 数据路径优化](../docs/cpu_pipeline_optimization.md#复现入口)。
+
 ## GPU 回归
 
 在已分配的设备上执行。单卡会自动运行 CUDA 可用性控制的卸载/缓存测试；

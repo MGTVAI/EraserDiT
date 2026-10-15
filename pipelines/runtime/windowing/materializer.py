@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from copy import deepcopy
 from dataclasses import asdict
 
@@ -26,6 +28,7 @@ from utils.video_io import (
     ChunkedFrameCache,
     TensorFrameCache,
     frames_uint8_to_tensor,
+    frames_uint8_to_cpu_tensor,
 )
 from utils.windowing import WindowSpec
 
@@ -118,6 +121,7 @@ def materialize_window_batch(
     window_bbox: tuple[int, int, int, int] | None = None,
     aligned_crop_bbox: tuple[int, int, int, int] | None = None,
 ) -> Req:
+    borrowed_source = False
     if _is_windowed_runtime_mode(context.runtime_mode):
         ensure_window_cache_loaded(context, spec)
         source_video_cache = video_cache or context.video_frame_cache
@@ -161,26 +165,57 @@ def materialize_window_batch(
                 and object_state.overlap_cache.end_index
                 == spec.load_start + spec.overlap_left
             ):
-                overlap_frames = object_state.overlap_cache.slice(
-                    spec.load_start,
-                    spec.load_start + spec.overlap_left,
-                )
-                if spec.load_start + spec.overlap_left < spec.load_end:
-                    new_frames = source_video_cache.slice(
-                        spec.load_start + spec.overlap_left,
-                        spec.load_end,
+                if (os.environ.get("MGERASE_STREAMING_COPY_OPT") == "1"
+                    and isinstance(source_video_cache, ChunkedFrameCache)
+                    and isinstance(object_state.overlap_cache, ChunkedFrameCache)):
+                    window_frames = np.empty(
+                        (spec.load_end - spec.load_start, *source_video_cache.shape_tail),
+                        dtype=source_video_cache.dtype,
                     )
-                    window_frames = np.concatenate([overlap_frames, new_frames], axis=0)
+                    object_state.overlap_cache.slice_into(
+                        spec.load_start, spec.load_start + spec.overlap_left,
+                        window_frames[:spec.overlap_left],
+                    )
+                    source_video_cache.slice_into(
+                        spec.load_start + spec.overlap_left, spec.load_end,
+                        window_frames[spec.overlap_left:],
+                    )
                 else:
-                    window_frames = overlap_frames
+                    overlap_frames = object_state.overlap_cache.slice(
+                        spec.load_start,
+                        spec.load_start + spec.overlap_left,
+                    )
+                    if spec.load_start + spec.overlap_left < spec.load_end:
+                        new_frames = source_video_cache.slice(
+                            spec.load_start + spec.overlap_left,
+                            spec.load_end,
+                        )
+                        window_frames = np.concatenate([overlap_frames, new_frames], axis=0)
+                    else:
+                        window_frames = overlap_frames
             else:
-                window_frames = source_video_cache.slice(spec.load_start, spec.load_end)
+                window_frames = None
+                if (os.environ.get("MGERASE_FIRST_WINDOW_BORROW") == "1"
+                    and os.environ.get("MGERASE_VIDEO_UINT8_GPU_NORMALIZE") == "1"
+                    and context.window_runtime_mode == "streaming" and context.object_count == 1
+                    and spec.window_index == 0 and spec.overlap_left == 0
+                    and spec.future_length == 0
+                    and isinstance(source_video_cache, ChunkedFrameCache)):
+                    window_frames = source_video_cache.borrow_head(spec.load_start, spec.load_end)
+                    borrowed_source = window_frames is not None
+                if window_frames is None:
+                    window_frames = source_video_cache.slice(spec.load_start, spec.load_end)
         else:
             window_frames = source_video_cache.slice(spec.load_start, spec.load_end)
         if not isinstance(source_video_cache, TensorFrameCache):
-            window_video = (
-                frames_uint8_to_tensor(window_frames).permute(1, 0, 2, 3).unsqueeze(0)
+            convert = (
+                frames_uint8_to_cpu_tensor
+                if (os.environ.get("MGERASE_VIDEO_UINT8_GPU_NORMALIZE") == "1"
+                    and context.window_runtime_mode == "streaming"
+                    and object_state is not None)
+                else frames_uint8_to_tensor
             )
+            window_video = convert(window_frames).permute(1, 0, 2, 3).unsqueeze(0)
         if window_mask is None:
             window_mask = materialize_window_mask(
                 context=context,
@@ -282,6 +317,12 @@ def materialize_window_batch(
         source_video_cache, TensorFrameCache
     ):
         window_batch.extra["window_source_frames_uint8"] = window_frames
+        window_batch.extra["window_source_borrowed"] = borrowed_source
+        window_batch.extra["first_window_borrow"] = {
+            "requested": os.environ.get("MGERASE_FIRST_WINDOW_BORROW") == "1",
+            "applied": borrowed_source,
+            "avoided_window_copy_bytes": int(window_frames.nbytes) if borrowed_source else 0,
+        }
     if context.memory_phase_controller is not None:
         window_batch.extra["memory_phase_controller"] = (
             context.memory_phase_controller

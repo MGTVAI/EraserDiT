@@ -274,7 +274,8 @@ def commit_window_to_object_output(
             "window_source_frames_uint8",
             None,
         )
-        source_is_exclusive = window_source_frames is not None
+        borrowed = bool(window_batch.extra.pop("window_source_borrowed", False))
+        source_is_exclusive = window_source_frames is not None and not borrowed
     if window_source_frames is None:
         if (
             spec.overlap_left > 0
@@ -322,6 +323,19 @@ def commit_window_to_object_output(
             f"dtype={getattr(window_source_frames, 'dtype', None)} "
             f"input_len={spec.input_len}"
         )
+
+    if not bf16_object_chain and borrowed:
+        # Only a single-object first window may transfer the decoded head.
+        # Keep original overlap/future raw frames in independent cache storage.
+        retained_bytes = input_cache.detach_borrowed_head(window_source_frames, stable_end)
+        source_is_exclusive = True
+        context.record_runtime_transfer("borrow_retained_tail_copy", retained_bytes)
+        context.record_runtime_transfer("borrow_avoided_window_copy", int(window_source_frames.nbytes))
+        context.window_history.append({
+            "event": "first_window_borrow", "window_index": spec.window_index,
+            "applied": True, "avoided_window_copy_bytes": int(window_source_frames.nbytes),
+            "retained_tail_copy_bytes": retained_bytes, "retained_from": stable_end,
+        })
 
     original_overlap_frames = None
     if spec.overlap_left > 0:

@@ -8,6 +8,8 @@ denoising stage performs the same split explicitly).
 
 from __future__ import annotations
 
+import os
+
 import torch
 
 from config.server_args import ServerArgs
@@ -26,6 +28,24 @@ class EraserDiTEraseTextEncodingStage(PipelineStage):
         super().__init__()
         self._text_encoder = text_encoder
         self._tokenizer = tokenizer
+        # One detached CPU prompt pair per resident pipeline/session. Existing
+        # per-window caches remain authoritative within each request.
+        self._session_text_cache = None
+
+    def close(self):
+        self._session_text_cache = None
+
+    def _session_cache_signature(self, signature):
+        encoder, tokenizer = self._text_encoder, self._tokenizer
+        versions = tuple((id(p), p._version, p.dtype) for p in encoder.parameters())
+        tokenizer_config = (
+            repr(getattr(tokenizer, "special_tokens_map", None)),
+            repr(getattr(tokenizer, "model_max_length", None)),
+            repr(tokenizer.get_added_vocab()) if hasattr(tokenizer, "get_added_vocab") else None,
+        )
+        return signature + (versions, tokenizer_config,
+            torch.are_deterministic_algorithms_enabled(),
+            torch.backends.cuda.matmul.allow_tf32, torch.backends.cudnn.allow_tf32)
 
     def _t5_prompt_embeds(
         self,
@@ -140,11 +160,27 @@ class EraserDiTEraseTextEncodingStage(PipelineStage):
             signature=signature,
             device=device,
         )
+        requested = os.environ.get("MGERASE_TEXT_SESSION_CACHE") == "1"
+        enabled = requested and not text_encoder.training
         if restored is not None:
+            batch.extra["text_session_cache"] = {
+                "requested": requested, "hit": False, "source": "existing_request_cache",
+            }
             batch.max_sequence_length = max_sequence_length
             return restored
 
-        return self._encode_uncached(
+        session_signature = self._session_cache_signature(signature) if enabled else None
+        cached = self._session_text_cache
+        if enabled and cached is not None and cached[0] == session_signature:
+            batch.max_sequence_length = max_sequence_length
+            batch.extra["text_session_cache"] = {
+                "requested": True, "hit": True, "source": "session",
+                "cache_bytes": sum(v.numel() * v.element_size() for v in cached[1]),
+                "cache_device": "cpu",
+            }
+            return self._install_cached_embeddings(batch, cached[1], device=device, source="session")
+
+        result = self._encode_uncached(
             batch,
             server_args,
             prompt=prompt,
@@ -152,6 +188,16 @@ class EraserDiTEraseTextEncodingStage(PipelineStage):
             max_sequence_length=max_sequence_length,
             signature=signature,
         )
+        if enabled:
+            values = get_task_state(batch).extra["text_encoding"][1]
+            self._session_text_cache = (session_signature, values)
+        batch.extra["text_session_cache"] = {
+            "requested": requested, "hit": False, "source": "computed",
+            "stored": enabled, "training": text_encoder.training,
+            "cache_bytes": sum(v.numel() * v.element_size() for v in values) if enabled else 0,
+            "cache_device": "cpu" if enabled else None,
+        }
+        return result
 
     @offload_component("text_encoder")
     def _encode_uncached(

@@ -17,6 +17,8 @@ Two behaviours are load-bearing and must not be "cleaned up":
 
 from __future__ import annotations
 
+import os
+
 import torch
 
 from utils.colorfix_wmask import adaptive_instance_normalization_mask
@@ -118,6 +120,18 @@ def _channel_stats(value: torch.Tensor, valid: torch.Tensor | None = None):
     return mean[..., None, None], std[..., None, None]
 
 
+def _style_to_device(style: torch.Tensor, device: torch.device) -> torch.Tensor:
+    """Optionally transfer CPU source pixels before their FP32 conversion.
+
+    Normalisation remains at the caller, in the original CUDA operation order.
+    Other input types retain their existing transfer path.
+    """
+    if (os.environ.get("MGERASE_STYLE_UINT8_GPU_UPLOAD") == "1"
+            and style.device.type == "cpu" and style.dtype == torch.uint8):
+        return style.to(device=device).to(dtype=torch.float32)
+    return style.to(device=device, dtype=torch.float32)
+
+
 @torch.no_grad()
 def _rgb_per_channel_cuda(generated, style, mask_ori, *, out=None):
     if out is None:
@@ -131,7 +145,7 @@ def _rgb_per_channel_cuda(generated, style, mask_ori, *, out=None):
         for start in range(0, generated.shape[0], chunk_frames):
             stop = start + chunk_frames
             content = quantize_like_baseline(generated[start:stop].float())
-            source = style[start:stop].to(device=generated.device, dtype=torch.float32)
+            source = _style_to_device(style[start:stop], generated.device)
             if style.dtype == torch.uint8:
                 source = source / 255.0
             # Preserve bool(1 - raw_mask): only the exact value 1 is excluded.
