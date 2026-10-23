@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .config import (
+    CROSS_Q_RMSNORM_NATIVE_OP,
     GATED_RESIDUAL_OP,
     QK_RMSNORM_ROPE_OP,
     QK_RMSNORM_ROPE_FAST_OP,
@@ -50,6 +51,8 @@ class OperatorFusionDecision:
 # Runtime checks still enforce layout, dtype, width and device requirements;
 # the global backend default remains ``disabled``.
 _REGISTRY = {
+    CROSS_Q_RMSNORM_NATIVE_OP: OperatorFusionRegistration(
+        name=CROSS_Q_RMSNORM_NATIVE_OP, signed_sp_degrees=frozenset({1})),
     QK_RMSNORM_ROPE_NATIVE_OP: OperatorFusionRegistration(
         name=QK_RMSNORM_ROPE_NATIVE_OP, signed_sp_degrees=frozenset({1, 2, 4})),
     RMSNORM_ADALN_NATIVE_OP: OperatorFusionRegistration(

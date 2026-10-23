@@ -70,6 +70,9 @@ CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 uv run --no-project python -m unittest
 
 ## GPU 回归
 
+Q6a/b/c 的策略与专用 GPU 检查见 [Q6 预设](../docs/q6_presets.md#测试)，
+使用 `ERASERDIT_TEST_Q6=1` 单独启用，不影响默认测试的 GPU 占用。
+
 在已分配的设备上执行。单卡会自动运行 CUDA 可用性控制的卸载/缓存测试；
 INT8 需额外开启开关：
 

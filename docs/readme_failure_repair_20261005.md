@@ -82,11 +82,11 @@ V0–V5 无外部 GPU 进程污染、采样错误或冻结源码变化；并行�
 从仓库根目录执行，选择全新结果目录；V1/V3 用空闲双卡，V5 用空闲四卡。
 
 ```bash
-uv run --no-project python -m entrypoints.cli.benchmark_l40s \
+uv run --no-project python -m scripts.benchmark_l40s \
   --profile v1 --devices 0,1 --repeats 1 --run-dir results/my-vae2-cfg2
-uv run --no-project python -m entrypoints.cli.benchmark_l40s \
+uv run --no-project python -m scripts.benchmark_l40s \
   --profile v3 --devices 0,1 --repeats 1 --run-dir results/my-vae2-sp2
-uv run --no-project python -m entrypoints.cli.benchmark_l40s \
+uv run --no-project python -m scripts.benchmark_l40s \
   --profile v5 --devices 0,1,2,3 --repeats 1 --run-dir results/my-vae4
 ```
 

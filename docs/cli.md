@@ -389,7 +389,7 @@ batch 1、32640 或 10200 token。其他环境、模型、形状或激活 dtype 
 ```bash
 # 双卡完整视频基准；四卡改为 sp4_aligned 和 0,1,2,3。
 MGERASE_ULYSSES_HEAD_CHUNKS=4 MGERASE_ULYSSES_OUTPUT_OVERLAP=1 \
-uv run --no-project python -m entrypoints.cli.benchmark_l40s \
+uv run --no-project python -m scripts.benchmark_l40s \
   --run-dir outputs/sp2_aligned --profile sp2_aligned --devices 0,1 --repeats 5
 ```
 

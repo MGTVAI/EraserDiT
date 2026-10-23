@@ -119,6 +119,8 @@ class EraserDiTErasePipeline(ComposedPipelineBase):
                                           execution_device=server_args.device, mode=server_args.transformer_quantization)
             server_args.effective_transformer_quantization = report["mode"]
             server_args.transformer_quantization_report = report
+        from models.dits.q6_extensions import configure_q6_extensions
+        configure_q6_extensions(modules["transformer"], server_args)
         self._initialization_memory["after_loading"] = memory_observation(server_args.device)
         return modules
 

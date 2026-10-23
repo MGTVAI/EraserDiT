@@ -6,6 +6,7 @@ Tensorwise mode directly produces scaled BF16 output with fused bias.
 No BF16 weight copy or BF16 GEMM fallback is retained.
 """
 import torch
+from layers.audited_allocations import empty_like as audited_empty_like, scaled_mm as audited_scaled_mm
 from torch import nn
 import triton
 import triton.language as tl
@@ -94,7 +95,7 @@ def quantize_fp8_tensor(x, gelu_lut=None):
 
 def _quantize_activation(x, gelu_lut, tensorwise, static_scale=0.):
     if static_scale:
-        quant = torch.empty_like(x, dtype=torch.float8_e4m3fn)
+        quant = audited_empty_like(x, dtype=torch.float8_e4m3fn, label='ffn_static_quant')
         _quant_fp8_static[(triton.cdiv(x.numel(), 8192),)](
             x, quant, x.numel(), 8192, 1. / static_scale,
             gelu_lut, gelu_lut is not None, num_warps=8)
@@ -188,8 +189,8 @@ class NativeFp8Linear(nn.Module):
             quantize = _compiled_quantize_activation if torch.compiler.is_compiling() else _quantize_activation
             quant, scale = quantize(x, self.gelu_lut, self.tensorwise)
         if self.tensorwise:
-            output = torch._scaled_mm(
-                quant, self.weight_fp8.t(), scale_a=scale, scale_b=self.weight_scale,
+            output = audited_scaled_mm(
+                quant, self.weight_fp8.t(), label='ffn_static_gemm', audited=self.static_activation, scale_a=scale, scale_b=self.weight_scale,
                 bias=self.bias, out_dtype=torch.bfloat16, use_fast_accum=self.use_fast_accum)
             if not torch.compiler.is_compiling():
                 self.calls += 1

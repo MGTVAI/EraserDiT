@@ -40,7 +40,7 @@ L40S 收敛工具直接调用正式 CLI，记录源码、依赖、输入指纹�
 进程树采样。输出目录必须不存在；不自动抢占已被其他计算进程使用的 GPU。
 
 ```bash
-uv run --no-project python -m entrypoints.cli.benchmark_l40s \
+uv run --no-project python -m scripts.benchmark_l40s \
   --run-dir results/l40s_bf16_new --profile bf16 --devices 0 --repeats 5
 # 双卡 / 四卡分别选择 cfg2 / cfg2_sp2，并提供对应数量的设备。
 # 快速单卡选择 fast_offload；Sage FP8 扩展需事先安装或用 --sage-source 指定。

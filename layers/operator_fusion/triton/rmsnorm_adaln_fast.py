@@ -1,5 +1,6 @@
 """Full-width non-affine RMSNorm + AdaLN with local BF16 boundaries."""
 import torch
+from layers.audited_allocations import empty_like as audited_empty_like
 import triton
 import triton.language as tl
 
@@ -18,7 +19,7 @@ def _kernel(X, SCALE, SHIFT, Y, WIDTH: tl.constexpr, EPS: tl.constexpr):
 
 
 def triton_rmsnorm_adaln_fast(hidden, scale, shift, eps):
-    output = torch.empty_like(hidden)
+    output = audited_empty_like(hidden, label='adaln_output')
     _kernel[(hidden.numel() // hidden.shape[-1],)](
         hidden, scale, shift, output, WIDTH=hidden.shape[-1], EPS=eps,
         num_warps=4, enable_fp_fusion=False,
