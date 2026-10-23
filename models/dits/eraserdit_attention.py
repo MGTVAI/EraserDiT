@@ -30,7 +30,8 @@ from layers.attention.backends.sage_attn import SageAttentionBackend
 from layers.attention.backends.sage_fp8 import SageFP8AttentionBackend
 from layers.attention.backends.sdpa import SDPABackend
 from layers.attention.selector import resolve_attention_backend
-from layers.operator_fusion.config import QK_RMSNORM_ROPE_OP, QK_RMSNORM_ROPE_FAST_OP, QK_RMSNORM_ROPE_NATIVE_OP
+from layers.operator_fusion.config import QK_RMSNORM_ROPE_OP, QK_RMSNORM_ROPE_FAST_OP, QK_RMSNORM_ROPE_NATIVE_OP, CROSS_Q_RMSNORM_NATIVE_OP
+from layers.operator_fusion.cross_q_rmsnorm import apply_fused_cross_q_rmsnorm
 from layers.operator_fusion.qk_rmsnorm_rope import apply_fused_qk_rmsnorm_rope
 from layers.operator_fusion.registry import get_operator_fusion_decision
 from config.server_args import get_global_server_args
@@ -244,9 +245,12 @@ class EraserDiTAttentionProcessor:
         hidden_states: torch.Tensor,
         image_rotary_emb: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
     ) -> torch.Tensor:
-        query = attn.to_q(hidden_states)
-        key = attn.to_k(hidden_states)
-        value = attn.to_v(hidden_states)
+        if hasattr(attn, 'qkv_fp8'):
+            query, key, value = attn.qkv_fp8(hidden_states)
+        else:
+            query = attn.to_q(hidden_states)
+            key = attn.to_k(hidden_states)
+            value = attn.to_v(hidden_states)
 
         if {QK_RMSNORM_ROPE_OP, QK_RMSNORM_ROPE_FAST_OP, QK_RMSNORM_ROPE_NATIVE_OP}.intersection(
             self.operator_fusion_decision.effective_ops
@@ -311,7 +315,10 @@ class EraserDiTAttentionProcessor:
         # The reference processor applies ``norm_q``/``norm_k`` unconditionally,
         # so cross-attention is normalised too.  Only RoPE is self-attention
         # specific (``attn2`` is always called with ``image_rotary_emb=None``).
-        query = attn.norm_q(query)
+        if CROSS_Q_RMSNORM_NATIVE_OP in self.operator_fusion_decision.effective_ops:
+            query = apply_fused_cross_q_rmsnorm(query, attn.norm_q, decision=self.operator_fusion_decision)
+        else:
+            query = attn.norm_q(query)
         if text_cache is None:
             key = attn.norm_k(key)
         query = query.unflatten(2, (attn.heads, -1)).transpose(1, 2)

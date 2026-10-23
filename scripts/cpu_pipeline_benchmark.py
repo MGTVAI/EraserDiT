@@ -4,8 +4,12 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path.cwd()))
-from entrypoints.cli import benchmark_l40s
-from cpu_pipeline_config import benchmark_environment
+if __package__:
+    from . import benchmark_l40s
+    from .cpu_pipeline_config import benchmark_environment
+else:
+    import benchmark_l40s
+    from cpu_pipeline_config import benchmark_environment
 original_popen = subprocess.Popen
 observer = Path(__file__).with_name("cpu_pipeline_audit.py")
 
@@ -18,10 +22,10 @@ def launched(command, *args, **kwargs):
     return original_popen(command, *args, **kwargs)
 
 
-def main():
+def main(*, extra_env=None):
     subprocess.Popen = launched
     try:
-        benchmark_l40s.main(extra_env=benchmark_environment())
+        benchmark_l40s.main(extra_env={**benchmark_environment(), **(extra_env or {})})
     finally:
         subprocess.Popen = original_popen
 

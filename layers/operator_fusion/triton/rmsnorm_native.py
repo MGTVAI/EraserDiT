@@ -5,6 +5,7 @@ torch.mean retains its reduction order. Epsilon addition and reciprocal square
 root also stay native. Every eager BF16 rounding boundary remains explicit.
 """
 import torch
+from layers.audited_allocations import empty_like as audited_empty_like
 import triton
 import triton.language as tl
 
@@ -22,8 +23,8 @@ def _square(X, Y, SX, SY, N: tl.constexpr, PAIRED: tl.constexpr, BLOCK: tl.const
 
 
 def _inverse_rms(value, eps, other=None):
-    squared = torch.empty_like(value, dtype=torch.float32)
-    other_squared = torch.empty_like(other, dtype=torch.float32) if other is not None else squared
+    squared = audited_empty_like(value, dtype=torch.float32, label='rms_square')
+    other_squared = audited_empty_like(other, dtype=torch.float32, label='rms_other_square') if other is not None else squared
     _square[(triton.cdiv(value.numel(), 1024),)](
         value, value if other is None else other, squared, other_squared,
         value.numel(), other is not None, 1024, num_warps=4)

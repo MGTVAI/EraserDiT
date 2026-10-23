@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from entrypoints.cli.benchmark_l40s import main
+from scripts.benchmark_l40s import main
 from entrypoints.cli.erase_eraserdit import _build_parser, _build_server_args
 from memory.validation import validate_memory_config
 
@@ -19,7 +19,8 @@ class L40SProfileTests(unittest.TestCase):
         with patch('sys.argv', argv):
             main()
         manifest = json.loads((directory / 'manifest.json').read_text())
-        with patch('torch.cuda.device_count', return_value=degree):
+        with patch('torch.cuda.device_count', return_value=degree), \
+             patch('torch.cuda.is_available', return_value=True):
             args = _build_server_args(_build_parser().parse_args(manifest['command'][4:]))
             validate_memory_config(args)
         return args, manifest
@@ -85,7 +86,9 @@ class L40SProfileTests(unittest.TestCase):
                 topology = SimpleNamespace(tp=1, ring=1, replicas=1, sp=degree)
                 validate_nccl_fusion(args, topology)
                 args.operator_fusion_ops = 'qk_rmsnorm_rope_fast'
-                with self.assertRaisesRegex(ValueError, 'native reductions only'):
+                validate_nccl_fusion(args, topology)
+                args.operator_fusion_ops = 'cross_q_rmsnorm_native'
+                with self.assertRaisesRegex(ValueError, 'unsupported NCCL'):
                     validate_nccl_fusion(args, topology)
 
 

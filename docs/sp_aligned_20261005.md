@@ -94,7 +94,7 @@ uv run --no-project python -m entrypoints.cli.benchmark_dit \
 
 # 完整请求；目录必须不存在。SP4 改为 sp4_aligned 和四张可见物理卡。
 MGERASE_ULYSSES_HEAD_CHUNKS=4 MGERASE_ULYSSES_OUTPUT_OVERLAP=1 \
-uv run --no-project python -m entrypoints.cli.benchmark_l40s \
+uv run --no-project python -m scripts.benchmark_l40s \
   --run-dir outputs/sp2_aligned_video --profile sp2_aligned --devices 0,1 --repeats 5
 ```
 

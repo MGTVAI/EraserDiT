@@ -4,6 +4,7 @@ FP32 reduction order and RoPE FMA may differ from eager PyTorch. Preserve
 BF16 boundaries before/after affine weights to limit accumulated model error.
 """
 import torch
+from layers.audited_allocations import empty_like as audited_empty_like
 import triton
 import triton.language as tl
 
@@ -34,7 +35,7 @@ def _kernel(Q, K, QW, KW, COS, SIN, OQ, OK, WIDTH: tl.constexpr, EPS: tl.constex
 
 
 def triton_qk_rmsnorm_rope_fast(query, key, query_weight, key_weight, cos, sin, eps):
-    out_q, out_k = torch.empty_like(query), torch.empty_like(key)
+    out_q, out_k = audited_empty_like(query, label='qk_query'), audited_empty_like(key, label='qk_key')
     _kernel[(query.numel() // query.shape[-1],)](
         query, key, query_weight, key_weight, cos, sin, out_q, out_k,
         WIDTH=query.shape[-1], EPS=eps, num_warps=4,

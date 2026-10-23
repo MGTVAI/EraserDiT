@@ -31,7 +31,7 @@ uv run --no-project python -m entrypoints.cli.benchmark_dit \
 
 # 完整请求；四卡使用 sp4_native_rms 和 --devices 0,1,2,3。
 MGERASE_ULYSSES_HEAD_CHUNKS=4 MGERASE_ULYSSES_OUTPUT_OVERLAP=1 \
-uv run --no-project python -m entrypoints.cli.benchmark_l40s \
+uv run --no-project python -m scripts.benchmark_l40s \
   --run-dir outputs/sp2_native_video --profile sp2_native_rms --devices 0,1 --repeats 5
 ```
 

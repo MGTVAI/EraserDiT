@@ -5,6 +5,8 @@ from torch import nn
 
 
 def validate_quantization(args, batch=None):
+    from config.q6_extensions import validate_q6_extensions
+    validate_q6_extensions(args)
     mode = getattr(args, 'transformer_quantization', 'none')
     if mode == 'none':
         return
@@ -144,7 +146,8 @@ def runtime_report(model):
     from layers.quantization.eraserdit_int8 import NativeInt8Linear
     from layers.quantization.eraserdit_fp8 import NativeFp8Linear
     modules = [m for m in model.modules() if isinstance(m, (NativeInt8Linear, NativeFp8Linear))]
-    return dict(base,runtime_call_count=sum(m.calls for m in modules),
+    from models.dits.q6_extensions import runtime_report as extension_report
+    return dict(base,q6_extensions=extension_report(model),runtime_call_count=sum(m.calls for m in modules),
                 runtime_counts_include_compiled=False,
                 fused_gemm_call_count=sum(getattr(m, "fused_calls", 0) for m in modules),
                 fused_gelu_call_count=sum(getattr(m, "gelu_calls", 0) for m in modules),

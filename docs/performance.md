@@ -103,7 +103,7 @@ CPU 与启用梯度的调用沿用原生 padding。GEMM 形状、行偏移与计
 
 ```bash
 MGERASE_ULYSSES_HEAD_CHUNKS=4 MGERASE_ULYSSES_OUTPUT_OVERLAP=1 \
-uv run --no-project python -m entrypoints.cli.benchmark_l40s \
+uv run --no-project python -m scripts.benchmark_l40s \
   --run-dir outputs/sp2_optimized --profile m2 --devices 0,1 --repeats 5
 ```
 

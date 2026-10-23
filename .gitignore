@@ -92,6 +92,7 @@ lmms-eval/
 *.log
 *.jsonl
 *.json
+!config/calibration/q6_qkv_113000356_seed42.json
 !python/validation/fixtures/ltx095_t5_quant_prompt_suite.json
 *.csv
 *.png
