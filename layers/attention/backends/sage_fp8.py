@@ -124,6 +124,11 @@ class SageFP8AttentionImpl(AttentionImpl):
         self.pv_accum_dtype = pv_accum_dtype
         self.qk_quant_gran = qk_quant_gran
         self.kernel = kernel
+        self.peripheral = None
+        from config.q6_extensions import q6_extensions
+        if q6_extensions().sage_peripheral:
+            from .sage_peripheral import SagePeripheral
+            self.peripheral = SagePeripheral()
         self.causal = causal
         self.softmax_scale = softmax_scale
         self.call_count = 0
@@ -153,6 +158,8 @@ class SageFP8AttentionImpl(AttentionImpl):
             "cross_attention_backend": "torch_sdpa",
             "fallback_count": 0,
             "call_count": self.call_count,
+            "peripheral_fused_calls": self.peripheral.calls if self.peripheral else 0,
+            "peripheral_fallbacks": self.peripheral.fallbacks if self.peripheral else 0,
             "failure_count": self.failure_count,
             "dependency_fingerprints": [
                 dict(item) for item in self._dependency_fingerprints
@@ -173,6 +180,14 @@ class SageFP8AttentionImpl(AttentionImpl):
                 "arbitrary attention mask is unsupported",
             )
         try:
+            if self.peripheral is not None:
+                if (not self.causal and self.pv_accum_dtype == 'fp32+fp32'
+                        and self.qk_quant_gran == 'per_thread'
+                        and self.peripheral.supported(query, key, value)):
+                    output = self.peripheral(query, key, value, self.softmax_scale)
+                    self.call_count += 1
+                    return output
+                self.peripheral.fallbacks += 1
             output = self.kernel(
                 query.contiguous(),
                 key.contiguous(),

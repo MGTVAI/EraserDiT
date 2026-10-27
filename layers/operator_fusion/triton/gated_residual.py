@@ -1,5 +1,6 @@
 """Out-of-place residual update; preserves the intermediate BF16 product."""
 import torch
+from layers.audited_allocations import empty_like as audited_empty_like
 import triton
 import triton.language as tl
 
@@ -21,7 +22,7 @@ def _gated_residual_kernel(H, U, G, O, N: tl.constexpr, WIDTH: tl.constexpr,
 
 
 def triton_gated_residual(hidden, update, gate):
-    output = torch.empty_like(hidden)
+    output = audited_empty_like(hidden, label='gated_residual_output')
     _gated_residual_kernel[(triton.cdiv(hidden.numel(), 1024),)](
         hidden, update, gate, output, hidden.numel(), hidden.shape[-1],
         hidden.shape[1], gate.stride(0), BLOCK=1024, num_warps=4,
