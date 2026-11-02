@@ -164,6 +164,7 @@ HTTP 请求、允许读取的本地路径及任务管理见 [服务API](docs/ser
 | [CLI说明](docs/cli.md) / [服务API](docs/service_api.md) | 参数、任务文件、服务接口 |
 | [S4 配置与验证](docs/cpu_pipeline_optimization.md) | S4 配置、开关与完整复测 |
 | [Q6a / Q6b / Q6c 累计配置](docs/q6_presets.md) | Cross-Q/Sage 外围融合、定点减少填充、QKV FP8/FFN 输出融合；默认关闭，含最终串行结果与质量说明 |
+| [EraserDiT 单卡推理优化记录](docs/EraserDiT%20单卡推理优化记录.md) | 从 profiler 定位瓶颈到算子融合与 FP8 量化，记录优化判断、优化心得与实现细节 |
 | [性能配置](docs/performance.md) | 卸载、attention、融合、缓存、量化与并行边界 |
 | [架构](docs/architecture.md) / [配置](config/README.md) | 代码组织、执行流程与配置职责 |
 | [文档索引](docs/README.md) / [路线图](docs/roadmap.md) | 历史实验与后续方向 |
