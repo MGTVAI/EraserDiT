@@ -5,18 +5,19 @@ from scripts.cpu_pipeline_config import S4_ENV
 
 COMMON = dict(MGERASE_Q6_SAGE_PERIPHERAL='0', MGERASE_Q6_TARGETED_FILL='0',
               MGERASE_Q6_QKV_CALIBRATION='', MGERASE_Q6_FFN_EPILOGUE='0',
+              MGERASE_Q6_MASK_STA='0', MGERASE_Q6_MASK_STA_LIBRARY='',
               ERASERDIT_DETERMINISTIC='1', CUBLAS_WORKSPACE_CONFIG=':4096:8')
 
 
 def preset_environment(profile):
-    if profile not in ('q6', 'q6a', 'q6b', 'q6c'):
-        raise ValueError('select q6, q6a, q6b or q6c')
+    if profile not in ('q6', 'q6a', 'q6b', 'q6c', 'q6c_sta'):
+        raise ValueError('select q6, q6a, q6b, q6c or q6c_sta')
     env = {**S4_ENV, **COMMON}
     if profile != 'q6':
         env['MGERASE_Q6_SAGE_PERIPHERAL'] = '1'
-    if profile in ('q6b', 'q6c'):
+    if profile in ('q6b', 'q6c', 'q6c_sta'):
         env['MGERASE_Q6_TARGETED_FILL'] = '1'
-    if profile == 'q6c':
+    if profile in ('q6c', 'q6c_sta'):
         path = Path(__file__).resolve().parents[1]/'config/calibration/q6_qkv_113000356_seed42.json'
         env['MGERASE_Q6_QKV_CALIBRATION'] = str(path)
         env['MGERASE_Q6_FFN_EPILOGUE'] = '1'
@@ -24,4 +25,10 @@ def preset_environment(profile):
         if not Path(library).is_file():
             raise ValueError('set MGERASE_Q6_FFN_LIBRARY to the built optional adapter')
         env['MGERASE_Q6_FFN_LIBRARY'] = str(Path(library).resolve())
+    if profile == 'q6c_sta':
+        library = os.environ.get('MGERASE_Q6_MASK_STA_LIBRARY', '')
+        if not library or not Path(library).is_file():
+            raise ValueError('set MGERASE_Q6_MASK_STA_LIBRARY to the built mask STA adapter')
+        env['MGERASE_Q6_MASK_STA'] = '1'
+        env['MGERASE_Q6_MASK_STA_LIBRARY'] = str(Path(library).resolve())
     return env

@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 from functools import lru_cache
 import os
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -10,10 +11,13 @@ class Q6Extensions:
     targeted_fill: bool = False
     qkv_calibration: str = ''
     ffn_epilogue: bool = False
+    mask_sta: bool = False
+    mask_sta_library: str = ''
 
     @property
     def active(self):
-        return self.sage_peripheral or self.targeted_fill or bool(self.qkv_calibration) or self.ffn_epilogue
+        return (self.sage_peripheral or self.targeted_fill or bool(self.qkv_calibration)
+                or self.ffn_epilogue or self.mask_sta)
 
 
 @lru_cache(maxsize=1)
@@ -27,7 +31,9 @@ def q6_extensions():
         sage_peripheral=flag('MGERASE_Q6_SAGE_PERIPHERAL'),
         targeted_fill=flag('MGERASE_Q6_TARGETED_FILL'),
         qkv_calibration=os.environ.get('MGERASE_Q6_QKV_CALIBRATION', ''),
-        ffn_epilogue=flag('MGERASE_Q6_FFN_EPILOGUE'))
+        ffn_epilogue=flag('MGERASE_Q6_FFN_EPILOGUE'),
+        mask_sta=flag('MGERASE_Q6_MASK_STA'),
+        mask_sta_library=os.environ.get('MGERASE_Q6_MASK_STA_LIBRARY', ''))
 
 
 def validate_q6_extensions(args):
@@ -51,3 +57,8 @@ def validate_q6_extensions(args):
         raise ValueError('Q6 extensions preserve per_thread / fp32+fp32 Sage')
     if options.ffn_epilogue and not options.targeted_fill:
         raise ValueError('FFN epilogue currently requires the audited Q6b allocation path')
+    if options.mask_sta:
+        if not options.sage_peripheral:
+            raise ValueError('mask STA requires MGERASE_Q6_SAGE_PERIPHERAL=1')
+        if not options.mask_sta_library or not Path(options.mask_sta_library).is_file():
+            raise ValueError('set MGERASE_Q6_MASK_STA_LIBRARY to the built mask STA adapter')

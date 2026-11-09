@@ -168,10 +168,22 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
         cache_scope = (nullcontext(None) if use_mesh else EraserDiTCacheWindow(
             batch, total_steps=len(timesteps), num_blocks=len(transformer.transformer_blocks),
             enable_torch_compile=server_args.enable_torch_compile))
+        from config.q6_extensions import q6_extensions
+        sta_options = q6_extensions()
+        sta_scope = nullcontext(None)
+        if sta_options.mask_sta:
+            from layers.attention.backends.mask_sta import mask_sta_window
+            import os
+            if mask_values is None:
+                raise ValueError('mask STA requires the model input mask')
+            sta_scope = mask_sta_window(
+                mask_values.to(device=device), (latent_num_frames, latent_height, latent_width),
+                sta_options.mask_sta_library, os.environ.get('MGERASE_Q6_MASK_STA_LIBRARY_SHA256', ''))
         with window_type(transformer, mesh_plan, pool=self._replica_pool,
                                 batch=batch, total_steps=len(timesteps)) as mesh, \
                 EraserDiTCFGWindow(transformer, parallel_device) as cfg_window, \
-                cache_scope as cache_window, torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
+                cache_scope as cache_window, sta_scope as sta_window, \
+                torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
             # Coordinates are constant throughout one window and both CFG
             # branches. Keep this local so the next window/request cannot reuse
             # stale coordinates. Peer paths retain their device-local behavior.
@@ -253,6 +265,9 @@ class EraserDiTEraseDenoisingStage(DenoisingStage):
 
             if mesh.active:
                 batch.extra["dit_parallel"] = mesh.report()
+
+        if sta_window is not None:
+            batch.extra['transformer_cache']['mask_sta'] = sta_window.report()
 
         if parallel_device is not None:
             batch.extra["cfg_parallel"] = {
