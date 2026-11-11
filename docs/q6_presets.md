@@ -13,6 +13,7 @@
 | q6a | Cross-Q RMSNorm；Sage K−mean/INT8 量化融合 | 目标保持既有 Q6 输出 |
 | q6b | q6a + 经审计的 DiT/Sage 输出分配与静态 FP8 GEMM 定点跳过填充 | 目标保持 q6a 输出 |
 | q6c | q6b + 28 层 Self-attention QKV FP8；FFN 第一层 GEMM 输出端 GELU + FP8 量化 | 近似方案，质量单独判断 |
+| q6c_sta | q6c + 输入 mask 周边 Query 读取全局 K/V、背景使用固定时空窗口 | 近似方案；可组合已有 TeaCache |
 
 三档均不启用 AdaLN→FP8、Self-attention 输出投影 FP8 或额外 VAE 优化。
 FFN 输出融合保留原 BF16 输入及静态 FP8 输入量化，因此不依赖 AdaLN→FP8。
@@ -60,6 +61,41 @@ uv run --no-project python scripts/q6_benchmark.py \
 Cross-Q 使用已有 `--operator-fusion-ops` 中的 `cross_q_rmsnorm_native`，不改变默认算子集合。
 进程内配置首次读取后固定，切换预设应启动新进程。
 
+### mask 保护 STA
+
+`q6c_sta` 使用与 Q6c 相同的模型、量化和融合，在 Self-attention 中按输入 mask 生成块表。
+当前仅支持 Linux/SM89、BF16 `[1,32640,32,64]` 和 `16×34×60` token 网格。
+背景窗为 `4×11×7` 微块，保留率约 35.44%。模型 mask 经 `3×5×5` 时空扩张，
+触及的 128-token Query 块读取全部 K/V。实际保留率取决于 mask，不做逐视频 Q/K/V 校准。
+每个窗口独立创建、释放块表，统计保存在运行报告的
+`transformer_cache_history[*].mask_sta`，包括实际保留率、调用数和库指纹。
+不支持的形状显式报错。
+
+先完成上述 FFN 库构建，再从仓库内的 CUDA 源码构建 STA 库：
+
+```bash
+uv run --no-project python scripts/build_mask_sta.py \
+  --cuda-home /absolute/path/to/cuda-12.6 \
+  --output build/mask_sta_sm89.so
+export MGERASE_Q6_MASK_STA_LIBRARY="$PWD/build/mask_sta_sm89.so"
+uv run --no-project python scripts/q6_benchmark.py \
+  --profile q6c_sta --devices 0 --cache off --repeats 1 \
+  --sage-source /absolute/path/to/validated/SageAttention \
+  --run-dir results/my_q6c_sta
+```
+
+组合已有 TeaCache 时，改为 `--cache teacache --cache-threshold 0.1`。
+沿用 `mask_frame_max`、前 4 步与末步保护、最多连续复用 1 步，
+并关闭文字投影缓存。缓存命中步复用整段残差，STA 在实算步生效。
+新增环境开关为 `MGERASE_Q6_MASK_STA`，默认 `0`；
+`q6c_sta` 预设记录 `MGERASE_Q6_MASK_STA_LIBRARY` 及其 SHA256。
+
+背景误差可能传回擦除区，固定保护范围需要检查小目标和运动边缘。
+大面积或零散 mask 会提高保留率，组合 TeaCache 会引入额外近似。
+当前质量证据只覆盖一个完整素材；编码视频误差与是否完成擦除分别判断。
+CUDA 派生代码的来源和许可证位于
+`layers/attention/backends/csrc/mask_sta/NOTICE.md`。
+
 ## 实现与适用范围
 
 - Cross-Q 保留原 FP32 均值与 BF16 舍入边界，支持自动回退，强制启用时拒绝不支持的输入。
@@ -86,7 +122,8 @@ Cross-Q 使用已有 `--operator-fusion-ops` 中的 `cross_q_rmsnorm_native`，�
 ```bash
 CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 uv run --no-project python -m unittest \
   tests.test_architecture tests.test_quantization tests.test_sage_fp8_options \
-  tests.test_operator_fusion_precision tests.test_native_rms_fusion tests.test_q6_extensions -v
+  tests.test_operator_fusion_precision tests.test_native_rms_fusion tests.test_q6_extensions \
+  tests.test_mask_sta tests.test_cpu_pipeline_benchmark -v
 
 CUDA_VISIBLE_DEVICES=0 ERASERDIT_TEST_Q6=1 CUBLAS_WORKSPACE_CONFIG=:4096:8 \
   PYTHONPATH=.:/absolute/path/to/validated/SageAttention \
@@ -96,6 +133,14 @@ CUDA_VISIBLE_DEVICES=0 ERASERDIT_TEST_Q6=1 CUBLAS_WORKSPACE_CONFIG=:4096:8 \
 GPU 检查覆盖 Cross-Q 原生对照、Sage 填充/零值/NaN 毒化对照、QKV 显式 FP8 对照、
 FFN BF16 入口对照，以及卸载重载后的输出和计划重建；需要先构建并设置 FFN 库路径。
 跳过的 CUDA 用例不代表通过。
+
+STA 构建完成并设置库路径后，可单独启用默认/非默认 stream 数值检查：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 ERASERDIT_TEST_MASK_STA=1 CUBLAS_WORKSPACE_CONFIG=:4096:8 \
+  PYTHONPATH=.:/absolute/path/to/validated/SageAttention \
+  uv run --no-project python -m unittest tests.test_mask_sta -v
+```
 
 ## 2026-10-23 最终串行结果
 
@@ -114,3 +159,20 @@ Q6c 相对 Q6b 的 PSNR 为 43.487 dB，半分辨率亮度 SSIM
 质量指标复用相同输出哈希的逐帧分析；无真值或验收阈值，Q6c 保持显式启用。
 一次采样不证明统计稳定性。最终报告与原始数据位于
 `results/q6_crossq_rmsnorm_20261021_01/integration_20261023_01/`。
+
+## 2026-11-09 mask-STA 正式入口复测
+
+通过 `scripts/q6_benchmark.py --profile q6c_sta`，GPU0 串行各测一次完整 145 帧请求。
+从主目录源码构建 FFN 与 STA 可选库，并使用随运行冻结的 Python、CUDA 源码和校准文件。
+两项视频分别与此前对应原型逐字节一致，质量指标复用相同文件的逐帧数据。
+
+| 配置 | 请求 / s | DiT / s | NVML 任务峰值 / GiB | 对密集 Q6c 的 PSNR | 平均 / 最低单帧 mask SSIM |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| q6c_sta，cache off | 183.23 | 145.07 | 22.400 | 42.37 dB | 0.98302 / 0.96780 |
+| q6c_sta，TeaCache 0.1 | 121.51 | 82.34 | 22.402 | 40.65 dB | 0.98223 / 0.95695 |
+
+STA 每窗调用 2,240 次；组合缓存时每窗实算 44/80 个 CFG 分支步、复用 36/80 步，
+STA 调用 1,232 次。窗口退出后释放块表，V 准备和量化均使用调用方的 CUDA stream。
+8 份真实 Q/K/V 与原型逐字节一致，默认和非默认 stream 检查通过。
+单素材、单次结果不构成跨视频质量保证；背景误差和缓存误差都可能影响擦除区。
+记录位于 `results/q6_crossq_rmsnorm_20261021_01/integration_sta_20261109_01/`。

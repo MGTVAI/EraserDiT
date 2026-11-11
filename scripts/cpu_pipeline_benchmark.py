@@ -1,4 +1,6 @@
 """Use the existing S3 benchmark with a metadata-only CLI observer."""
+import argparse
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -25,7 +27,15 @@ def launched(command, *args, **kwargs):
 def main(*, extra_env=None):
     subprocess.Popen = launched
     try:
-        benchmark_l40s.main(extra_env={**benchmark_environment(), **(extra_env or {})})
+        environment = {**benchmark_environment(), **(extra_env or {})}
+        parser = argparse.ArgumentParser(add_help=False)
+        parser.add_argument('--run-dir', type=Path)
+        args, _ = parser.parse_known_args()
+        if args.run_dir is not None:
+            environment.setdefault('ERASERDIT_CPU_PIPELINE_AUDIT',
+                os.environ.get('ERASERDIT_CPU_PIPELINE_AUDIT')
+                or str(args.run_dir.resolve()/'cpu_pipeline_audit.json'))
+        benchmark_l40s.main(extra_env=environment)
     finally:
         subprocess.Popen = original_popen
 

@@ -96,6 +96,9 @@ lmms-eval/
 !python/validation/fixtures/ltx095_t5_quant_prompt_suite.json
 *.csv
 *.png
+!docs/sta_uniform35_frame96.png
+!docs/sta_mask_guard_frame96.png
+!docs/sta_teacache_frame96.png
 *.pdf
 *.jpg
 *.jpeg

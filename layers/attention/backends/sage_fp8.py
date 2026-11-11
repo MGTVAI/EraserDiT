@@ -126,6 +126,8 @@ class SageFP8AttentionImpl(AttentionImpl):
         self.kernel = kernel
         self.peripheral = None
         from config.q6_extensions import q6_extensions
+        self.mask_sta_enabled = q6_extensions().mask_sta
+        self.mask_sta_calls = 0
         if q6_extensions().sage_peripheral:
             from .sage_peripheral import SagePeripheral
             self.peripheral = SagePeripheral()
@@ -145,7 +147,7 @@ class SageFP8AttentionImpl(AttentionImpl):
         )
 
     def report(self) -> dict[str, Any]:
-        return {
+        report = {
             "requested": "sage_fp8",
             "effective": "sage_fp8",
             "kernel_symbol": SAGE_FP8_SYMBOL,
@@ -165,6 +167,9 @@ class SageFP8AttentionImpl(AttentionImpl):
                 dict(item) for item in self._dependency_fingerprints
             ],
         }
+        if self.mask_sta_enabled:
+            report['mask_sta'] = {'enabled': True, 'calls': self.mask_sta_calls}
+        return report
 
     def forward(
         self,
@@ -180,6 +185,17 @@ class SageFP8AttentionImpl(AttentionImpl):
                 "arbitrary attention mask is unsupported",
             )
         try:
+            if self.mask_sta_enabled:
+                from .mask_sta import current_mask_sta
+                window = current_mask_sta()
+                if window is None:
+                    raise ValueError('mask STA requires an active EraserDiT denoising window')
+                if self.causal or self.pv_accum_dtype != 'fp32+fp32' or self.qk_quant_gran != 'per_thread':
+                    raise ValueError('mask STA requires noncausal per_thread / fp32+fp32 Sage')
+                output = window(query, key, value, self.softmax_scale, self.peripheral)
+                self.call_count += 1
+                self.mask_sta_calls += 1
+                return output
             if self.peripheral is not None:
                 if (not self.causal and self.pv_accum_dtype == 'fp32+fp32'
                         and self.qk_quant_gran == 'per_thread'

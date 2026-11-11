@@ -375,6 +375,8 @@ def main(*, extra_env=None):
     paths = [p for package in packages for p in (source_root/package).rglob('*.py')]
     paths += list(source_root.glob('*.py'))
     paths += list((source_root/'config/calibration').glob('*.json'))
+    paths += [path for path in (source_root/'layers/attention/backends/csrc/mask_sta').rglob('*')
+              if path.is_file()]
     paths += list((source_root/'layers/quantization/csrc').glob('*.cpp'))
     if not (source_root/'entrypoints/cli/erase_eraserdit.py').is_file():
         parser.error('source-root is not an EraserDiT source tree')
